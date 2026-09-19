@@ -212,6 +212,7 @@ pub enum ThemeMode {
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum ColorTheme {
     #[default]
+    FollowWindows,
     WindowsLight,
     WindowsDark,
     OneDark,
@@ -222,7 +223,8 @@ pub enum ColorTheme {
 }
 
 impl ColorTheme {
-    pub const ALL: [Self; 7] = [
+    pub const ALL: [Self; 8] = [
+        Self::FollowWindows,
         Self::WindowsLight,
         Self::WindowsDark,
         Self::OneDark,
@@ -234,6 +236,7 @@ impl ColorTheme {
 
     pub const fn id(self) -> &'static str {
         match self {
+            Self::FollowWindows => "follow-windows",
             Self::WindowsLight => "windows-light",
             Self::WindowsDark => "windows-dark",
             Self::OneDark => "one-dark",
@@ -244,8 +247,16 @@ impl ColorTheme {
         }
     }
 
+    pub const fn persisted_id(self) -> Option<&'static str> {
+        match self {
+            Self::FollowWindows => None,
+            other => Some(other.id()),
+        }
+    }
+
     pub const fn label_key(self) -> &'static str {
         match self {
+            Self::FollowWindows => "settings-theme-follow-windows",
             Self::WindowsLight => "settings-theme-windows-light",
             Self::WindowsDark => "settings-theme-windows-dark",
             Self::OneDark => "settings-theme-one-dark",
@@ -256,9 +267,21 @@ impl ColorTheme {
         }
     }
 
+    pub const fn follows_windows(self) -> bool {
+        matches!(self, Self::FollowWindows)
+    }
+
+    pub const fn resolved(self, windows_dark: bool) -> Self {
+        match self {
+            Self::FollowWindows if windows_dark => Self::WindowsDark,
+            Self::FollowWindows => Self::WindowsLight,
+            other => other,
+        }
+    }
+
     pub const fn appearance(self) -> ThemeMode {
         match self {
-            Self::WindowsLight | Self::OneLight => ThemeMode::Light,
+            Self::FollowWindows | Self::WindowsLight | Self::OneLight => ThemeMode::Light,
             Self::WindowsDark
             | Self::OneDark
             | Self::AyuDark
@@ -267,15 +290,17 @@ impl ColorTheme {
         }
     }
 
+    pub const fn appearance_with_windows(self, windows_dark: bool) -> ThemeMode {
+        self.resolved(windows_dark).appearance()
+    }
+
     pub fn from_id(id: &str) -> Option<Self> {
-        Self::ALL
-            .into_iter()
-            .find(|theme| theme.id() == id)
+        Self::ALL.into_iter().find(|theme| theme.id() == id)
     }
 
     pub const fn tokens(self) -> ThemeTokens {
         match self {
-            Self::WindowsLight => ThemeTokens::light(),
+            Self::FollowWindows | Self::WindowsLight => ThemeTokens::light(),
             Self::WindowsDark => ThemeTokens::dark(),
             Self::OneDark => ThemeTokens::zed_one_dark(),
             Self::OneLight => ThemeTokens::zed_one_light(),
@@ -283,6 +308,10 @@ impl ColorTheme {
             Self::AyuMirage => ThemeTokens::zed_ayu_mirage(),
             Self::GruvboxDark => ThemeTokens::zed_gruvbox_dark(),
         }
+    }
+
+    pub const fn tokens_with_windows(self, windows_dark: bool) -> ThemeTokens {
+        self.resolved(windows_dark).tokens()
     }
 
     pub const fn swatch(self) -> Rgba8 {
@@ -738,8 +767,21 @@ mod tests {
 
     #[test]
     fn color_themes_cover_windows_and_five_zed_palettes() {
-        assert_eq!(ColorTheme::ALL.len(), 7);
-        assert_eq!(ColorTheme::default(), ColorTheme::WindowsLight);
+        assert_eq!(ColorTheme::ALL.len(), 8);
+        assert_eq!(ColorTheme::default(), ColorTheme::FollowWindows);
+        assert_eq!(ColorTheme::FollowWindows.persisted_id(), None);
+        assert_eq!(
+            ColorTheme::FollowWindows.tokens_with_windows(false),
+            ThemeTokens::light()
+        );
+        assert_eq!(
+            ColorTheme::FollowWindows.tokens_with_windows(true),
+            ThemeTokens::dark()
+        );
+        assert_eq!(
+            ColorTheme::FollowWindows.appearance_with_windows(true),
+            ThemeMode::Dark
+        );
         assert_eq!(ColorTheme::WindowsLight.tokens(), ThemeTokens::light());
         assert_eq!(ColorTheme::WindowsDark.tokens(), ThemeTokens::dark());
         assert_eq!(ColorTheme::WindowsLight.appearance(), ThemeMode::Light);
@@ -755,7 +797,10 @@ mod tests {
         }
         for theme in ColorTheme::ALL {
             assert_eq!(ColorTheme::from_id(theme.id()), Some(theme));
-            assert_eq!(theme.tokens().mode, theme.appearance());
+            assert_eq!(
+                theme.tokens_with_windows(false).mode,
+                theme.appearance_with_windows(false)
+            );
         }
         assert_eq!(ColorTheme::from_id("not-a-theme"), None);
         assert_ne!(

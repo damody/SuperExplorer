@@ -425,11 +425,16 @@ fn captured_scrollbar_axis_to_logical(
 ) -> Option<f32> {
     let x = physical_client_to_logical(position.0, scale_factor)?;
     let y = physical_client_to_logical(position.1, scale_factor)?;
-    Some(if kind == interaction::ScrollbarKind::FileViewHorizontal {
-        x
-    } else {
-        y
-    })
+    Some(
+        if matches!(
+            kind,
+            interaction::ScrollbarKind::FileViewHorizontal | interaction::ScrollbarKind::TabStrip
+        ) {
+            x
+        } else {
+            y
+        },
+    )
 }
 
 /// Merges directory safety batches drained for one UI transaction. Provider batch caps remain
@@ -912,8 +917,8 @@ fn advance_item_overlay_epoch(
 use explorer_model::{ExplorerService, ExplorerServiceError, WorkspaceModel};
 use gpui::{
     AnyWindowHandle, App, Bounds, ClipboardItem, Context, Focusable, IntoElement, Render,
-    RenderImage, Role, SharedString, Window, WindowBounds, WindowId, WindowOptions, div,
-    prelude::*, px, size,
+    RenderImage, Role, SharedString, Window, WindowAppearance, WindowBounds, WindowId,
+    WindowOptions, div, prelude::*, px, size,
 };
 use gpui_elements::editable_text::{EditableTextState, StringStorage, TextChanged};
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
@@ -1161,6 +1166,7 @@ pub struct ExplorerRoot {
     preview_host_boundary: Option<(u64, i32, i32, u32, u32, u32)>,
     navigation_scroll: gpui::ScrollHandle,
     file_scroll: gpui::ScrollHandle,
+    tab_scroll: gpui::ScrollHandle,
     file_viewport_width: f32,
     file_performance: Arc<performance::FileViewPerformanceCounters>,
     focus_handle: Option<gpui::FocusHandle>,
@@ -1184,6 +1190,7 @@ pub struct ExplorerRoot {
     sftp_address_login: Option<SftpAddressLoginState>,
     ftp_address_login: Option<SftpAddressLoginState>,
     gdrive_address_login: Option<SftpAddressLoginState>,
+    network_login: Option<NetworkLoginState>,
     folder_options_window_observer: Option<FolderOptionsWindowObserver>,
     search_engine_probe: Option<
         std::rc::Rc<
@@ -1330,6 +1337,27 @@ struct SftpAddressLoginState {
     receiver: std::sync::mpsc::Receiver<(u64, SftpAddressLoginResult)>,
     next_request: u64,
     active_request: Option<u64>,
+}
+
+/// Blocking credential input for one UNC host. The observer runs off the UI thread and returns
+/// `Ok(true)` when the share is reachable, `Ok(false)` when the user cancelled, and `Err` on an
+/// unexpected failure. Secrets never cross this boundary.
+pub struct NetworkLoginInput {
+    pub host: String,
+    pub remote: String,
+    pub message: String,
+}
+pub type NetworkLoginObserver =
+    Arc<dyn Fn(NetworkLoginInput) -> Result<bool, String> + Send + Sync>;
+
+struct NetworkLoginState {
+    observer: NetworkLoginObserver,
+    sender: std::sync::mpsc::Sender<(u64, Result<bool, String>)>,
+    receiver: std::sync::mpsc::Receiver<(u64, Result<bool, String>)>,
+    next_request: u64,
+    active_request: Option<u64>,
+    active_remote: Option<String>,
+    pending_retry: Option<state::NetworkLoginRetry>,
 }
 /// Application-owned bridge that creates or activates the singleton Folder
 /// Options native window after the reducer has created a fresh draft.
@@ -1541,6 +1569,7 @@ fn is_durable_action(action: &ExplorerAction) -> bool {
             | ExplorerAction::ResetFolderOptions
             | ExplorerAction::ToggleRestorePreviousSession
             | ExplorerAction::ToggleTheme
+            | ExplorerAction::SetColorTheme(_)
     )
 }
 
@@ -1748,6 +1777,7 @@ impl ExplorerRoot {
             preview_host_boundary: None,
             navigation_scroll: gpui::ScrollHandle::new(),
             file_scroll: gpui::ScrollHandle::new(),
+            tab_scroll: gpui::ScrollHandle::new(),
             file_viewport_width: 0.0,
             file_performance: Arc::new(performance::FileViewPerformanceCounters::default()),
             focus_handle: None,
@@ -1771,6 +1801,7 @@ impl ExplorerRoot {
             sftp_address_login: None,
             ftp_address_login: None,
             gdrive_address_login: None,
+            network_login: None,
             folder_options_window_observer: None,
             search_engine_probe: None,
             folder_options_applied_observer: None,
@@ -1966,6 +1997,87 @@ impl ExplorerRoot {
             }
             Ok(None) => {}
             Err(error) => self.state.fail_address_submission(error),
+        }
+        true
+    }
+
+    pub fn attach_network_login_observer(&mut self, observer: NetworkLoginObserver) {
+        let (sender, receiver) = std::sync::mpsc::channel();
+        self.network_login = Some(NetworkLoginState {
+            observer,
+            sender,
+            receiver,
+            next_request: 0,
+            active_request: None,
+            active_remote: None,
+            pending_retry: None,
+        });
+    }
+
+    /// Starts one off-thread credential prompt for a failed UNC target, deduplicating concurrent
+    /// prompts for the same host so one node click cannot open several dialogs.
+    fn begin_network_login(&mut self, request: state::NetworkLoginRequest) -> bool {
+        let mut args = explorer_i18n::FluentArgs::new();
+        args.set("host", request.host.clone());
+        let message = self.catalog().t_args("ftp-sign-in", &args);
+        let Some(login) = self.network_login.as_mut() else {
+            return false;
+        };
+        if login.active_request.is_some() || login.active_remote.as_deref() == Some(&request.remote)
+        {
+            return false;
+        }
+        login.next_request = login.next_request.wrapping_add(1);
+        let id = login.next_request;
+        login.active_request = Some(id);
+        login.active_remote = Some(request.remote.clone());
+        login.pending_retry = Some(request.retry);
+        let observer = Arc::clone(&login.observer);
+        let sender = login.sender.clone();
+        let input = NetworkLoginInput {
+            host: request.host,
+            remote: request.remote,
+            message,
+        };
+        std::thread::spawn(move || {
+            let result = observer(input);
+            let _ = sender.send((id, result));
+        });
+        true
+    }
+
+    fn pump_network_login(&mut self) -> bool {
+        let Some(login) = self.network_login.as_mut() else {
+            return false;
+        };
+        let mut latest = None;
+        while let Ok(result) = login.receiver.try_recv() {
+            latest = Some(result);
+        }
+        let Some((request, result)) = latest else {
+            return false;
+        };
+        if login.active_request != Some(request) {
+            return false;
+        }
+        login.active_request = None;
+        login.active_remote = None;
+        let retry = login.pending_retry.take();
+        if matches!(result, Ok(true))
+            && let Some(retry) = retry
+        {
+            match retry {
+                state::NetworkLoginRetry::NavigationNode(location) => {
+                    if let Some(command) = self.state.retry_navigation_node(location) {
+                        self.submit_command(command);
+                    }
+                }
+                state::NetworkLoginRetry::ActiveLocation(location) => {
+                    if let Some(command) = self.state.begin_active_navigation(location, false) {
+                        self.submit_command(command);
+                    }
+                }
+            }
         }
         true
     }
@@ -3979,6 +4091,7 @@ impl ExplorerRoot {
             preview_host_boundary: None,
             navigation_scroll: gpui::ScrollHandle::new(),
             file_scroll: gpui::ScrollHandle::new(),
+            tab_scroll: gpui::ScrollHandle::new(),
             file_viewport_width: 0.0,
             file_performance: Arc::new(performance::FileViewPerformanceCounters::default()),
             focus_handle: None,
@@ -4002,6 +4115,7 @@ impl ExplorerRoot {
             sftp_address_login: None,
             ftp_address_login: None,
             gdrive_address_login: None,
+            network_login: None,
             folder_options_window_observer: None,
             search_engine_probe: None,
             folder_options_applied_observer: None,
@@ -4097,6 +4211,7 @@ impl ExplorerRoot {
             preview_host_boundary: None,
             navigation_scroll: gpui::ScrollHandle::new(),
             file_scroll: gpui::ScrollHandle::new(),
+            tab_scroll: gpui::ScrollHandle::new(),
             file_viewport_width: 0.0,
             file_performance: Arc::new(performance::FileViewPerformanceCounters::default()),
             focus_handle: None,
@@ -4120,6 +4235,7 @@ impl ExplorerRoot {
             sftp_address_login: None,
             ftp_address_login: None,
             gdrive_address_login: None,
+            network_login: None,
             folder_options_window_observer: None,
             search_engine_probe: None,
             folder_options_applied_observer: None,
@@ -4215,6 +4331,15 @@ impl ExplorerRoot {
     pub fn configure_color_theme(&mut self, theme: theme::ColorTheme) {
         self.state.set_color_theme(theme);
         synchronize_theme(&mut self.tokens, &self.state);
+    }
+
+    pub fn sync_windows_appearance(&mut self, window: &Window) {
+        if self
+            .state
+            .set_windows_dark(windows_dark_from_appearance(window.appearance()))
+        {
+            synchronize_theme(&mut self.tokens, &self.state);
+        }
     }
 
     /// Updates the live catalog locale; callers should `cx.notify()` for a redraw.
@@ -4318,7 +4443,10 @@ impl ExplorerRoot {
                 self.state.bookmarks().clone(),
                 self.durable_window_placement,
                 self.state.locale_preference(),
-                Some(self.state.current_color_theme().id().to_owned()),
+                self.state
+                    .current_color_theme()
+                    .persisted_id()
+                    .map(str::to_owned),
             );
         }
         false
@@ -4355,7 +4483,7 @@ impl ExplorerRoot {
             self.state.bookmarks().clone(),
             self.durable_window_placement,
             draft.locale_choice.to_preference(),
-            Some(draft.theme.id().to_owned()),
+            draft.theme.persisted_id().map(str::to_owned),
         )
     }
 
@@ -4404,6 +4532,7 @@ impl ExplorerRoot {
                         let sftp_login_changed = this.pump_sftp_address_login();
                         let ftp_login_changed = this.pump_ftp_address_login();
                         let gdrive_login_changed = this.pump_gdrive_address_login();
+                        let network_login_changed = this.pump_network_login();
                         let remote_runtime_changed = this.pump_remote_runtime(cx);
                         let visual_column_changed = this.pump_visual_column_runtime();
                         let code_lines_changed = this.pump_code_lines_runtime();
@@ -4416,6 +4545,7 @@ impl ExplorerRoot {
                             || sftp_login_changed
                             || ftp_login_changed
                             || gdrive_login_changed
+                            || network_login_changed
                             || remote_runtime_changed
                             || visual_column_changed
                             || code_lines_changed
@@ -4728,6 +4858,7 @@ impl ExplorerRoot {
                                 .begin_navigation_reconciliation(navigation_reconciliation);
                             let refresh_after_action =
                                 this.state.service_event_requires_active_refresh(&event);
+                            let network_login = this.state.network_login_request(&event);
                             let extension_operation_finished = matches!(
                                 &event,
                                 explorer_model::ExplorerEvent::OperationFinished { .. }
@@ -4818,6 +4949,11 @@ impl ExplorerRoot {
                                     this.state.begin_ancestry_request(&source, location)
                             {
                                 this.submit_command(command);
+                            }
+                            if outcome == explorer_model::WindowEventOutcome::Applied
+                                && let Some(login) = network_login
+                            {
+                                this.begin_network_login(login);
                             }
                         }
                         let deferred = this.pending_service_event_count();
@@ -6087,6 +6223,8 @@ impl ExplorerRoot {
         if let explorer_model::ExplorerCommand::Navigate { context, location }
         | explorer_model::ExplorerCommand::Refresh { context, location } = &command
         {
+            self.state
+                .set_navigation_target(context.tab_id, context.request_id, location.clone());
             let now = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .map_or(0, |value| value.as_secs());
@@ -6414,23 +6552,31 @@ impl ExplorerRoot {
             interaction::ScrollbarKind::Navigation => &self.navigation_scroll,
             interaction::ScrollbarKind::FileView
             | interaction::ScrollbarKind::FileViewHorizontal => &self.file_scroll,
+            interaction::ScrollbarKind::TabStrip => &self.tab_scroll,
         };
         let bounds = handle.bounds();
-        let horizontal = session.kind == interaction::ScrollbarKind::FileViewHorizontal;
+        let horizontal = matches!(
+            session.kind,
+            interaction::ScrollbarKind::FileViewHorizontal | interaction::ScrollbarKind::TabStrip
+        );
         let viewport = if horizontal {
             f32::from(bounds.size.width).max(0.0)
         } else {
             f32::from(bounds.size.height).max(0.0)
         };
-        let maximum = if horizontal {
-            let settings = self.state.view_settings();
-            chrome::details_horizontal_maximum_with_registry(
-                &settings,
-                self.state.column_registry(),
-                self.file_viewport_width,
-            )
-        } else {
-            f32::from(handle.max_offset().y).max(0.0)
+        let maximum = match session.kind {
+            interaction::ScrollbarKind::FileViewHorizontal => {
+                let settings = self.state.view_settings();
+                chrome::details_horizontal_maximum_with_registry(
+                    &settings,
+                    self.state.column_registry(),
+                    self.file_viewport_width,
+                )
+            }
+            interaction::ScrollbarKind::TabStrip => f32::from(handle.max_offset().x).max(0.0),
+            interaction::ScrollbarKind::Navigation | interaction::ScrollbarKind::FileView => {
+                f32::from(handle.max_offset().y).max(0.0)
+            }
         };
         let pointer_local = pointer_axis
             - if horizontal {
@@ -7399,9 +7545,8 @@ impl ExplorerRoot {
             }
         }
         if action == ExplorerAction::AddSelectedToBookmarks {
-            let selected = self.state.selected_items_for_extension_command();
-            if let Some(item) = selected.into_iter().next() {
-                let target = if item.location.path().is_some_and(std::path::Path::is_dir) {
+            if let Some(item) = self.state.first_selected_entry() {
+                let target = if item.is_container {
                     explorer_model::BookmarkTarget::Folder {
                         location: item.location.clone(),
                     }
@@ -8174,7 +8319,7 @@ impl ExplorerRoot {
             self.submit_offscreen_file_icon_loads(&context, &entries);
         }
         if let ExplorerAction::OpenItem { row_index, new_tab } = action {
-            if let Some(id) = self.state.lua_bookmark_id_for_row(row_index) {
+            if let Some(id) = self.state.bookmark_id_for_row(row_index) {
                 self.handle_action(ExplorerAction::ActivateBookmark { id }, source, window, cx);
                 return;
             }
@@ -8221,7 +8366,7 @@ impl ExplorerRoot {
         if action == ExplorerAction::OpenFocused
             && let Some(row_index) = self.state.focused_row_index()
         {
-            if let Some(id) = self.state.lua_bookmark_id_for_row(row_index) {
+            if let Some(id) = self.state.bookmark_id_for_row(row_index) {
                 self.handle_action(ExplorerAction::ActivateBookmark { id }, source, window, cx);
                 return;
             }
@@ -8710,7 +8855,10 @@ impl ExplorerRoot {
             "down" => Some(ExplorerAction::MoveMoreMenuFocus { direction: 1 }),
             "home" => Some(ExplorerAction::MoveMoreMenuFocus { direction: i8::MIN }),
             "end" => Some(ExplorerAction::MoveMoreMenuFocus { direction: i8::MAX }),
-            "escape" | "left" | "right" => Some(ExplorerAction::CloseMoreMenu),
+            "escape" | "left" => Some(ExplorerAction::CloseMoreMenu),
+            "right" if self.state.more_menu_index() == 8 => {
+                Some(ExplorerAction::ToggleMoreThemeSubmenu)
+            }
             "enter" | "space" => Some(match self.state.more_menu_index() {
                 0 => ExplorerAction::UndoCurrentFolder,
                 1 => ExplorerAction::CompressSelectedToZip,
@@ -8720,7 +8868,7 @@ impl ExplorerRoot {
                 5 => ExplorerAction::SelectAllItems,
                 6 => ExplorerAction::ClearSelection,
                 7 => ExplorerAction::InvertSelection,
-                8 => ExplorerAction::HandoffToFileExplorer,
+                8 => ExplorerAction::ToggleMoreThemeSubmenu,
                 9 => ExplorerAction::OpenFolderOptions,
                 _ => ExplorerAction::OpenAboutDialog,
             }),
@@ -8784,6 +8932,9 @@ impl ExplorerRoot {
             "end" => Some(ExplorerAction::MoveViewMenuFocus { direction: i8::MAX }),
             "escape" | "left" => Some(ExplorerAction::CloseViewMenu),
             "right" if self.state.view_menu_index() == 10 => {
+                Some(ExplorerAction::ToggleViewThemeSubmenu)
+            }
+            "right" if self.state.view_menu_index() == 11 => {
                 Some(ExplorerAction::ToggleViewShowSubmenu)
             }
             "enter" | "space" => Some(match self.state.view_menu_index() {
@@ -8797,18 +8948,19 @@ impl ExplorerRoot {
                 7 => ExplorerAction::SetViewMode(explorer_model::ViewMode::Content),
                 8 => ExplorerAction::ToggleDetailsPane,
                 9 => ExplorerAction::TogglePreviewPane,
-                10 => ExplorerAction::ToggleViewShowSubmenu,
-                11 => self
+                10 => ExplorerAction::ToggleViewThemeSubmenu,
+                11 => ExplorerAction::ToggleViewShowSubmenu,
+                12 => self
                     .size_map_runtime
                     .as_ref()
                     .map(|runtime| runtime.config())
                     .filter(size_map_view::is_supported_size_map_config)
-                    .map_or(ExplorerAction::ToggleViewShowSubmenu, |config| {
+                    .map_or(ExplorerAction::ToggleViewThemeSubmenu, |config| {
                         ExplorerAction::SetExtensionView {
                             view_id: config.view_id,
                         }
                     }),
-                _ => ExplorerAction::ToggleViewShowSubmenu,
+                _ => ExplorerAction::ToggleViewThemeSubmenu,
             }),
             _ => None,
         }
@@ -9006,8 +9158,17 @@ fn file_view_navigation_target(
     })
 }
 
+fn windows_dark_from_appearance(appearance: WindowAppearance) -> bool {
+    matches!(
+        appearance,
+        WindowAppearance::Dark | WindowAppearance::VibrantDark
+    )
+}
+
 fn synchronize_theme(tokens: &mut UiTokens, state: &AppViewState) {
-    tokens.theme = state.current_color_theme().tokens();
+    tokens.theme = state
+        .current_color_theme()
+        .tokens_with_windows(state.windows_dark());
 }
 
 impl Default for ExplorerRoot {
@@ -9363,6 +9524,7 @@ impl Render for ExplorerRoot {
         reason = "the root registers the complete, auditable keyboard action scope in one place"
     )]
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.sync_windows_appearance(window);
         let window_title = active_window_title(self.state.tabs());
         if self.last_window_title.as_deref() != Some(window_title.as_str()) {
             window.set_window_title(&window_title);
@@ -9555,6 +9717,7 @@ impl Render for ExplorerRoot {
             .with_file_performance(Arc::clone(&self.file_performance))
             .with_navigation_scroll(self.navigation_scroll.clone())
             .with_file_scroll(self.file_scroll.clone())
+            .with_tab_scroll(self.tab_scroll.clone())
             .with_text_inputs(
                 self.address_input.as_ref().map(gpui::Entity::downgrade),
                 self.search_input.as_ref().map(gpui::Entity::downgrade),
@@ -11112,6 +11275,10 @@ mod tests {
             ExplorerAction::AddSelectedToFavorites
         );
         assert_eq!(
+            action_for_host_context_command(Command::AddBookmark),
+            ExplorerAction::AddSelectedToBookmarks
+        );
+        assert_eq!(
             action_for_host_context_command(Command::Properties),
             ExplorerAction::ShowPropertiesSelected
         );
@@ -12151,6 +12318,11 @@ mod tests {
                 ),
                 Some(240.0),
                 "horizontal scale factor {scale_factor}"
+            );
+            assert_eq!(
+                captured_scrollbar_axis_to_logical(ScrollbarKind::TabStrip, physical, scale_factor,),
+                Some(240.0),
+                "tab-strip scale factor {scale_factor}"
             );
             for kind in [ScrollbarKind::FileView, ScrollbarKind::Navigation] {
                 assert_eq!(
@@ -14165,6 +14337,22 @@ mod tests {
                 )
                 .changed()
         );
+        assert!(
+            bookmarks
+                .begin_add(
+                    "tool".into(),
+                    explorer_model::BookmarkTarget::FilePath {
+                        path: r"\\server\share\tool.exe".into(),
+                    },
+                )
+                .changed()
+        );
+        let file_bookmark_id = bookmarks
+            .entries()
+            .iter()
+            .find(|bookmark| bookmark.name == "tool")
+            .expect("file bookmark")
+            .id;
         root.state.configure_bookmarks(bookmarks);
         let command = root
             .state
@@ -14189,10 +14377,12 @@ mod tests {
             .iter()
             .map(|entry| entry.display_name.as_str())
             .collect();
-        assert_eq!(names, ["super", "portable", "script"]);
+        assert_eq!(names, ["super", "portable", "script", "tool"]);
         assert!(snapshot.entries()[0].is_container);
         assert!(snapshot.entries()[1].is_container);
         assert!(!snapshot.entries()[2].is_container);
+        assert!(!snapshot.entries()[3].is_container);
+        assert_eq!(root.state.bookmark_id_for_row(3), Some(file_bookmark_id));
         assert_eq!(
             snapshot.entries()[2].location.lua_bookmark_id(),
             Some(
@@ -14239,7 +14429,7 @@ mod tests {
             .split("if let ExplorerAction::OpenExtensionViewItem")
             .next()
             .expect("OpenItem body");
-        assert!(handler.contains("lua_bookmark_id_for_row"));
+        assert!(handler.contains("bookmark_id_for_row"));
         assert!(handler.contains("ActivateBookmark"));
         let open_focused = source
             .split("if action == ExplorerAction::OpenFocused")
@@ -14249,7 +14439,7 @@ mod tests {
             .split("if action == ExplorerAction::CreateFolder")
             .next()
             .expect("OpenFocused body");
-        assert!(focused.contains("lua_bookmark_id_for_row"));
+        assert!(focused.contains("bookmark_id_for_row"));
         assert!(focused.contains("ActivateBookmark"));
     }
 

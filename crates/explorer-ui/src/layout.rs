@@ -66,6 +66,19 @@ pub mod lock_recovery {
     pub const OWNER_LIST_MAX_HEIGHT: LogicalPx = LogicalPx::new(240.0);
 }
 
+/// Window tab strip geometry. Tabs share remaining title-bar space and shrink
+/// like Firefox instead of overflowing at the navigation-pane min width.
+pub mod tabs {
+    use super::LogicalPx;
+
+    /// Comfortable width when the strip has room.
+    pub const PREFERRED_WIDTH: LogicalPx = LogicalPx::new(180.0);
+    /// Narrowest tab that still fits icon, faded title, and close control.
+    pub const MIN_WIDTH: LogicalPx = LogicalPx::new(96.0);
+    /// Right-edge fade over clipped title glyphs.
+    pub const TITLE_FADE_WIDTH: LogicalPx = LogicalPx::new(24.0);
+}
+
 /// Feature-specific geometry shared by the corresponding render paths.
 pub mod feature {
     use super::LogicalPx;
@@ -406,6 +419,16 @@ mod tests {
             + tokens.address_search_gap.value()
             + tokens.compact_search_box_width.value();
         assert!(required <= available_after_fixed_controls);
+    }
+
+    #[test]
+    fn explorer_tabs_shrink_below_the_navigation_pane_min_width() {
+        let tokens = LayoutTokens::WINDOWS_11;
+        assert!(super::tabs::MIN_WIDTH.value() < super::tabs::PREFERRED_WIDTH.value());
+        assert!(super::tabs::MIN_WIDTH.value() < tokens.navigation_pane_min_width.value());
+        assert!(super::tabs::TITLE_FADE_WIDTH.value() > 0.0);
+        assert!(super::tabs::TITLE_FADE_WIDTH.value() < super::tabs::MIN_WIDTH.value());
+        assert!(super::tabs::PREFERRED_WIDTH.value() >= 160.0);
     }
 
     #[test]

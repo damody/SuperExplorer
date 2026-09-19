@@ -818,6 +818,7 @@ struct PendingLeaveSelection {
 )]
 pub struct AppViewState {
     current_color_theme: ColorTheme,
+    windows_dark: bool,
     /// Active UI catalog locale. Harness/uitest default is `ZhTw`; production is negotiated.
     locale: AppLocale,
     /// Session preference written on save. `None` means follow Windows.
@@ -867,6 +868,7 @@ pub struct AppViewState {
     remote_properties: Option<RemotePropertiesState>,
     expanded_bookmark_folders: HashSet<explorer_model::BookmarkFolderId>,
     favorites_nav_collapsed: bool,
+    system_bookmarks_nav_collapsed: bool,
     bookmark_folder_delete_confirmation: Option<(explorer_model::BookmarkFolderId, usize)>,
     bookmark_editor: Option<BookmarkEditorDraft>,
     bookmark_folder_editor: Option<BookmarkFolderEditorDraft>,
@@ -888,6 +890,10 @@ pub struct AppViewState {
     breadcrumb_menu_requests: HashMap<TabId, PendingBreadcrumbMenu>,
     navigation_history_menu: Option<NavigationHistoryMenuState>,
     navigation_trees: HashMap<TabId, NavigationTreeState>,
+    /// Intended destination of the most recent navigation per tab, keyed with its request identity.
+    /// A failed UNC navigation keeps the old history entry, so the rejected target is recovered
+    /// from here for credential recovery.
+    navigation_targets: HashMap<TabId, (explorer_common::RequestId, LocationDescriptor)>,
     sort_menu_open: bool,
     sort_menu_index: usize,
     new_menu_open: bool,
@@ -897,6 +903,7 @@ pub struct AppViewState {
     view_menu_index: usize,
     more_menu_open: bool,
     more_menu_index: usize,
+    more_theme_submenu_open: bool,
     transfer_panel_open: bool,
     about_dialog_open: bool,
     about_info: AboutInfoV1,
@@ -912,6 +919,7 @@ pub struct AppViewState {
     extensions: Vec<ExtensionOptionV1>,
     restore_previous_session: bool,
     view_show_submenu_open: bool,
+    view_theme_submenu_open: bool,
     /// Host-owned descriptor snapshot. Extension-host contribution validation will replace
     /// package descriptors in task 5.2; UI only reads this registry.
     column_registry: explorer_model::ColumnRegistry,
@@ -1143,6 +1151,40 @@ struct NavigationTreeState {
     next_request_generation: u64,
 }
 
+/// A UNC location that failed with an authorization error and needs credentials before it can be
+/// enumerated or navigated to again.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct NetworkLoginRequest {
+    pub host: String,
+    pub remote: String,
+    pub retry: NetworkLoginRetry,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum NetworkLoginRetry {
+    /// Re-enumerate a failed navigation-tree node after authentication.
+    NavigationNode(LocationDescriptor),
+    /// Reload the active file view at this failed target after authentication.
+    ActiveLocation(LocationDescriptor),
+}
+
+/// Splits a UNC location into its credential host and the connectable remote root
+/// (`\\host` or `\\host\share`). WSL and device paths are excluded.
+fn network_login_remote(location: &LocationDescriptor) -> Option<(String, String)> {
+    let path = location.path()?;
+    if explorer_model::is_wsl_unc_path(path) {
+        return None;
+    }
+    let parts = explorer_model::network_unc_parts(path)?;
+    let host = parts.first()?.clone();
+    let remote = if let Some(share) = parts.get(1) {
+        format!(r"\\{host}\{share}")
+    } else {
+        format!(r"\\{host}")
+    };
+    Some((host, remote))
+}
+
 #[derive(Clone, Debug)]
 pub(crate) struct PendingRightDrop {
     paths: Vec<std::path::PathBuf>,
@@ -1174,7 +1216,8 @@ impl AppViewState {
         let initial_tab_id = tabs.active_tab_id();
         let tab_focus = HashMap::from([(initial_tab_id, FocusSurface::FileView)]);
         Self {
-            current_color_theme: ColorTheme::WindowsLight,
+            current_color_theme: ColorTheme::FollowWindows,
+            windows_dark: false,
             // Test/harness default; production windows call `configure_locale` with negotiation.
             locale: AppLocale::ZhTw,
             locale_preference: None,
@@ -1222,6 +1265,7 @@ impl AppViewState {
             remote_properties: None,
             expanded_bookmark_folders: HashSet::new(),
             favorites_nav_collapsed: true,
+            system_bookmarks_nav_collapsed: false,
             bookmark_folder_delete_confirmation: None,
             bookmark_editor: None,
             bookmark_folder_editor: None,
@@ -1243,6 +1287,7 @@ impl AppViewState {
             breadcrumb_menu_requests: HashMap::new(),
             navigation_history_menu: None,
             navigation_trees: HashMap::from([(initial_tab_id, NavigationTreeState::default())]),
+            navigation_targets: HashMap::new(),
             sort_menu_open: false,
             sort_menu_index: 0,
             new_menu_open: false,
@@ -1252,6 +1297,7 @@ impl AppViewState {
             view_menu_index: 0,
             more_menu_open: false,
             more_menu_index: 0,
+            more_theme_submenu_open: false,
             transfer_panel_open: false,
             about_dialog_open: false,
             about_info: AboutInfoV1 {
@@ -1271,6 +1317,7 @@ impl AppViewState {
             extensions: official_extensions_v1(),
             restore_previous_session: true,
             view_show_submenu_open: false,
+            view_theme_submenu_open: false,
             column_registry: explorer_model::ColumnRegistry::built_ins(),
             details_column_resize: None,
             details_column_drag: None,
@@ -1632,6 +1679,9 @@ impl AppViewState {
         if location.synthetic_root() == Some(explorer_model::SyntheticRoot::Favorites) {
             return self.favorites_nav_expanded();
         }
+        if crate::navigation_pane::is_system_bookmarks_location(location) {
+            return !self.system_bookmarks_nav_collapsed;
+        }
         self.navigation_trees
             .get(&self.tabs.active_tab_id())
             .is_some_and(|tree| tree.expanded.contains(location))
@@ -1691,10 +1741,86 @@ impl AppViewState {
             .and_then(|node| node.error.as_deref())
     }
 
+    /// Remembers the intended destination so a rejected UNC navigation can be recovered.
+    pub(crate) fn set_navigation_target(
+        &mut self,
+        tab_id: TabId,
+        request_id: explorer_common::RequestId,
+        location: LocationDescriptor,
+    ) {
+        self.navigation_targets
+            .insert(tab_id, (request_id, location));
+    }
+
+    /// Detects a UNC authorization failure that should trigger an interactive credential prompt.
+    /// Only the navigation tree and the active file view produce a request; non-UNC or non-auth
+    /// failures (host offline, denied local folder) never prompt.
+    pub(crate) fn network_login_request(
+        &self,
+        event: &ExplorerEvent,
+    ) -> Option<NetworkLoginRequest> {
+        let (location, retry) = match event {
+            ExplorerEvent::ChildContainersFinished {
+                context,
+                segment_id,
+                menu_generation,
+                outcome:
+                    explorer_model::BreadcrumbTerminal::Failed(error)
+                    | explorer_model::BreadcrumbTerminal::Partial(error),
+            } => {
+                if error.kind != explorer_common::ExplorerErrorKind::Authorization {
+                    return None;
+                }
+                let location =
+                    self.navigation_request_location(context, *segment_id, *menu_generation)?;
+                (
+                    location.clone(),
+                    NetworkLoginRetry::NavigationNode(location),
+                )
+            }
+            ExplorerEvent::Failed { context, error } => {
+                if context.tab_id != self.tabs.active_tab_id()
+                    || error.kind != explorer_common::ExplorerErrorKind::Authorization
+                {
+                    return None;
+                }
+                let (request_id, location) = self.navigation_targets.get(&context.tab_id)?;
+                if *request_id != context.request_id {
+                    return None;
+                }
+                (
+                    location.clone(),
+                    NetworkLoginRetry::ActiveLocation(location.clone()),
+                )
+            }
+            _ => return None,
+        };
+        let (host, remote) = network_login_remote(&location)?;
+        Some(NetworkLoginRequest {
+            host,
+            remote,
+            retry,
+        })
+    }
+
+    /// Re-enumerates a navigation node after authentication succeeded.
+    pub(crate) fn retry_navigation_node(
+        &mut self,
+        location: LocationDescriptor,
+    ) -> Option<ExplorerCommand> {
+        let tab_id = self.tabs.active_tab_id();
+        self.invalidate_navigation_node(tab_id, &location);
+        self.begin_navigation_node_request_for_tab(tab_id, location)
+    }
+
     pub(crate) fn toggle_navigation_node(&mut self, location: LocationDescriptor) -> bool {
         if location.synthetic_root() == Some(explorer_model::SyntheticRoot::Favorites) {
             self.favorites_nav_collapsed = !self.favorites_nav_collapsed;
             return self.favorites_nav_expanded();
+        }
+        if crate::navigation_pane::is_system_bookmarks_location(&location) {
+            self.system_bookmarks_nav_collapsed = !self.system_bookmarks_nav_collapsed;
+            return !self.system_bookmarks_nav_collapsed;
         }
         let tab_id = self.tabs.active_tab_id();
         let tree = self.navigation_trees.entry(tab_id).or_default();
@@ -1704,6 +1830,12 @@ impl AppViewState {
                     request.cancellation.cancel();
                 }
                 node.loading = false;
+                if node.error.is_some() {
+                    // A failed node is advertised as "expand to retry"; reset it so re-expanding
+                    // requests enumeration again instead of returning the cached failure.
+                    node.loaded = false;
+                    node.error = None;
+                }
             }
             false
         } else {
@@ -2111,11 +2243,24 @@ impl AppViewState {
     }
 
     pub const fn current_theme(&self) -> ThemeMode {
-        self.current_color_theme.appearance()
+        self.current_color_theme
+            .appearance_with_windows(self.windows_dark)
     }
 
     pub const fn current_color_theme(&self) -> ColorTheme {
         self.current_color_theme
+    }
+
+    pub const fn windows_dark(&self) -> bool {
+        self.windows_dark
+    }
+
+    pub(crate) fn set_windows_dark(&mut self, windows_dark: bool) -> bool {
+        if self.windows_dark == windows_dark {
+            return false;
+        }
+        self.windows_dark = windows_dark;
+        true
     }
 
     /// Active catalog locale used at render time.
@@ -2680,15 +2825,30 @@ impl AppViewState {
             self.details_column_menu = None;
             self.details_filter_menu = None;
             self.more_menu_index = 0;
+            self.more_theme_submenu_open = false;
             self.sort_menu_open = false;
             self.close_view_menu();
             self.extensions_menu_open = false;
             self.new_menu_open = false;
+        } else {
+            self.more_theme_submenu_open = false;
         }
     }
 
     pub(crate) fn close_more_menu(&mut self) {
         self.more_menu_open = false;
+        self.more_theme_submenu_open = false;
+    }
+
+    pub const fn more_theme_submenu_open(&self) -> bool {
+        self.more_theme_submenu_open
+    }
+
+    pub(crate) fn toggle_more_theme_submenu(&mut self) {
+        if !self.more_menu_open {
+            return;
+        }
+        self.more_theme_submenu_open = !self.more_theme_submenu_open;
     }
 
     pub const fn transfer_panel_open(&self) -> bool {
@@ -2761,6 +2921,7 @@ impl AppViewState {
             return false;
         }
         self.more_menu_index = index;
+        self.more_theme_submenu_open = index == 8;
         true
     }
 
@@ -3174,28 +3335,46 @@ impl AppViewState {
         }
         if !self.view_menu_open {
             self.view_show_submenu_open = false;
+            self.view_theme_submenu_open = false;
         }
     }
 
     pub(crate) fn close_view_menu(&mut self) {
         self.view_menu_open = false;
         self.view_show_submenu_open = false;
+        self.view_theme_submenu_open = false;
     }
 
     pub(crate) fn move_view_menu_focus(&mut self, direction: i8) {
-        self.view_menu_index = move_bounded_menu_index(self.view_menu_index, direction, 11);
+        self.view_menu_index = move_bounded_menu_index(self.view_menu_index, direction, 12);
     }
 
     pub(crate) fn set_view_menu_focus(&mut self, index: usize) -> bool {
-        if !self.view_menu_open || index > 11 || self.view_menu_index == index {
+        if !self.view_menu_open || index > 12 || self.view_menu_index == index {
             return false;
         }
         self.view_menu_index = index;
+        self.view_theme_submenu_open = index == 10;
+        self.view_show_submenu_open = index == 11;
         true
     }
 
     pub(crate) fn toggle_view_show_submenu(&mut self) {
         self.view_show_submenu_open = !self.view_show_submenu_open;
+        if self.view_show_submenu_open {
+            self.view_theme_submenu_open = false;
+        }
+    }
+
+    pub const fn view_theme_submenu_open(&self) -> bool {
+        self.view_theme_submenu_open
+    }
+
+    pub(crate) fn toggle_view_theme_submenu(&mut self) {
+        self.view_theme_submenu_open = !self.view_theme_submenu_open;
+        if self.view_theme_submenu_open {
+            self.view_show_submenu_open = false;
+        }
     }
 
     pub(crate) fn set_view_mode(&mut self, mode: explorer_model::ViewMode) {
@@ -4047,12 +4226,31 @@ impl AppViewState {
         }
     }
 
-    pub(crate) fn lua_bookmark_id_for_row(
+    pub(crate) fn bookmark_id_for_row(
         &self,
         row_index: usize,
     ) -> Option<explorer_model::BookmarkId> {
-        self.presentation_entry(row_index)
-            .and_then(|entry| entry.location.lua_bookmark_id())
+        let entry = self.presentation_entry(row_index)?;
+        if let Some(id) = entry.location.lua_bookmark_id() {
+            return Some(id);
+        }
+        let bytes: [u8; 16] = entry.id.provider_bytes().try_into().ok()?;
+        let id = explorer_model::BookmarkId::from_bytes(bytes);
+        self.bookmarks
+            .entries()
+            .iter()
+            .any(|bookmark| bookmark.id == id)
+            .then_some(id)
+    }
+
+    pub(crate) fn first_selected_entry(&self) -> Option<explorer_model::FileEntry> {
+        let tab = self.tabs.active_tab();
+        let snapshot = tab.visible_snapshot()?;
+        snapshot
+            .entries()
+            .iter()
+            .find(|entry| tab.selection.contains(&entry.id))
+            .cloned()
     }
 
     fn favorites_parent_location(
@@ -7339,13 +7537,16 @@ impl AppViewState {
     }
 
     /// A completed Shell mutation refreshes the active view even when the filesystem watcher is
-    /// delayed. Matching the generation prevents a duplicate refresh after watcher convergence.
+    /// delayed. A watcher-driven refresh can advance the tab generation while the mutation is still
+    /// in flight, so the successful terminal must not be skipped on a generation mismatch: that
+    /// would leave the deleted row visible until a manual refresh. Duplicate terminals are already
+    /// rejected upstream once the operation record is terminal.
     pub(crate) fn service_event_requires_active_refresh(&self, event: &ExplorerEvent) -> bool {
         let Some(context) = event.context() else {
             return false;
         };
         let tab = self.tabs.active_tab();
-        if tab.id != context.tab_id || tab.generation != context.generation {
+        if tab.id != context.tab_id {
             return false;
         }
         match event {
@@ -7356,9 +7557,9 @@ impl AppViewState {
                 ) && self.operation_center.get(context.request_id).is_some()
             }
             ExplorerEvent::ContextMenuFinished {
+                context,
                 outcome: explorer_model::ContextMenuOutcome::Invoked { .. },
-                ..
-            } => true,
+            } => tab.generation == context.generation,
             _ => false,
         }
     }
@@ -7957,9 +8158,10 @@ mod tests {
 
     use super::{
         AppViewState, BookmarkDropCue, BookmarkInsertEdge, CommandKind, DirectoryCacheKey,
-        DirectorySnapshotCache, FolderOptionsApplyResultV1, bookmark_reorder_destination,
-        bookmark_target_for_current_location, resolve_bookmark_insert_edge,
-        resolve_details_column_insertion, unique_remote_folder_symlink_name,
+        DirectorySnapshotCache, FolderOptionsApplyResultV1, NetworkLoginRetry,
+        bookmark_reorder_destination, bookmark_target_for_current_location,
+        resolve_bookmark_insert_edge, resolve_details_column_insertion,
+        unique_remote_folder_symlink_name,
     };
 
     #[test]
@@ -8082,6 +8284,16 @@ mod tests {
         assert_eq!(Catalog::new(AppLocale::ZhTw).t("settings-language"), "語言");
         assert_eq!(Catalog::new(AppLocale::En).t("settings-theme"), "Theme");
         assert_eq!(Catalog::new(AppLocale::ZhTw).t("settings-theme"), "主題");
+        assert_eq!(
+            Catalog::new(AppLocale::En).t("settings-theme-follow-windows"),
+            "Follow Windows"
+        );
+        assert_eq!(
+            Catalog::new(AppLocale::ZhTw).t("settings-theme-follow-windows"),
+            "跟隨 Windows"
+        );
+        assert_eq!(Catalog::new(AppLocale::En).t("menu-theme"), "Theme");
+        assert_eq!(Catalog::new(AppLocale::ZhTw).t("menu-theme"), "主題");
         assert_eq!(
             Catalog::new(AppLocale::En).t("settings-theme-one-dark"),
             "One Dark"
@@ -9114,9 +9326,7 @@ mod tests {
         assert!(state.add_bookmark_folder("Work".into(), None).changed());
         let folder_id = state.bookmarks().folders()[0].id;
         let inside = *c;
-        assert!(
-            state.update_bookmark_drop_cue(Some(BookmarkDropCue::IntoFolder { folder_id }))
-        );
+        assert!(state.update_bookmark_drop_cue(Some(BookmarkDropCue::IntoFolder { folder_id })));
         assert!(state.commit_bookmark_drop(inside).changed());
         assert_eq!(
             state
@@ -9132,13 +9342,13 @@ mod tests {
             .map(|item| item.name.as_str())
             .collect::<Vec<_>>();
         assert_eq!(root_after, ["B", "A"]);
-        assert!(state.update_bookmark_drop_cue(Some(
-            BookmarkDropCue::FolderMenuInsert {
+        assert!(
+            state.update_bookmark_drop_cue(Some(BookmarkDropCue::FolderMenuInsert {
                 folder_id,
                 target_id: inside,
                 before: true,
-            }
-        )));
+            }))
+        );
         let dragged = state
             .bookmarks()
             .root_entries()
@@ -9875,7 +10085,7 @@ mod tests {
     }
 
     #[test]
-    fn successful_shell_mutation_requests_one_generation_safe_refresh() {
+    fn successful_shell_mutation_requests_a_post_mutation_refresh() {
         let mut state = state_with_rows();
         let request = state.create_folder_request().expect("writable fixture");
         let command = state.begin_file_operation(request);
@@ -9898,8 +10108,34 @@ mod tests {
             explorer_model::ExplorerCommand::Refresh { .. }
         ));
         assert!(
-            !state.service_event_requires_active_refresh(&event),
-            "the old operation generation cannot schedule a duplicate refresh"
+            state.service_event_requires_active_refresh(&event),
+            "a successful mutation keeps requiring a refresh even after the generation advanced"
+        );
+    }
+
+    #[test]
+    fn successful_mutation_refreshes_when_the_watcher_advanced_generation_first() {
+        let mut state = state_with_rows();
+        let request = state.create_folder_request().expect("writable fixture");
+        let command = state.begin_file_operation(request);
+        let operation_context = command.context().expect("operation context").clone();
+
+        // A watcher-driven refresh lands while the mutation is still in flight.
+        let _ = state
+            .begin_refresh_navigation()
+            .expect("watcher refresh advances the generation");
+
+        let event = explorer_model::ExplorerEvent::OperationFinished {
+            context: operation_context,
+            outcome: explorer_model::OperationTerminal::Finished,
+        };
+        assert!(
+            state.service_event_requires_active_refresh(&event),
+            "the post-mutation refresh must not be skipped after watcher generation drift"
+        );
+        assert_eq!(
+            state.apply_service_event(event),
+            explorer_model::WindowEventOutcome::Applied
         );
     }
 
@@ -12671,12 +12907,12 @@ mod tests {
     #[test]
     fn folder_options_theme_applies_zed_palette_and_keeps_windows_toggle() {
         let mut state = AppViewState::default();
-        assert_eq!(state.current_color_theme(), ColorTheme::WindowsLight);
+        assert_eq!(state.current_color_theme(), ColorTheme::FollowWindows);
         assert_eq!(state.current_theme(), ThemeMode::Light);
         state.open_folder_options();
         state.set_folder_options_page(crate::actions::FolderOptionsPage::Theme);
         state.set_folder_option_theme(ColorTheme::OneDark);
-        assert_eq!(state.current_color_theme(), ColorTheme::WindowsLight);
+        assert_eq!(state.current_color_theme(), ColorTheme::FollowWindows);
         assert_eq!(
             state.apply_folder_options(),
             FolderOptionsApplyResultV1::Applied { revision: 1 }
@@ -12686,6 +12922,33 @@ mod tests {
         state.set_theme(ThemeMode::Light);
         assert_eq!(state.current_color_theme(), ColorTheme::WindowsLight);
         assert_eq!(state.current_theme(), ThemeMode::Light);
+    }
+
+    #[test]
+    fn follow_windows_theme_tracks_system_appearance() {
+        let mut state = AppViewState::default();
+        assert_eq!(state.current_color_theme(), ColorTheme::FollowWindows);
+        assert_eq!(state.current_theme(), ThemeMode::Light);
+        assert!(state.set_windows_dark(true));
+        assert_eq!(state.current_theme(), ThemeMode::Dark);
+        assert!(!state.set_windows_dark(true));
+        state.set_color_theme(ColorTheme::OneLight);
+        assert!(state.set_windows_dark(false));
+        assert_eq!(state.current_theme(), ThemeMode::Light);
+        state.set_windows_dark(true);
+        assert_eq!(state.current_theme(), ThemeMode::Light);
+    }
+
+    #[test]
+    fn view_menu_theme_applies_immediately() {
+        let mut state = AppViewState::default();
+        state.toggle_view_menu();
+        state.toggle_view_theme_submenu();
+        assert!(state.view_theme_submenu_open());
+        assert!(!state.view_show_submenu_open());
+        state.set_color_theme(ColorTheme::GruvboxDark);
+        assert_eq!(state.current_color_theme(), ColorTheme::GruvboxDark);
+        assert_eq!(state.current_theme(), ThemeMode::Dark);
     }
 
     #[test]
@@ -13209,6 +13472,19 @@ mod tests {
     }
 
     #[test]
+    fn more_menu_theme_submenu_applies_immediately() {
+        let mut state = AppViewState::default();
+        state.toggle_more_menu();
+        state.toggle_more_theme_submenu();
+        assert!(state.more_theme_submenu_open());
+        state.set_color_theme(ColorTheme::AyuDark);
+        state.close_more_menu();
+        assert!(!state.more_menu_open());
+        assert!(!state.more_theme_submenu_open());
+        assert_eq!(state.current_color_theme(), ColorTheme::AyuDark);
+    }
+
+    #[test]
     fn more_menu_keyboard_focus_covers_all_commands() {
         let mut state = AppViewState::default();
         state.toggle_more_menu();
@@ -13233,7 +13509,7 @@ mod tests {
         state.toggle_view_menu();
         assert!(state.set_view_menu_focus(9));
         assert_eq!(state.view_menu_index(), 9);
-        assert!(!state.set_view_menu_focus(12));
+        assert!(!state.set_view_menu_focus(13));
 
         state.toggle_more_menu();
         assert!(state.set_more_menu_focus(10));
@@ -13349,6 +13625,18 @@ mod tests {
         assert!(state.bookmark_folder_menu().is_none());
         assert!(!state.toggle_navigation_node(root));
         assert!(!state.favorites_nav_expanded());
+    }
+
+    #[test]
+    fn system_bookmarks_parent_defaults_expanded_and_toggles_without_shell_enumeration() {
+        let mut state = AppViewState::default();
+        let root = crate::navigation_pane::system_bookmarks_location();
+        assert!(state.navigation_node_expanded(&root));
+        assert!(!state.toggle_navigation_node(root.clone()));
+        assert!(!state.navigation_node_expanded(&root));
+        assert!(state.toggle_navigation_node(root.clone()));
+        assert!(state.navigation_node_expanded(&root));
+        assert!(state.begin_navigation_node_request(root).is_none());
     }
 
     #[test]
@@ -13701,6 +13989,131 @@ mod tests {
             &commands[0],
             explorer_model::ExplorerCommand::EnumerateChildContainers { parent: refreshed, .. }
                 if refreshed == &parent
+        ));
+    }
+
+    #[test]
+    fn network_login_request_targets_unc_navigation_node_authorization_failures() {
+        let mut state = AppViewState::default();
+        let host = explorer_model::LocationDescriptor::file_system(r"\\192.168.1.102\");
+        assert!(state.toggle_navigation_node(host.clone()));
+        let command = state
+            .begin_navigation_node_request(host.clone())
+            .expect("expanded host request");
+        let explorer_model::ExplorerCommand::EnumerateChildContainers {
+            context,
+            segment_id,
+            menu_generation,
+            ..
+        } = command
+        else {
+            panic!("navigation request");
+        };
+        let denied = || {
+            explorer_common::ExplorerError::new(
+                explorer_common::ExplorerErrorKind::Authorization,
+                "enumerate child containers",
+                true,
+                "您沒有存取這個位置的權限。",
+                "E_ACCESSDENIED",
+            )
+        };
+        let event = explorer_model::ExplorerEvent::ChildContainersFinished {
+            context: context.clone(),
+            segment_id,
+            menu_generation,
+            outcome: explorer_model::BreadcrumbTerminal::Failed(denied()),
+        };
+        let request = state.network_login_request(&event).expect("login request");
+        assert_eq!(request.host, "192.168.1.102");
+        assert_eq!(request.remote, r"\\192.168.1.102");
+        assert!(matches!(
+            request.retry,
+            NetworkLoginRetry::NavigationNode(ref location) if location == &host
+        ));
+
+        let offline = explorer_model::ExplorerEvent::ChildContainersFinished {
+            context,
+            segment_id,
+            menu_generation,
+            outcome: explorer_model::BreadcrumbTerminal::Failed(
+                explorer_common::ExplorerError::new(
+                    explorer_common::ExplorerErrorKind::Availability,
+                    "enumerate child containers",
+                    true,
+                    "Windows 無法讀取這個位置。",
+                    "host offline",
+                ),
+            ),
+        };
+        assert!(state.network_login_request(&offline).is_none());
+    }
+
+    #[test]
+    fn network_login_request_skips_local_and_wsl_locations() {
+        for location in [
+            explorer_model::LocationDescriptor::file_system(r"C:\fixture"),
+            explorer_model::LocationDescriptor::file_system(r"\\wsl.localhost\Ubuntu\home"),
+        ] {
+            let mut state = AppViewState::default();
+            assert!(state.toggle_navigation_node(location.clone()));
+            let command = state
+                .begin_navigation_node_request(location.clone())
+                .expect("expanded node request");
+            let explorer_model::ExplorerCommand::EnumerateChildContainers {
+                context,
+                segment_id,
+                menu_generation,
+                ..
+            } = command
+            else {
+                panic!("navigation request");
+            };
+            let event = explorer_model::ExplorerEvent::ChildContainersFinished {
+                context,
+                segment_id,
+                menu_generation,
+                outcome: explorer_model::BreadcrumbTerminal::Failed(
+                    explorer_common::ExplorerError::new(
+                        explorer_common::ExplorerErrorKind::Authorization,
+                        "enumerate child containers",
+                        true,
+                        "denied",
+                        "E_ACCESSDENIED",
+                    ),
+                ),
+            };
+            assert!(
+                state.network_login_request(&event).is_none(),
+                "location {location:?} must not prompt for credentials"
+            );
+        }
+    }
+
+    #[test]
+    fn network_login_request_recovers_the_failed_active_navigation_target() {
+        let mut state = AppViewState::default();
+        let tab = state.tabs.active_tab();
+        let (tab_id, generation) = (tab.id, tab.generation);
+        let target = explorer_model::LocationDescriptor::file_system(r"\\server\share\folder");
+        let context = explorer_model::RequestContext::new(tab_id, generation);
+        state.set_navigation_target(tab_id, context.request_id, target.clone());
+        let event = explorer_model::ExplorerEvent::Failed {
+            context,
+            error: explorer_common::ExplorerError::new(
+                explorer_common::ExplorerErrorKind::Authorization,
+                "resolve location",
+                true,
+                "denied",
+                "E_ACCESSDENIED",
+            ),
+        };
+        let request = state.network_login_request(&event).expect("login request");
+        assert_eq!(request.host, "server");
+        assert_eq!(request.remote, r"\\server\share");
+        assert!(matches!(
+            request.retry,
+            NetworkLoginRetry::ActiveLocation(ref location) if location == &target
         ));
     }
 

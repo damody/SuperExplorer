@@ -91,6 +91,20 @@ pub struct NetworkNavigationPlace {
 
 pub use explorer_model::LINUX_NAMESPACE;
 
+pub const SYSTEM_BOOKMARKS_ID: &str = "system-bookmarks";
+pub const SYSTEM_BOOKMARKS_PARSING_NAME: &str = "super-explorer:system-bookmarks";
+
+pub fn system_bookmarks_location() -> LocationDescriptor {
+    LocationDescriptor::ParsingName(SYSTEM_BOOKMARKS_PARSING_NAME.to_owned())
+}
+
+pub fn is_system_bookmarks_location(location: &LocationDescriptor) -> bool {
+    matches!(
+        location,
+        LocationDescriptor::ParsingName(name) if name == SYSTEM_BOOKMARKS_PARSING_NAME
+    )
+}
+
 static ADB_NAVIGATION_DEVICES: OnceLock<RwLock<Vec<AdbNavigationDevice>>> = OnceLock::new();
 static SFTP_NAVIGATION_PROFILES: OnceLock<RwLock<Vec<SftpNavigationProfile>>> = OnceLock::new();
 static FTP_NAVIGATION_PROFILES: OnceLock<RwLock<Vec<FtpNavigationProfile>>> = OnceLock::new();
@@ -578,6 +592,14 @@ pub fn windows_navigation_items_with_pins(
         ));
     }
     items.push(NavigationItem::separator("favorites-separator"));
+    items.push(NavigationItem::location(
+        SYSTEM_BOOKMARKS_ID,
+        catalog.t("nav-system-bookmarks"),
+        NavigationIcon::Folder,
+        system_bookmarks_location(),
+        0,
+        false,
+    ));
 
     let mut pinned_locations = pins
         .into_iter()
@@ -1047,6 +1069,26 @@ mod tests {
                 .find(|item| item.id == "quick-access")
                 .map(|item| item.availability),
             Some(NavigationItemAvailability::Available)
+        );
+        let system = pinned
+            .iter()
+            .find(|item| item.id == SYSTEM_BOOKMARKS_ID)
+            .expect("system bookmarks parent");
+        assert_eq!(system.location, Some(system_bookmarks_location()));
+        assert_eq!(system.depth, 0);
+        let pin = pinned
+            .iter()
+            .find(|item| item.id == "quick-access-pin-0")
+            .expect("imported explorer pin");
+        assert_eq!(pin.depth, 1);
+        assert!(pin.pinned);
+        assert!(
+            pinned
+                .iter()
+                .position(|item| item.id == SYSTEM_BOOKMARKS_ID)
+                < pinned
+                    .iter()
+                    .position(|item| item.id == "quick-access-pin-0")
         );
     }
 

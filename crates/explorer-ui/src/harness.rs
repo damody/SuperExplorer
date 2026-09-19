@@ -30,7 +30,10 @@ impl UiTestHarness {
 
     pub fn dispatch(&mut self, action: ExplorerAction, source: ActionSource) -> ActionTrace {
         let trace = dispatch_action(&mut self.state, action, source);
-        self.tokens.theme = self.state.current_color_theme().tokens();
+        self.tokens.theme = self
+            .state
+            .current_color_theme()
+            .tokens_with_windows(self.state.windows_dark());
         self.traces.push(trace);
         trace
     }

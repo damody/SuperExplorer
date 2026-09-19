@@ -524,6 +524,7 @@ pub enum ExplorerAction {
     SetMoreMenuFocus {
         index: usize,
     },
+    ToggleMoreThemeSubmenu,
     ToggleExtensionsMenu,
     CloseExtensionsMenu,
     RefreshTortoiseGitStatus,
@@ -536,6 +537,8 @@ pub enum ExplorerAction {
         index: usize,
     },
     ToggleViewShowSubmenu,
+    ToggleViewThemeSubmenu,
+    SetColorTheme(crate::theme::ColorTheme),
     SetViewMode(explorer_model::ViewMode),
     SetExtensionView {
         view_id: String,
@@ -862,6 +865,7 @@ impl ExplorerAction {
             Self::CloseTransferPanel => "CloseTransferPanel",
             Self::MoveMoreMenuFocus { .. } => "MoveMoreMenuFocus",
             Self::SetMoreMenuFocus { .. } => "SetMoreMenuFocus",
+            Self::ToggleMoreThemeSubmenu => "ToggleMoreThemeSubmenu",
             Self::ToggleExtensionsMenu => "ToggleExtensionsMenu",
             Self::CloseExtensionsMenu => "CloseExtensionsMenu",
             Self::RefreshTortoiseGitStatus => "RefreshTortoiseGitStatus",
@@ -870,6 +874,8 @@ impl ExplorerAction {
             Self::MoveViewMenuFocus { .. } => "MoveViewMenuFocus",
             Self::SetViewMenuFocus { .. } => "SetViewMenuFocus",
             Self::ToggleViewShowSubmenu => "ToggleViewShowSubmenu",
+            Self::ToggleViewThemeSubmenu => "ToggleViewThemeSubmenu",
+            Self::SetColorTheme(_) => "SetColorTheme",
             Self::SetViewMode(_) => "SetViewMode",
             Self::SetExtensionView { .. } => "SetExtensionView",
             Self::ZoomView { .. } => "ZoomView",
@@ -1216,6 +1222,8 @@ pub fn dispatch_action(
             | ExplorerAction::MoveViewMenuFocus { .. }
             | ExplorerAction::SetViewMenuFocus { .. }
             | ExplorerAction::ToggleViewShowSubmenu
+            | ExplorerAction::ToggleViewThemeSubmenu
+            | ExplorerAction::SetColorTheme(_)
             | ExplorerAction::SetViewMode(_)
             | ExplorerAction::SetExtensionView { .. }
             | ExplorerAction::ZoomView { .. }
@@ -1223,6 +1231,7 @@ pub fn dispatch_action(
             | ExplorerAction::CloseMoreMenu
             | ExplorerAction::MoveMoreMenuFocus { .. }
             | ExplorerAction::SetMoreMenuFocus { .. }
+            | ExplorerAction::ToggleMoreThemeSubmenu
             | ExplorerAction::ToggleExtensionsMenu
             | ExplorerAction::CloseExtensionsMenu
             | ExplorerAction::OpenNavigationHistory { .. }
@@ -1235,6 +1244,8 @@ pub fn dispatch_action(
         ExplorerAction::ToggleMoreMenu
             | ExplorerAction::MoveMoreMenuFocus { .. }
             | ExplorerAction::SetMoreMenuFocus { .. }
+            | ExplorerAction::ToggleMoreThemeSubmenu
+            | ExplorerAction::SetColorTheme(_)
     );
     let preserve_new_menu = matches!(
         &action,
@@ -1252,6 +1263,8 @@ pub fn dispatch_action(
             | ExplorerAction::MoveViewMenuFocus { .. }
             | ExplorerAction::SetViewMenuFocus { .. }
             | ExplorerAction::ToggleViewShowSubmenu
+            | ExplorerAction::ToggleViewThemeSubmenu
+            | ExplorerAction::SetColorTheme(_)
     );
     let preserve_extensions_menu = matches!(
         &action,
@@ -1572,6 +1585,7 @@ fn action_available(state: &AppViewState, action: &ExplorerAction) -> bool {
         | ExplorerAction::CloseTransferPanel
         | ExplorerAction::MoveMoreMenuFocus { .. }
         | ExplorerAction::SetMoreMenuFocus { .. }
+        | ExplorerAction::ToggleMoreThemeSubmenu
         | ExplorerAction::ToggleExtensionsMenu
         | ExplorerAction::CloseExtensionsMenu
         | ExplorerAction::ToggleViewMenu
@@ -1579,6 +1593,8 @@ fn action_available(state: &AppViewState, action: &ExplorerAction) -> bool {
         | ExplorerAction::MoveViewMenuFocus { .. }
         | ExplorerAction::SetViewMenuFocus { .. }
         | ExplorerAction::ToggleViewShowSubmenu
+        | ExplorerAction::ToggleViewThemeSubmenu
+        | ExplorerAction::SetColorTheme(_)
         | ExplorerAction::SetViewMode(_)
         | ExplorerAction::SetExtensionView { .. }
         | ExplorerAction::ZoomView { .. }
@@ -2157,6 +2173,10 @@ fn apply_action(state: &mut AppViewState, action: ExplorerAction) -> FocusSurfac
             state.close_transfer_panel();
             FocusSurface::CommandBar
         }
+        ExplorerAction::ToggleMoreThemeSubmenu => {
+            state.toggle_more_theme_submenu();
+            FocusSurface::CommandBar
+        }
         ExplorerAction::MoveMoreMenuFocus { direction } => {
             state.move_more_menu_focus(direction);
             FocusSurface::CommandBar
@@ -2432,6 +2452,15 @@ fn apply_action(state: &mut AppViewState, action: ExplorerAction) -> FocusSurfac
         }
         ExplorerAction::ToggleViewShowSubmenu => {
             state.toggle_view_show_submenu();
+            FocusSurface::CommandBar
+        }
+        ExplorerAction::ToggleViewThemeSubmenu => {
+            state.toggle_view_theme_submenu();
+            FocusSurface::CommandBar
+        }
+        ExplorerAction::SetColorTheme(theme) => {
+            state.set_color_theme(theme);
+            state.set_folder_option_theme(theme);
             FocusSurface::CommandBar
         }
         ExplorerAction::SetViewMode(mode) => {
@@ -3049,6 +3078,82 @@ mod tests {
             ActionSource::Keyboard,
         );
         assert!(!state.more_menu_open());
+    }
+
+    #[test]
+    fn choosing_a_theme_keeps_the_more_theme_submenu_open_for_another_pick() {
+        let mut state = AppViewState::default();
+        dispatch_action(
+            &mut state,
+            ExplorerAction::ToggleMoreMenu,
+            ActionSource::Mouse,
+        );
+        dispatch_action(
+            &mut state,
+            ExplorerAction::ToggleMoreThemeSubmenu,
+            ActionSource::Mouse,
+        );
+        assert!(state.more_menu_open());
+        assert!(state.more_theme_submenu_open());
+
+        dispatch_action(
+            &mut state,
+            ExplorerAction::SetColorTheme(crate::theme::ColorTheme::AyuDark),
+            ActionSource::Mouse,
+        );
+        assert_eq!(
+            state.current_color_theme(),
+            crate::theme::ColorTheme::AyuDark
+        );
+        assert!(
+            state.more_menu_open(),
+            "theme picker must stay open after applying a theme"
+        );
+        assert!(
+            state.more_theme_submenu_open(),
+            "theme submenu must stay open so another palette can be compared"
+        );
+
+        dispatch_action(
+            &mut state,
+            ExplorerAction::SetColorTheme(crate::theme::ColorTheme::OneLight),
+            ActionSource::Mouse,
+        );
+        assert_eq!(
+            state.current_color_theme(),
+            crate::theme::ColorTheme::OneLight
+        );
+        assert!(state.more_menu_open());
+        assert!(state.more_theme_submenu_open());
+    }
+
+    #[test]
+    fn choosing_a_theme_keeps_the_view_theme_submenu_open_for_another_pick() {
+        let mut state = AppViewState::default();
+        dispatch_action(
+            &mut state,
+            ExplorerAction::ToggleViewMenu,
+            ActionSource::Mouse,
+        );
+        dispatch_action(
+            &mut state,
+            ExplorerAction::ToggleViewThemeSubmenu,
+            ActionSource::Mouse,
+        );
+        assert!(state.view_menu_open());
+        assert!(state.view_theme_submenu_open());
+
+        dispatch_action(
+            &mut state,
+            ExplorerAction::SetColorTheme(crate::theme::ColorTheme::GruvboxDark),
+            ActionSource::Mouse,
+        );
+        assert_eq!(
+            state.current_color_theme(),
+            crate::theme::ColorTheme::GruvboxDark
+        );
+        assert!(state.view_menu_open());
+        assert!(state.view_theme_submenu_open());
     }
 
     #[test]

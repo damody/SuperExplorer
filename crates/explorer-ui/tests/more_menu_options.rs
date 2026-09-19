@@ -9,7 +9,7 @@ fn more_menu_matches_explorer_order_and_button_relative_anchor() {
         "more-select-all",
         "more-select-none",
         "more-invert-selection",
-        "more-properties",
+        "more-theme",
         "more-options",
     ];
     let mut previous = 0;
@@ -20,9 +20,62 @@ fn more_menu_matches_explorer_order_and_button_relative_anchor() {
         assert!(position > previous, "More command order changed at {id}");
         previous = position;
     }
+    assert!(chrome.contains("more-theme"));
+    assert!(chrome.contains("more-theme-menu"));
     assert!(chrome.contains(".top(px(tokens.layout.minimum_hit_target.value()))"));
     assert!(chrome.contains(".right_0()"));
     assert!(chrome.contains(".with_priority(140)"));
+}
+
+#[test]
+fn more_theme_submenu_opens_to_the_right_of_the_more_menu() {
+    let chrome = include_str!("../src/chrome.rs");
+    let production = chrome
+        .split("#[cfg(test)]")
+        .next()
+        .expect("production source precedes tests");
+    let more_menu = production
+        .split("fn command_more_menu_v2(")
+        .nth(1)
+        .expect("missing command_more_menu_v2")
+        .split("\nfn ")
+        .next()
+        .expect("command_more_menu_v2 boundary");
+    assert!(
+        more_menu.contains(".w(px(tokens.layout.address_min_width.value()))"),
+        "more menu width must stay the commands column so opening Theme does not shift it left"
+    );
+    assert!(
+        !more_menu.contains(".flex_row()"),
+        "theme pane must not join the commands column in a growing flex row"
+    );
+    assert!(
+        more_menu.contains("more_theme_submenu("),
+        "more menu must host the theme pane as a sibling"
+    );
+    let local = production
+        .split("fn more_theme_submenu(")
+        .nth(1)
+        .expect("missing more_theme_submenu")
+        .split("\nfn ")
+        .next()
+        .expect("more_theme_submenu boundary");
+    assert!(
+        local.contains(".absolute()"),
+        "theme pane must overlay to the right without changing the more menu box"
+    );
+    assert!(
+        local.contains(".left(px(layout.address_min_width.value()))"),
+        "theme flyout must open to the right of the more menu"
+    );
+    assert!(
+        local.contains("more_theme_submenu_offset(layout)"),
+        "theme flyout must align with the Theme row, not the top of the more menu"
+    );
+    assert!(
+        !local.contains(".left(px(-layout.address_min_width.value()))"),
+        "theme flyout must not open to the left of the more menu"
+    );
 }
 
 #[test]
@@ -37,12 +90,13 @@ fn labeled_other_and_extensions_controls_keep_order_and_popup_contracts() {
         .expect("Extensions command");
     assert!(view < other && other < extensions);
     for contract in [
-        "其它",
-        "擴充功能",
+        "menu-other",
+        "menu-extensions",
         "command-extensions-popup",
         "extensions-refresh-tortoisegit",
-        "更新 TortoiseGit 狀態",
-        "沒有可用的擴充功能",
+        "menu-refresh-tortoisegit",
+        "menu-no-extensions",
+        "menu-theme",
     ] {
         assert!(
             chrome.contains(contract),

@@ -62,10 +62,11 @@ fn extension_display_name(catalog: Catalog, extension: &crate::state::ExtensionO
 }
 use explorer_model::{DirectoryState, TabId, TabSearchState};
 use gpui::{
-    AccessibleAction, Anchor, AnchoredPositionMode, App, BoxShadow, Context, DispatchPhase,
-    Focusable, FontWeight, IntoElement, MouseButton, MouseMoveEvent, MouseUpEvent, ObjectFit,
-    Render, RenderImage, RenderOnce, Role, SharedString, Window, WindowControlArea, anchored,
-    canvas, deferred, div, hsla, img, point, prelude::*, px, relative, svg,
+    AccessibleAction, Anchor, AnchoredPositionMode, App, Background, BoxShadow, Context,
+    DispatchPhase, Focusable, FontWeight, IntoElement, MouseButton, MouseMoveEvent, MouseUpEvent,
+    ObjectFit, Render, RenderImage, RenderOnce, Role, SharedString, Window, WindowControlArea,
+    anchored, canvas, deferred, div, hsla, img, linear_color_stop, linear_gradient, point,
+    prelude::*, px, relative, svg,
 };
 use gpui_elements::editable_text::{EditableTextElement, EditableTextState, text_input};
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
@@ -316,6 +317,7 @@ pub const NEW_TAB_BUTTON_ID: &str = "new-tab-button";
 pub const CAPTION_MINIMIZE_ID: &str = "caption-minimize";
 pub const CAPTION_MAXIMIZE_ID: &str = "caption-maximize";
 pub const CAPTION_CLOSE_ID: &str = "caption-close";
+pub const TAB_STRIP_SCROLLBAR_ID: &str = "tab-strip-scrollbar";
 pub const COMMAND_BAR_ID: &str = "command-bar";
 pub const NAVIGATION_BAR_ID: &str = "navigation-bar";
 pub const ADDRESS_EDITOR_ID: &str = "breadcrumb-address-editor";
@@ -390,7 +392,39 @@ pub(crate) fn explorer_file_viewport_width(
 }
 
 pub(crate) fn explorer_file_origin_y(tokens: UiTokens) -> f32 {
+    explorer_file_origin_y_with_tab_overflow(tokens, 0.0)
+}
+
+pub(crate) fn tab_strip_scrollbar_track_height(tokens: UiTokens) -> f32 {
+    tokens.layout.content_spacing.value() * 1.5
+}
+
+pub(crate) fn tab_strip_overflow_epsilon(tokens: UiTokens) -> f32 {
+    tokens.layout.control_padding_horizontal.value() * 2.0
+        + tokens.layout.content_spacing.value()
+        + 1.0
+}
+
+pub(crate) fn tab_strip_overflow_track_height(
+    handle: Option<&gpui::ScrollHandle>,
+    tokens: UiTokens,
+) -> f32 {
+    let Some(handle) = handle else {
+        return 0.0;
+    };
+    if f32::from(handle.max_offset().x) > tab_strip_overflow_epsilon(tokens) {
+        tab_strip_scrollbar_track_height(tokens)
+    } else {
+        0.0
+    }
+}
+
+pub(crate) fn explorer_file_origin_y_with_tab_overflow(
+    tokens: UiTokens,
+    tab_overflow_track: f32,
+) -> f32 {
     tokens.layout.title_tab_height.value()
+        + tab_overflow_track.max(0.0)
         + tokens.layout.address_bar_height.value()
         + BOOKMARK_BAR_HEIGHT
         + tokens.layout.command_bar_height.value()
@@ -418,6 +452,7 @@ pub struct ExplorerWindow {
     on_action: Option<ActionCallback>,
     navigation_scroll: Option<gpui::ScrollHandle>,
     file_scroll: Option<gpui::ScrollHandle>,
+    tab_scroll: Option<gpui::ScrollHandle>,
     address_input: Option<gpui::WeakEntity<EditableTextState>>,
     search_input: Option<gpui::WeakEntity<EditableTextState>>,
     rename_input: Option<gpui::WeakEntity<EditableTextState>>,
@@ -448,6 +483,7 @@ impl ExplorerWindow {
             on_action: None,
             navigation_scroll: None,
             file_scroll: None,
+            tab_scroll: None,
             address_input: None,
             search_input: None,
             rename_input: None,
@@ -486,6 +522,12 @@ impl ExplorerWindow {
     #[must_use]
     pub fn with_navigation_scroll(mut self, handle: gpui::ScrollHandle) -> Self {
         self.navigation_scroll = Some(handle);
+        self
+    }
+
+    #[must_use]
+    pub fn with_tab_scroll(mut self, handle: gpui::ScrollHandle) -> Self {
+        self.tab_scroll = Some(handle);
         self
     }
 
@@ -649,7 +691,10 @@ impl RenderOnce for ExplorerWindow {
         let file_viewport_width = explorer_file_viewport_width(window, &self.state, self.tokens);
         let file_origin_x =
             self.state.navigation_pane_width().value() + self.tokens.layout.divider_width.value();
-        let file_origin_y = explorer_file_origin_y(self.tokens);
+        let file_origin_y = explorer_file_origin_y_with_tab_overflow(
+            self.tokens,
+            tab_strip_overflow_track_height(self.tab_scroll.as_ref(), self.tokens),
+        );
         let scrollbar_capture_action = self.on_action.clone();
         let folder_size_backend_status = self.visual_column_runtime.as_ref().and_then(|runtime| {
             let (status, active) = runtime.backend_status();
@@ -680,7 +725,8 @@ impl RenderOnce for ExplorerWindow {
                     window_active,
                     self.on_action.clone(),
                 )
-                .with_shell_icons(tab_icons, self.shell_icon_dpi),
+                .with_shell_icons(tab_icons, self.shell_icon_dpi)
+                .with_tab_scroll(self.tab_scroll.clone()),
             )
             .child(NavigationBar::new(
                 self.tokens,
@@ -1059,6 +1105,7 @@ fn bookmark_bar(
                     );
                 })
                 .on_mouse_up(MouseButton::Right, |_, _, cx| cx.stop_propagation())
+                .on_mouse_up_out(MouseButton::Right, |_, _, cx| cx.stop_propagation())
         })
         .when_some(root_drop_cb, |element, cb| {
             element.on_drop(move |drag: &BookmarkDrag, window, cx| {
@@ -1205,6 +1252,7 @@ fn bookmark_bar(
                         })
                 })
                 .on_mouse_up(MouseButton::Right, |_, _, cx| cx.stop_propagation())
+                .on_mouse_up_out(MouseButton::Right, |_, _, cx| cx.stop_propagation())
         }))
         .children(visible.into_iter().map(|bookmark| {
             let id = bookmark.id;
@@ -1319,6 +1367,7 @@ fn bookmark_bar(
                     })
                 })
                 .on_mouse_up(MouseButton::Right, |_, _, cx| cx.stop_propagation())
+                .on_mouse_up_out(MouseButton::Right, |_, _, cx| cx.stop_propagation())
         }))
         .when(overflow > 0, |element| {
             let toggle = ExplorerAction::ToggleBookmarkOverflow;
@@ -1430,6 +1479,9 @@ fn bookmark_bar(
                                     )
                                 })
                                 .on_mouse_up(MouseButton::Right, |_, _, cx| cx.stop_propagation())
+                                .on_mouse_up_out(MouseButton::Right, |_, _, cx| {
+                                    cx.stop_propagation()
+                                })
                         })),
                 )
                 .with_priority(150),
@@ -1506,6 +1558,10 @@ fn bookmark_bar(
                                     .cursor_pointer()
                                     .px(px(8.0))
                                     .py(px(5.0))
+                                    .rounded(px(4.0))
+                                    .hover(|style| {
+                                        style.bg(tokens.theme.colors.control_hover.to_gpui())
+                                    })
                                     .flex()
                                     .justify_between()
                                     .when(nested_drop_active, |item| {
@@ -1530,6 +1586,9 @@ fn bookmark_bar(
                                         )
                                     })
                                     .on_mouse_up(MouseButton::Right, |_, _, cx| {
+                                        cx.stop_propagation()
+                                    })
+                                    .on_mouse_up_out(MouseButton::Right, |_, _, cx| {
                                         cx.stop_propagation()
                                     })
                                     .when_some(drop_callback, move |item, cb| {
@@ -1597,6 +1656,10 @@ fn bookmark_bar(
                                     .cursor_pointer()
                                     .px(px(8.0))
                                     .py(px(5.0))
+                                    .rounded(px(4.0))
+                                    .hover(|style| {
+                                        style.bg(tokens.theme.colors.control_hover.to_gpui())
+                                    })
                                     .on_drag(
                                         BookmarkDrag {
                                             id,
@@ -1685,6 +1748,9 @@ fn bookmark_bar(
                                         )
                                     })
                                     .on_mouse_up(MouseButton::Right, |_, _, cx| {
+                                        cx.stop_propagation()
+                                    })
+                                    .on_mouse_up_out(MouseButton::Right, |_, _, cx| {
                                         cx.stop_propagation()
                                     })
                                     .into_any_element()
@@ -1934,7 +2000,8 @@ pub(crate) fn bookmark_manager(
         }
         _ => presented_bookmarks
             .into_iter()
-            .map(|bookmark| {
+            .enumerate()
+            .map(|(row_index, bookmark)| {
                 let sibling_index = state
                     .bookmarks()
                     .child_entries(bookmark.parent_id)
@@ -2033,6 +2100,7 @@ pub(crate) fn bookmark_manager(
                         })
                     })
                     .on_mouse_up(MouseButton::Right, |_, _, cx| cx.stop_propagation())
+                    .on_mouse_up_out(MouseButton::Right, |_, _, cx| cx.stop_propagation())
                     .when_some(select_cb, move |element, cb| {
                         element.on_mouse_down(MouseButton::Left, move |_, window, cx| {
                             cb(&select, window, cx)
@@ -2041,6 +2109,9 @@ pub(crate) fn bookmark_manager(
                     .when(ui.columns.name, |row| {
                         row.child(
                             div()
+                                .debug_selector(move || {
+                                    format!("bookmark-manager-cell-Name-{row_index}")
+                                })
                                 .w(px(220.0))
                                 .flex_none()
                                 .min_w(px(0.0))
@@ -2050,15 +2121,22 @@ pub(crate) fn bookmark_manager(
                         )
                     })
                     .when(ui.columns.tags, |row| {
-                        row.child(bookmark_manager_list_column(bookmark.tags.clone(), false))
+                        row.child(bookmark_manager_list_column(
+                            bookmark.tags.clone(),
+                            false,
+                            move || format!("bookmark-manager-cell-Tags-{row_index}"),
+                        ))
                     })
                     .when(ui.columns.location, |row| {
-                        row.child(bookmark_manager_list_column(location, true))
+                        row.child(bookmark_manager_list_column(location, true, move || {
+                            format!("bookmark-manager-cell-Location-{row_index}")
+                        }))
                     })
                     .when(ui.columns.last_visited, |row| {
                         row.child(bookmark_manager_list_column(
                             format_bookmark_timestamp(bookmark.visited_epoch_seconds),
                             false,
+                            move || format!("bookmark-manager-cell-LastVisited-{row_index}"),
                         ))
                     })
                     .when(ui.columns.visit_count, |row| {
@@ -2069,18 +2147,21 @@ pub(crate) fn bookmark_manager(
                                 bookmark.visit_count.to_string()
                             },
                             false,
+                            move || format!("bookmark-manager-cell-VisitCount-{row_index}"),
                         ))
                     })
                     .when(ui.columns.date_added, |row| {
                         row.child(bookmark_manager_list_column(
                             format_bookmark_timestamp(bookmark.added_epoch_seconds),
                             false,
+                            move || format!("bookmark-manager-cell-DateAdded-{row_index}"),
                         ))
                     })
                     .when(ui.columns.date_modified, |row| {
                         row.child(bookmark_manager_list_column(
                             format_bookmark_timestamp(bookmark.modified_epoch_seconds),
                             false,
+                            move || format!("bookmark-manager-cell-DateModified-{row_index}"),
                         ))
                     })
                     .when_some(edit_cb, move |element, cb| {
@@ -2676,6 +2757,7 @@ pub(crate) fn bookmark_manager(
                                 .flex_none()
                                 .flex()
                                 .items_center()
+                                .px(px(8.0))
                                 .min_w(px(0.0))
                                 .overflow_hidden()
                                 .border_b(px(1.0))
@@ -2997,20 +3079,65 @@ fn bookmark_manager_history_visit_rows(
                     row.bg(tokens.theme.colors.file_row_selected_active.to_gpui())
                 })
                 .hover(|style| style.bg(tokens.theme.colors.control_hover.to_gpui()))
-                .child(bookmark_manager_list_column(
-                    visit.identity.display_name.clone(),
-                    false,
-                ))
+                .when(ui.columns.name, |row| {
+                    row.child(
+                        div()
+                            .debug_selector(move || format!("bookmark-history-cell-Name-{index}"))
+                            .w(px(220.0))
+                            .flex_none()
+                            .min_w(px(0.0))
+                            .overflow_hidden()
+                            .px(px(8.0))
+                            .child(
+                                div()
+                                    .min_w(px(0.0))
+                                    .overflow_hidden()
+                                    .whitespace_nowrap()
+                                    .text_ellipsis()
+                                    .child(visit.identity.display_name.clone()),
+                            ),
+                    )
+                })
+                .when(ui.columns.tags, |row| {
+                    row.child(bookmark_manager_list_column(
+                        String::new(),
+                        false,
+                        move || format!("bookmark-history-cell-Tags-{index}"),
+                    ))
+                })
                 .when(ui.columns.location, |row| {
                     row.child(bookmark_manager_list_column(
                         visit.identity.descriptor.editable_text(),
                         true,
+                        move || format!("bookmark-history-cell-Location-{index}"),
+                    ))
+                })
+                .when(ui.columns.last_visited, |row| {
+                    row.child(bookmark_manager_list_column(
+                        format_bookmark_timestamp(visit.last_opened_epoch_seconds),
+                        false,
+                        move || format!("bookmark-history-cell-LastVisited-{index}"),
+                    ))
+                })
+                .when(ui.columns.visit_count, |row| {
+                    row.child(bookmark_manager_list_column(
+                        String::new(),
+                        false,
+                        move || format!("bookmark-history-cell-VisitCount-{index}"),
                     ))
                 })
                 .when(ui.columns.date_added, |row| {
                     row.child(bookmark_manager_list_column(
                         format_bookmark_timestamp(visit.last_opened_epoch_seconds),
                         false,
+                        move || format!("bookmark-history-cell-DateAdded-{index}"),
+                    ))
+                })
+                .when(ui.columns.date_modified, |row| {
+                    row.child(bookmark_manager_list_column(
+                        String::new(),
+                        false,
+                        move || format!("bookmark-history-cell-DateModified-{index}"),
                     ))
                 })
                 .when_some(select_cb, move |row, cb| {
@@ -3208,8 +3335,13 @@ fn run_log_subtitle(catalog: Catalog, record: &RunRecord, missing: bool) -> Stri
     format!("{size} — {middle} — {weekday}")
 }
 
-fn bookmark_manager_list_column(text: impl Into<SharedString>, grow: bool) -> impl IntoElement {
+fn bookmark_manager_list_column(
+    text: impl Into<SharedString>,
+    grow: bool,
+    debug_id: impl FnOnce() -> String,
+) -> impl IntoElement {
     div()
+        .debug_selector(debug_id)
         .min_w(px(0.0))
         .overflow_hidden()
         .whitespace_nowrap()
@@ -3229,6 +3361,7 @@ fn bookmark_manager_column_header(
     tokens: UiTokens,
 ) -> impl IntoElement {
     div()
+        .debug_selector(move || format!("bookmark-manager-header-{sort:?}"))
         .min_w(px(0.0))
         .overflow_hidden()
         .whitespace_nowrap()
@@ -3699,15 +3832,19 @@ fn bookmark_toolbar_context_menu(
         .inset_0()
         .occlude()
         .on_mouse_down(MouseButton::Left, move |_, window, cx| {
+            cx.stop_propagation();
             if let Some(cb) = close_cb.as_ref() {
                 cb(&close, window, cx);
             }
         })
         .on_mouse_down(MouseButton::Right, move |_, window, cx| {
+            cx.stop_propagation();
             if let Some(cb) = close_right_cb.as_ref() {
                 cb(&close_right, window, cx);
             }
         })
+        .on_mouse_up(MouseButton::Right, |_, _, cx| cx.stop_propagation())
+        .on_mouse_up_out(MouseButton::Right, |_, _, cx| cx.stop_propagation())
         .child(
             deferred(
                 div()
@@ -3808,15 +3945,19 @@ fn bookmark_context_menu(
         .inset_0()
         .occlude()
         .on_mouse_down(MouseButton::Left, move |_, window, cx| {
+            cx.stop_propagation();
             if let Some(cb) = close_cb.as_ref() {
                 cb(&close, window, cx);
             }
         })
         .on_mouse_down(MouseButton::Right, move |_, window, cx| {
+            cx.stop_propagation();
             if let Some(cb) = close_right_cb.as_ref() {
                 cb(&close_right, window, cx);
             }
         })
+        .on_mouse_up(MouseButton::Right, |_, _, cx| cx.stop_propagation())
+        .on_mouse_up_out(MouseButton::Right, |_, _, cx| cx.stop_propagation())
         .child(
             deferred(
                 div()
@@ -5543,6 +5684,7 @@ pub(crate) fn folder_options_window_content(
                                 tokens,
                                 draft.restore_previous_session,
                                 draft.locale_choice,
+                                draft.theme,
                                 search_engine,
                                 search_engine_availability,
                                 catalog,
@@ -5825,6 +5967,7 @@ fn folder_options_general_page(
     tokens: UiTokens,
     restore_previous_session: bool,
     locale_choice: crate::state::LocaleChoice,
+    theme: crate::theme::ColorTheme,
     search_engine: explorer_model::SearchEnginePreference,
     search_engine_availability: explorer_model::SearchEngineAvailability,
     catalog: Catalog,
@@ -5846,6 +5989,12 @@ fn folder_options_general_page(
             language_picker_open,
             language_menu_scroll,
             language_menu_scrollbar,
+            on_action.clone(),
+        ))
+        .child(folder_options_theme_page(
+            tokens,
+            catalog,
+            theme,
             on_action.clone(),
         ))
         .child(folder_options_search_engine_group(
@@ -5915,7 +6064,11 @@ fn folder_options_theme_page(
 ) -> impl IntoElement {
     use crate::theme::ColorTheme;
 
-    let windows = [ColorTheme::WindowsLight, ColorTheme::WindowsDark];
+    let windows = [
+        ColorTheme::FollowWindows,
+        ColorTheme::WindowsLight,
+        ColorTheme::WindowsDark,
+    ];
     let zed = [
         ColorTheme::OneDark,
         ColorTheme::OneLight,
@@ -6839,6 +6992,7 @@ fn folder_option_tab(
         .aria_label(label.clone())
         .aria_selected(selected)
         .min_w(px(crate::layout::folder_options::TAB_MIN_WIDTH.value()))
+        .flex_1()
         .h_full()
         .flex()
         .items_center()
@@ -7566,6 +7720,8 @@ impl RenderOnce for CommandBar {
                         self.tokens,
                         catalog,
                         self.state.view_settings(),
+                        self.state.current_color_theme(),
+                        self.state.view_theme_submenu_open(),
                         self.state.view_show_submenu_open(),
                         extension_view,
                         view_index,
@@ -7589,6 +7745,8 @@ impl RenderOnce for CommandBar {
                         catalog,
                         has_selection,
                         more_index,
+                        self.state.current_color_theme(),
+                        self.state.more_theme_submenu_open(),
                         self.on_action.clone(),
                     )
                     .into_any_element()
@@ -7942,6 +8100,7 @@ fn command_extensions_menu_legacy(
                         true,
                         false,
                         None,
+                        false,
                         tokens,
                         on_action.clone(),
                     )
@@ -7958,6 +8117,7 @@ fn command_extensions_menu_legacy(
             tortoise_git_available,
             false,
             None,
+            false,
             tokens,
             on_action,
         ));
@@ -7979,6 +8139,8 @@ fn command_more_menu_v2(
     catalog: Catalog,
     has_selection: bool,
     focused_index: usize,
+    theme: crate::theme::ColorTheme,
+    theme_submenu: bool,
     on_action: Option<ActionCallback>,
 ) -> impl IntoElement {
     let item = |id, label, action, enabled, index, callback| {
@@ -7990,6 +8152,7 @@ fn command_more_menu_v2(
             enabled,
             focused_index == index,
             Some(hover_action),
+            false,
             tokens,
             callback,
         )
@@ -8000,24 +8163,14 @@ fn command_more_menu_v2(
             .my(px(tokens.layout.content_spacing.value()))
             .bg(tokens.theme.colors.divider.to_gpui())
     };
-    let outside = on_action.clone();
-    let menu = div()
-        .id("command-more-popup")
-        .role(Role::Menu)
-        .occlude()
-        .aria_label(catalog.t("menu-more-commands"))
+    let dismiss = on_action.clone();
+    let commands = div()
         .w(px(tokens.layout.address_min_width.value()))
         .p(px(tokens.layout.content_spacing.value()))
         .rounded(px(tokens.layout.corner_radius.value()))
         .bg(tokens.theme.colors.menu_fill.to_gpui())
         .border(px(1.0))
         .border_color(tokens.theme.colors.divider.to_gpui())
-        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-        .when_some(outside, |menu, callback| {
-            menu.on_mouse_up_out(MouseButton::Left, move |_, window, cx| {
-                callback(&ExplorerAction::CloseMoreMenu, window, cx);
-            })
-        })
         .child(item(
             "more-undo",
             catalog.t("menu-undo"),
@@ -8084,15 +8237,17 @@ fn command_more_menu_v2(
             on_action.clone(),
         ))
         .child(separator())
-        .child(item(
-            "more-handoff-file-explorer",
-            catalog.t("menu-open-in-file-explorer"),
-            ExplorerAction::HandoffToFileExplorer,
+        .child(command_more_item(
+            "more-theme",
+            catalog.t("menu-theme"),
+            ExplorerAction::ToggleMoreThemeSubmenu,
             true,
-            8,
+            focused_index == 8,
+            Some(ExplorerAction::SetMoreMenuFocus { index: 8 }),
+            true,
+            tokens,
             on_action.clone(),
         ))
-        .child(separator())
         .child(item(
             "more-options",
             catalog.t("menu-options"),
@@ -8107,17 +8262,41 @@ fn command_more_menu_v2(
             ExplorerAction::OpenAboutDialog,
             true,
             10,
-            on_action,
+            on_action.clone(),
         ));
+    let popup = div()
+        .id("command-more-popup")
+        .role(Role::Menu)
+        .occlude()
+        .aria_label(catalog.t("menu-more-commands"))
+        .relative()
+        .w(px(tokens.layout.address_min_width.value()))
+        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+        .on_mouse_up(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+        .child(commands)
+        .when(theme_submenu, |popup| {
+            popup.child(more_theme_submenu(tokens, catalog, theme, on_action))
+        });
     deferred(
         div()
             .absolute()
             .top(px(tokens.layout.minimum_hit_target.value()))
             .left_0()
             .right_0()
-            .flex()
-            .justify_center()
-            .child(menu),
+            .child(
+                div()
+                    .absolute()
+                    .top(px(-4000.0))
+                    .left(px(-4000.0))
+                    .w(px(8000.0))
+                    .h(px(8000.0))
+                    .when_some(dismiss, |layer, callback| {
+                        layer.on_mouse_down(MouseButton::Left, move |_, window, cx| {
+                            callback(&ExplorerAction::CloseMoreMenu, window, cx);
+                        })
+                    }),
+            )
+            .child(div().flex().justify_center().w_full().child(popup)),
     )
     .with_priority(140)
 }
@@ -8156,6 +8335,7 @@ fn command_more_menu(
             can_write,
             focused_index == 0,
             None,
+            false,
             tokens,
             on_action.clone(),
         ))
@@ -8166,6 +8346,7 @@ fn command_more_menu(
             has_selection,
             focused_index == 1,
             None,
+            false,
             tokens,
             on_action.clone(),
         ))
@@ -8176,6 +8357,7 @@ fn command_more_menu(
             has_selection,
             focused_index == 2,
             None,
+            false,
             tokens,
             on_action.clone(),
         ))
@@ -8186,6 +8368,7 @@ fn command_more_menu(
             can_paste,
             focused_index == 3,
             None,
+            false,
             tokens,
             on_action.clone(),
         ))
@@ -8196,6 +8379,7 @@ fn command_more_menu(
             has_selection,
             focused_index == 4,
             None,
+            false,
             tokens,
             on_action,
         ));
@@ -8282,6 +8466,7 @@ fn command_extensions_menu(
                             true,
                             false,
                             None,
+                            false,
                             tokens,
                             on_action.clone(),
                         )
@@ -8298,6 +8483,7 @@ fn command_extensions_menu(
                 tortoise_git_available,
                 false,
                 None,
+                false,
                 tokens,
                 on_action.clone(),
             ))
@@ -8351,6 +8537,7 @@ fn extension_command_panel(
                 has_selection,
                 false,
                 None,
+                false,
                 tokens,
                 on_action.clone(),
             ))
@@ -8363,6 +8550,7 @@ fn extension_command_panel(
                 has_selection,
                 false,
                 None,
+                false,
                 tokens,
                 on_action.clone(),
             ))
@@ -8373,6 +8561,7 @@ fn extension_command_panel(
                 true,
                 false,
                 None,
+                false,
                 tokens,
                 on_action,
             )),
@@ -8388,6 +8577,7 @@ fn extension_command_panel(
                 true,
                 false,
                 None,
+                false,
                 tokens,
                 on_action.clone(),
             ))
@@ -8398,6 +8588,7 @@ fn extension_command_panel(
                 true,
                 false,
                 None,
+                false,
                 tokens,
                 on_action.clone(),
             ))
@@ -8408,6 +8599,7 @@ fn extension_command_panel(
                 true,
                 false,
                 None,
+                false,
                 tokens,
                 on_action,
             )),
@@ -8443,6 +8635,7 @@ fn command_more_item(
     enabled: bool,
     selected: bool,
     hover_action: Option<ExplorerAction>,
+    submenu: bool,
     tokens: UiTokens,
     on_action: Option<ActionCallback>,
 ) -> impl IntoElement {
@@ -8499,6 +8692,67 @@ fn command_more_item(
                 .text_ellipsis()
                 .child(label),
         )
+        .when(submenu, |item| {
+            item.child(chrome_icon(
+                "more-theme-submenu",
+                ExplorerIcon::Chevron,
+                tokens,
+            ))
+        })
+}
+
+fn more_theme_submenu_offset(layout: crate::layout::LayoutTokens) -> f32 {
+    let row = layout.minimum_hit_target.value();
+    let pad = layout.content_spacing.value();
+    let separator = layout.focus_stroke.value() / 2.0 + pad * 2.0;
+    pad + row * 5.0 + separator + row * 3.0 + separator
+}
+
+fn more_theme_submenu(
+    tokens: UiTokens,
+    catalog: Catalog,
+    selected: crate::theme::ColorTheme,
+    on_action: Option<ActionCallback>,
+) -> impl IntoElement {
+    let layout = tokens.layout;
+    let colors = tokens.theme.colors;
+    div()
+        .id("more-theme-menu")
+        .role(Role::Menu)
+        .occlude()
+        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+        .on_mouse_up(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+        .absolute()
+        .top(px(more_theme_submenu_offset(layout)))
+        .left(px(layout.address_min_width.value()))
+        .w(px(layout.address_min_width.value()))
+        .p(px(layout.content_spacing.value()))
+        .rounded(px(layout.corner_radius.value()))
+        .bg(colors.menu_fill.to_gpui())
+        .border(px(1.0))
+        .border_color(colors.divider.to_gpui())
+        .children(crate::theme::ColorTheme::ALL.into_iter().map(|theme| {
+            command_more_item(
+                match theme {
+                    crate::theme::ColorTheme::FollowWindows => "more-theme-follow-windows",
+                    crate::theme::ColorTheme::WindowsLight => "more-theme-windows-light",
+                    crate::theme::ColorTheme::WindowsDark => "more-theme-windows-dark",
+                    crate::theme::ColorTheme::OneDark => "more-theme-one-dark",
+                    crate::theme::ColorTheme::OneLight => "more-theme-one-light",
+                    crate::theme::ColorTheme::AyuDark => "more-theme-ayu-dark",
+                    crate::theme::ColorTheme::AyuMirage => "more-theme-ayu-mirage",
+                    crate::theme::ColorTheme::GruvboxDark => "more-theme-gruvbox-dark",
+                },
+                catalog.t(theme.label_key()),
+                ExplorerAction::SetColorTheme(theme),
+                true,
+                selected == theme,
+                None,
+                false,
+                tokens,
+                on_action.clone(),
+            )
+        }))
 }
 
 fn sort_menu(
@@ -8617,6 +8871,8 @@ fn view_menu(
     tokens: UiTokens,
     catalog: Catalog,
     settings: explorer_model::ViewSettings,
+    theme: crate::theme::ColorTheme,
+    theme_submenu: bool,
     show_submenu: bool,
     extension_view: Option<crate::size_map_view::SizeMapViewConfigV1>,
     focused_index: usize,
@@ -8704,12 +8960,23 @@ fn view_menu(
         ))
         .child(view_menu_separator(tokens))
         .child(view_menu_item(
-            "view-show-submenu".to_owned(),
-            catalog.t("menu-show"),
+            "view-theme-submenu".to_owned(),
+            catalog.t("menu-theme"),
             false,
             true,
             focused_index == 10,
             Some(ExplorerAction::SetViewMenuFocus { index: 10 }),
+            ExplorerAction::ToggleViewThemeSubmenu,
+            tokens,
+            on_action.clone(),
+        ))
+        .child(view_menu_item(
+            "view-show-submenu".to_owned(),
+            catalog.t("menu-show"),
+            false,
+            true,
+            focused_index == 11,
+            Some(ExplorerAction::SetViewMenuFocus { index: 11 }),
             ExplorerAction::ToggleViewShowSubmenu,
             tokens,
             on_action.clone(),
@@ -8726,14 +8993,22 @@ fn view_menu(
                     "Size Map",
                     checked,
                     false,
-                    focused_index == 11,
-                    Some(ExplorerAction::SetViewMenuFocus { index: 11 }),
+                    focused_index == 12,
+                    Some(ExplorerAction::SetViewMenuFocus { index: 12 }),
                     ExplorerAction::SetExtensionView {
                         view_id: extension.view_id,
                     },
                     tokens,
                     on_action.clone(),
                 ))
+        })
+        .when(theme_submenu, |element| {
+            element.child(view_theme_submenu(
+                tokens,
+                catalog,
+                theme,
+                on_action.clone(),
+            ))
         })
         .when(show_submenu, |element| {
             element.child(view_show_submenu(tokens, catalog, &settings, on_action))
@@ -8754,6 +9029,47 @@ fn view_menu(
     .with_priority(90)
 }
 
+fn view_theme_submenu(
+    tokens: UiTokens,
+    catalog: Catalog,
+    selected: crate::theme::ColorTheme,
+    on_action: Option<ActionCallback>,
+) -> impl IntoElement {
+    let layout = tokens.layout;
+    let colors = tokens.theme.colors;
+    div()
+        .id("view-theme-menu")
+        .role(Role::Menu)
+        .occlude()
+        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+        .absolute()
+        .top(px(layout.menu_row_height.value() * 9.0))
+        .left(px(
+            layout.navigation_pane_min_width.value() + layout.minimum_hit_target.value()
+        ))
+        .w(px(
+            layout.navigation_pane_min_width.value() + layout.minimum_hit_target.value()
+        ))
+        .p(px(layout.content_spacing.value()))
+        .rounded(px(layout.corner_radius.value()))
+        .bg(colors.menu_fill.to_gpui())
+        .border(px(1.0))
+        .border_color(colors.divider.to_gpui())
+        .children(crate::theme::ColorTheme::ALL.into_iter().map(|theme| {
+            view_menu_item(
+                format!("view-theme-{}", theme.id()),
+                catalog.t(theme.label_key()),
+                selected == theme,
+                false,
+                false,
+                None,
+                ExplorerAction::SetColorTheme(theme),
+                tokens,
+                on_action.clone(),
+            )
+        }))
+}
+
 fn view_show_submenu(
     tokens: UiTokens,
     catalog: Catalog,
@@ -8768,7 +9084,7 @@ fn view_show_submenu(
         .occlude()
         .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
         .absolute()
-        .top(px(layout.menu_row_height.value() * 9.0))
+        .top(px(layout.menu_row_height.value() * 10.0))
         .left(px(
             layout.navigation_pane_min_width.value() + layout.minimum_hit_target.value()
         ))
@@ -10474,6 +10790,7 @@ impl RenderOnce for NavigationPane {
                     self.state.quick_access_navigation_pins(),
                 );
                 let mut flattened = Vec::with_capacity(items.len());
+                let mut system_bookmarks_expanded = true;
                 for mut item in items.drain(..) {
                     if let Some(location) = item.location.as_ref() {
                         item.expanded =
@@ -10489,12 +10806,21 @@ impl RenderOnce for NavigationPane {
                             );
                         }
                     }
+                    if item.id == crate::navigation_pane::SYSTEM_BOOKMARKS_ID {
+                        system_bookmarks_expanded = item.expanded;
+                    }
+                    if item.id.starts_with("quick-access-pin-") && !system_bookmarks_expanded {
+                        continue;
+                    }
                     let parent = item.location.clone();
                     let depth = item.depth;
                     let suppress_static_drive_roots =
                         item.id == "this-pc" || item.id == "linux" || item.id == "network";
+                    let skip_shell_children =
+                        item.id == crate::navigation_pane::SYSTEM_BOOKMARKS_ID;
                     flattened.push(item);
                     if let Some(parent) = parent
+                        && !skip_shell_children
                         && self.state.navigation_node_expanded(&parent)
                     {
                         append_navigation_descendants(
@@ -10786,6 +11112,7 @@ fn favorites_tree_row(
             })
         })
         .on_mouse_up(MouseButton::Right, |_, _, cx| cx.stop_propagation())
+        .on_mouse_up_out(MouseButton::Right, |_, _, cx| cx.stop_propagation())
         .into_any_element()
 }
 
@@ -11065,13 +11392,16 @@ fn navigation_item_row(
         available.then_some(()).zip(on_action).zip(location),
         |element, (((), callback), location)| {
             element.on_click(move |_, window, cx| {
-                callback(
-                    &ExplorerAction::ActivateNavigationItem {
+                let action = if crate::navigation_pane::is_system_bookmarks_location(&location) {
+                    ExplorerAction::ToggleNavigationNode {
                         location: location.clone(),
-                    },
-                    window,
-                    cx,
-                );
+                    }
+                } else {
+                    ExplorerAction::ActivateNavigationItem {
+                        location: location.clone(),
+                    }
+                };
+                callback(&action, window, cx);
             })
         },
     )
@@ -17024,6 +17354,7 @@ pub struct WindowChrome {
     window_active: bool,
     shell_icons: HashMap<explorer_model::ShellIconKey, Arc<RenderImage>>,
     shell_icon_dpi: u16,
+    tab_scroll: Option<gpui::ScrollHandle>,
     on_action: Option<ActionCallback>,
 }
 
@@ -17040,8 +17371,15 @@ impl WindowChrome {
             window_active,
             shell_icons: HashMap::new(),
             shell_icon_dpi: 96,
+            tab_scroll: None,
             on_action,
         }
+    }
+
+    #[must_use]
+    pub fn with_tab_scroll(mut self, handle: Option<gpui::ScrollHandle>) -> Self {
+        self.tab_scroll = handle;
+        self
     }
 
     #[must_use]
@@ -17105,14 +17443,17 @@ impl RenderOnce for WindowChrome {
                 )
             })
             .collect();
+        let overflow_track =
+            tab_strip_overflow_track_height(self.tab_scroll.as_ref(), self.tokens);
 
         div()
             .id(WINDOW_CHROME_ID)
             .relative()
-            .h(px(layout.title_tab_height.value()))
+            .h(px(layout.title_tab_height.value() + overflow_track))
+            .w_full()
             .flex_none()
             .flex()
-            .items_center()
+            .flex_col()
             .when(
                 self.state.focused_surface() == FocusSurface::WindowChrome,
                 |element| {
@@ -17146,70 +17487,188 @@ impl RenderOnce for WindowChrome {
             )
             .child(
                 div()
-                    .id(WINDOW_DRAG_REGION_ID)
-                    .relative()
-                    .window_control_area(WindowControlArea::Drag)
-                    .h_full()
-                    .flex_1()
+                    .id("window-chrome-tab-row")
+                    .h(px(layout.title_tab_height.value()))
+                    .w_full()
+                    .flex_none()
                     .flex()
-                    .items_end()
-                    .on_mouse_down(MouseButton::Left, |event, window, _| {
-                        if event.click_count == 2 {
-                            window.zoom_window();
-                        } else {
-                            window.start_window_move();
-                        }
-                    })
-                    .child(region_probe(
-                        WINDOW_DRAG_REGION_ID,
-                        Some(WINDOW_CHROME_ID),
-                        "normal",
-                    ))
+                    .items_center()
                     .child(
                         div()
-                            .id(TAB_STRIP_ID)
+                            .id(WINDOW_DRAG_REGION_ID)
                             .relative()
+                            .window_control_area(WindowControlArea::Drag)
                             .h_full()
-                            .max_w_full()
+                            .flex_1()
+                            .min_w(px(0.0))
+                            .overflow_hidden()
                             .flex()
                             .items_end()
-                            .overflow_x_scroll()
-                            .gap(px(layout.content_spacing.value()))
-                            .px(px(layout.control_padding_horizontal.value()))
-                            .child(region_probe(TAB_STRIP_ID, Some(WINDOW_CHROME_ID), "normal"))
-                            .children(tabs)
-                            .child(new_tab_button(
-                                self.tokens,
-                                self.state.catalog(),
-                                self.on_action,
-                            )),
-                    ),
+                            .on_mouse_down(MouseButton::Left, |event, window, _| {
+                                if event.click_count == 2 {
+                                    window.zoom_window();
+                                } else {
+                                    window.start_window_move();
+                                }
+                            })
+                            .child(region_probe(
+                                WINDOW_DRAG_REGION_ID,
+                                Some(WINDOW_CHROME_ID),
+                                "normal",
+                            ))
+                            .child(
+                                div()
+                                    .id(TAB_STRIP_ID)
+                                    .debug_selector(|| TAB_STRIP_ID.to_owned())
+                                    .relative()
+                                    .h_full()
+                                    .flex_1()
+                                    .min_w(px(0.0))
+                                    .flex()
+                                    .items_end()
+                                    .overflow_x_scroll()
+                                    .when_some(self.tab_scroll.clone(), |element, handle| {
+                                        element.track_scroll(&handle)
+                                    })
+                                    .on_scroll_wheel(|_, _, cx| cx.refresh_windows())
+                                    .gap(px(layout.content_spacing.value()))
+                                    .px(px(layout.control_padding_horizontal.value()))
+                                    .child(region_probe(
+                                        TAB_STRIP_ID,
+                                        Some(WINDOW_CHROME_ID),
+                                        "normal",
+                                    ))
+                                    .children(tabs)
+                                    .child(new_tab_button(
+                                        self.tokens,
+                                        self.state.catalog(),
+                                        self.on_action.clone(),
+                                    )),
+                            ),
+                    )
+                    .child(caption_button(
+                        CAPTION_MINIMIZE_ID,
+                        "Minimize",
+                        ExplorerIcon::Minimize,
+                        WindowControlArea::Min,
+                        self.tokens,
+                        false,
+                    ))
+                    .child(caption_button(
+                        CAPTION_MAXIMIZE_ID,
+                        "Maximize or restore; Windows Snap Layout available",
+                        maximize_icon,
+                        WindowControlArea::Max,
+                        self.tokens,
+                        false,
+                    ))
+                    .child(caption_button(
+                        CAPTION_CLOSE_ID,
+                        "Close",
+                        ExplorerIcon::Close,
+                        WindowControlArea::Close,
+                        self.tokens,
+                        true,
+                    )),
             )
-            .child(caption_button(
-                CAPTION_MINIMIZE_ID,
-                "Minimize",
-                ExplorerIcon::Minimize,
-                WindowControlArea::Min,
-                self.tokens,
-                false,
-            ))
-            .child(caption_button(
-                CAPTION_MAXIMIZE_ID,
-                "Maximize or restore; Windows Snap Layout available",
-                maximize_icon,
-                WindowControlArea::Max,
-                self.tokens,
-                false,
-            ))
-            .child(caption_button(
-                CAPTION_CLOSE_ID,
-                "Close",
-                ExplorerIcon::Close,
-                WindowControlArea::Close,
-                self.tokens,
-                true,
-            ))
+            .when(overflow_track > 0.0, |element| {
+                element.when_some(self.tab_scroll.clone(), |element, handle| {
+                    element.child(tab_strip_scrollbar(
+                        &handle,
+                        self.tokens,
+                        catalog,
+                        self.on_action.clone(),
+                    ))
+                })
+            })
     }
+}
+
+fn tab_strip_scrollbar(
+    handle: &gpui::ScrollHandle,
+    tokens: UiTokens,
+    catalog: Catalog,
+    on_action: Option<ActionCallback>,
+) -> impl IntoElement {
+    let colors = tokens.theme.colors;
+    let viewport = f32::from(handle.bounds().size.width).max(0.0);
+    let maximum = f32::from(handle.max_offset().x).max(0.0);
+    let current = (-f32::from(handle.offset().x)).clamp(0.0, maximum);
+    let minimum_thumb = tokens.layout.minimum_hit_target.value();
+    let track_height = tokens.layout.content_spacing.value() * 1.5;
+    let thumb_height = (track_height - tokens.layout.focus_stroke.value() * 2.0).max(8.0);
+    let thumb_width = crate::interaction::scrollbar_thumb_height(viewport, maximum, minimum_thumb)
+        .unwrap_or(viewport);
+    let thumb_left = if maximum > 0.0 {
+        current / maximum * (viewport - thumb_width)
+    } else {
+        0.0
+    };
+    let click_handle = handle.clone();
+    div()
+        .id(TAB_STRIP_SCROLLBAR_ID)
+        .debug_selector(|| TAB_STRIP_SCROLLBAR_ID.to_owned())
+        .role(Role::ScrollBar)
+        .aria_label(catalog.t("chrome-tab-strip-hscroll"))
+        .aria_numeric_value(f64::from(current))
+        .aria_min_numeric_value(0.0)
+        .aria_max_numeric_value(f64::from(maximum))
+        .relative()
+        .w_full()
+        .flex_none()
+        .h(px(track_height))
+        .bg(colors.subtle_surface.to_gpui())
+        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+        .when_some(on_action, move |element, callback| {
+            element.on_mouse_down(MouseButton::Left, move |event, window, cx| {
+                let viewport = f32::from(click_handle.bounds().size.width).max(0.0);
+                let maximum = f32::from(click_handle.max_offset().x).max(0.0);
+                if maximum <= 0.0 || viewport <= 0.0 {
+                    return;
+                }
+                let current = (-f32::from(click_handle.offset().x)).clamp(0.0, maximum);
+                let Some(thumb_width) =
+                    crate::interaction::scrollbar_thumb_height(viewport, maximum, minimum_thumb)
+                else {
+                    return;
+                };
+                let thumb_left = current / maximum * (viewport - thumb_width);
+                let pointer = f32::from(event.position.x - click_handle.bounds().left());
+                if pointer >= thumb_left && pointer <= thumb_left + thumb_width {
+                    callback(
+                        &ExplorerAction::BeginScrollbarDrag {
+                            kind: crate::interaction::ScrollbarKind::TabStrip,
+                            grab_offset_y: pointer - thumb_left,
+                        },
+                        window,
+                        cx,
+                    );
+                    cx.stop_propagation();
+                    return;
+                }
+                let target = if pointer < thumb_left {
+                    current - viewport
+                } else {
+                    current + viewport
+                }
+                .clamp(0.0, maximum);
+                let offset = click_handle.offset();
+                click_handle.set_offset(point(px(-target), offset.y));
+                cx.stop_propagation();
+                cx.refresh_windows();
+            })
+        })
+        .child(
+            div()
+                .absolute()
+                .left(px(thumb_left))
+                .bottom(px((track_height - thumb_height) / 2.0))
+                .w(px(thumb_width))
+                .h(px(thumb_height))
+                .rounded(px(tokens.layout.corner_radius.value()))
+                .bg(colors.text_disabled.to_gpui())
+                .hover(|style| style.bg(colors.text_secondary.to_gpui())),
+        )
 }
 
 fn explorer_tab(
@@ -17244,21 +17703,29 @@ fn explorer_tab(
         format!("background-tab-location-icon-{tab_id:?}")
     };
     let icon_label = t_named(catalog, "chrome-folder-icon", "name", title.clone());
+    let tab_fill = tab_background(colors, active);
+    let title_fade = tab_title_fade(tab_fill);
+    let title_fade_hover = tab_title_fade(colors.control_hover);
+    let tab_group = id.clone();
     div()
         .id(id.clone())
+        .group(tab_group.clone())
         .debug_selector(move || debug_id.clone())
         .role(Role::Tab)
         .relative()
         .aria_label(title.clone())
         .aria_selected(active)
         .h(px(layout.minimum_hit_target.value()))
-        .min_w(px(layout.navigation_pane_min_width.value()))
+        .flex_1()
+        .min_w(px(crate::layout::tabs::MIN_WIDTH.value()))
+        .max_w(px(crate::layout::tabs::PREFERRED_WIDTH.value()))
+        .overflow_hidden()
         .flex()
         .items_center()
         .justify_between()
         .px(px(layout.control_padding_horizontal.value()))
         .rounded_t(px(layout.corner_radius.value()))
-        .bg(tab_background(colors, active).to_gpui())
+        .bg(tab_fill.to_gpui())
         .when(!active, move |element| {
             element
                 .hover(move |style| style.bg(colors.control_hover.to_gpui()))
@@ -17301,6 +17768,8 @@ fn explorer_tab(
         ))
         .child(
             div()
+                .flex_1()
+                .min_w(px(0.0))
                 .flex()
                 .items_center()
                 .gap(px(layout.content_spacing.value()))
@@ -17310,6 +17779,7 @@ fn explorer_tab(
                         .id(icon_id.clone())
                         .debug_selector(move || icon_id.clone())
                         .role(Role::Image)
+                        .flex_none()
                         .aria_label(icon_label)
                         .child(breadcrumb_shell_icon(
                             shell_icon,
@@ -17317,11 +17787,34 @@ fn explorer_tab(
                             tokens,
                         )),
                 )
-                .child(div().overflow_hidden().whitespace_nowrap().child(title)),
+                .child(
+                    div()
+                        .relative()
+                        .flex_1()
+                        .min_w(px(0.0))
+                        .overflow_hidden()
+                        .child(div().overflow_hidden().whitespace_nowrap().child(title))
+                        .child(
+                            div()
+                                .id(format!("{id}-title-fade"))
+                                .absolute()
+                                .right_0()
+                                .bottom_0()
+                                .w(px(crate::layout::tabs::TITLE_FADE_WIDTH.value()))
+                                .h(px(layout.minimum_hit_target.value()))
+                                .bg(title_fade)
+                                .when(!active, move |element| {
+                                    element.group_hover(tab_group.clone(), move |style| {
+                                        style.bg(title_fade_hover)
+                                    })
+                                }),
+                        ),
+                ),
         )
         .child(
             div()
                 .id(close_id.clone())
+                .flex_none()
                 .role(Role::Button)
                 .aria_label(catalog.t("chrome-close-tab"))
                 .px(px(layout.content_spacing.value()))
@@ -17362,6 +17855,15 @@ const fn tab_background(
     } else {
         colors.subtle_surface
     }
+}
+
+fn tab_title_fade(end: crate::theme::Rgba8) -> Background {
+    let solid = end.to_gpui();
+    linear_gradient(
+        90.0,
+        linear_color_stop(gpui::Rgba { a: 0.0, ..solid }, 0.0),
+        linear_color_stop(solid, 1.0),
+    )
 }
 
 const fn new_tab_button_background(colors: crate::theme::SemanticColors) -> crate::theme::Rgba8 {
@@ -17428,6 +17930,7 @@ fn new_tab_button(
         .aria_label(catalog.t("chrome-new-tab"))
         .h(px(layout.minimum_hit_target.value()))
         .w(px(layout.minimum_hit_target.value()))
+        .flex_none()
         .flex()
         .items_center()
         .justify_center()
@@ -17518,7 +18021,7 @@ mod tests {
         new_tab_button_background, operation_display_message, operation_location_text,
         operation_message, operation_message_opacity, operation_outcome_message,
         operation_request_summary, remote_context_menu_position, remote_menu_commands,
-        select_file_row_shell_icon, tab_background,
+        select_file_row_shell_icon, tab_background, tab_title_fade,
     };
     use crate::{UiTokens, actions::ExplorerAction, theme::ThemeTokens};
     use gpui::WindowControlArea;
@@ -19873,6 +20376,89 @@ mod tests {
     }
 
     #[test]
+    fn overflowing_tabs_shrink_and_fade_titles_instead_of_ellipsis() {
+        let colors = ThemeTokens::light().colors;
+        let fade = format!("{:?}", tab_title_fade(colors.surface));
+        assert!(
+            fade.contains("LinearGradient"),
+            "tab title fade must be a linear gradient, got {fade}"
+        );
+        assert!(
+            fade.contains(" a: 0.0") || fade.contains("a: 0.0,"),
+            "fade must start transparent so glyphs clip mid-character, got {fade}"
+        );
+
+        let source = include_str!("chrome.rs");
+        let production = source
+            .split("#[cfg(test)]")
+            .next()
+            .expect("production source precedes tests");
+        let tab_renderer = production
+            .split("fn explorer_tab(")
+            .nth(1)
+            .expect("tab renderer exists")
+            .split("const fn tab_background")
+            .next()
+            .expect("tab renderer ends before tab helpers");
+        assert!(
+            !tab_renderer.contains("navigation_pane_min_width"),
+            "tabs must not inherit the navigation pane min width"
+        );
+        assert!(tab_renderer.contains("layout::tabs::MIN_WIDTH"));
+        assert!(tab_renderer.contains("layout::tabs::PREFERRED_WIDTH"));
+        assert!(tab_renderer.contains("layout::tabs::TITLE_FADE_WIDTH"));
+        assert!(tab_renderer.contains(".flex_1()"));
+        assert!(tab_renderer.contains("tab_title_fade"));
+        assert!(production.contains("fn tab_title_fade"));
+        assert!(production.contains("linear_gradient"));
+        assert!(
+            !tab_renderer.contains("text_ellipsis"),
+            "clipped tab titles fade mid-glyph instead of using an ellipsis"
+        );
+
+        let tab_strip = production
+            .split(".id(TAB_STRIP_ID)")
+            .nth(1)
+            .expect("tab strip exists")
+            .split("fn explorer_tab(")
+            .next()
+            .expect("tab strip precedes tab renderer");
+        assert!(tab_strip.contains(".flex_1()"));
+        assert!(tab_strip.contains(".min_w(px(0.0))"));
+        assert!(tab_strip.contains(".overflow_x_scroll()"));
+        assert!(tab_strip.contains("track_scroll"));
+        assert!(tab_strip.contains("tab_strip_scrollbar"));
+        let drag = production
+            .split(".id(WINDOW_DRAG_REGION_ID)")
+            .nth(1)
+            .expect("drag region exists")
+            .split(".id(TAB_STRIP_ID)")
+            .next()
+            .expect("drag region precedes tab strip");
+        assert!(
+            drag.contains(".min_w(px(0.0))"),
+            "drag region must shrink so caption buttons keep their reserved width"
+        );
+        assert!(drag.contains(".overflow_hidden()"));
+        assert!(production.contains("tab_strip_overflow_track_height"));
+        assert!(
+            production.contains("overflow_track > 0.0"),
+            "tab scrollbar must occupy extra chrome height only while tabs overflow"
+        );
+    }
+
+    #[test]
+    fn tab_strip_overflow_track_stays_hidden_without_overflow() {
+        let tokens = UiTokens::default();
+        assert_eq!(super::tab_strip_overflow_track_height(None, tokens), 0.0);
+        assert!(
+            super::tab_strip_overflow_epsilon(tokens)
+                > tokens.layout.control_padding_horizontal.value() * 2.0,
+            "padding-only scroll max from overflow_x_scroll must not reveal the tab scrollbar"
+        );
+    }
+
+    #[test]
     fn production_chrome_does_not_use_unicode_icon_placeholders() {
         let source = include_str!("chrome.rs");
         let production = source
@@ -20026,6 +20612,7 @@ mod tests {
             .next()
             .expect("general page has a bounded renderer");
         for required in [
+            "folder_options_theme_page",
             "folder_options_search_engine_group",
             "search_engine_availability",
         ] {
@@ -20188,9 +20775,10 @@ mod tests {
         let source = include_str!("chrome.rs");
         let production = source.split("#[cfg(test)]").next().unwrap();
         for required in [
-            "more-handoff-file-explorer",
+            "command-handoff-file-explorer",
             "HandoffToFileExplorer",
             "menu-open-in-file-explorer",
+            "more-theme",
             "more-about",
             "about-dialog",
             "dialog-version",
@@ -20247,6 +20835,8 @@ mod tests {
         assert!(production.contains("self.state.view_menu_open().then(||"));
         assert!(production.contains(".debug_selector(|| \"sort-menu\".to_owned())"));
         assert!(production.contains(".debug_selector(|| \"view-menu\".to_owned())"));
+        assert!(production.contains("view-theme-submenu"));
+        assert!(production.contains("fn view_theme_submenu("));
         assert!(production.contains(".top(px(layout.minimum_hit_target.value()))"));
         assert!(production.contains(".right_0()"));
         for menu_fn in [
@@ -20306,7 +20896,12 @@ mod tests {
             .next()
             .expect("more menu builder boundary");
 
-        for removed_id in ["more-properties", "more-restore", "more-empty-recycle-bin"] {
+        for removed_id in [
+            "more-properties",
+            "more-restore",
+            "more-empty-recycle-bin",
+            "more-handoff-file-explorer",
+        ] {
             assert!(!menu.contains(removed_id), "unexpected item: {removed_id}");
         }
     }
@@ -20947,6 +21542,14 @@ mod tests {
             menu.contains("ActivateBookmark { id }"),
             "folder entries must still activate the bookmark"
         );
+        assert!(
+            menu.contains("style.bg(tokens.theme.colors.control_hover.to_gpui())"),
+            "folder-menu rows must highlight on hover"
+        );
+        assert!(
+            menu.contains("on_mouse_up_out(MouseButton::Right"),
+            "folder-menu right-click must own the matching release so the file view cannot steal it"
+        );
     }
 
     #[test]
@@ -20978,6 +21581,14 @@ mod tests {
         assert!(item.contains("bookmark-context-overlay"));
         assert!(item.contains("RequestRemoveBookmark"));
         assert!(item.contains("OpenBookmarkInNewTab"));
+        assert!(
+            item.contains("on_mouse_up(MouseButton::Right"),
+            "context overlay must own the opening right-button release"
+        );
+        assert!(
+            item.contains("on_mouse_up_out(MouseButton::Right"),
+            "context overlay must own mouse-up-out after the overlay replaces the click target"
+        );
         for style in [
             ".min_w(px(252.0))",
             ".p(px(6.0))",
@@ -21255,5 +21866,189 @@ fn cache_budget_usage_text_reserves_unavailable_for_confirmed_failure() {
             1024 * 1024 * 1024,
         )),
         "Unavailable / 1.0 GB"
+    );
+}
+
+#[cfg(test)]
+struct BookmarkManagerProbe {
+    tokens: UiTokens,
+    state: AppViewState,
+    ui: crate::bookmark_manager_window::BookmarkManagerUiState,
+}
+
+#[cfg(test)]
+impl Render for BookmarkManagerProbe {
+    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+        div().size_full().child(bookmark_manager(
+            self.tokens,
+            &self.state,
+            &self.ui,
+            None,
+            None,
+            None,
+            "",
+            None,
+            None,
+        ))
+    }
+}
+
+#[gpui::test]
+fn bookmark_manager_header_and_cells_share_column_origin(cx: &mut gpui::TestAppContext) {
+    let mut state = AppViewState::default();
+    state.begin_new_bookmark_editor(
+        "Long bookmark".into(),
+        explorer_model::BookmarkTarget::FolderPath {
+            path: r"C:\Users\Example\Documents\Projects\SuperExplorer\a\very\long\folder\path\that\should\truncate".into(),
+        },
+    );
+    let _ = state.commit_bookmark_editor();
+    let mut ui = crate::bookmark_manager_window::BookmarkManagerUiState::default();
+    ui.columns.last_visited = true;
+    ui.columns.visit_count = true;
+    ui.columns.date_modified = true;
+    let probe = BookmarkManagerProbe {
+        tokens: UiTokens::default(),
+        state,
+        ui,
+    };
+    let window = cx.open_window(gpui::size(px(1200.0), px(720.0)), |_, _| probe);
+    let any_window = window.into();
+    cx.update_window(any_window, |_, window, cx| window.draw(cx).clear())
+        .expect("test window remains available");
+    let mut visual = gpui::VisualTestContext::from_window(any_window, cx);
+    let read = |visual: &mut gpui::VisualTestContext, selector: &'static str| {
+        visual
+            .debug_bounds(selector)
+            .unwrap_or_else(|| panic!("missing selector {selector}"))
+    };
+    for column in [
+        "Name",
+        "Tags",
+        "Location",
+        "LastVisited",
+        "VisitCount",
+        "DateAdded",
+        "DateModified",
+    ] {
+        let header_selector = match column {
+            "Name" => "bookmark-manager-header-Name",
+            "Tags" => "bookmark-manager-header-Tags",
+            "Location" => "bookmark-manager-header-Location",
+            "LastVisited" => "bookmark-manager-header-LastVisited",
+            "VisitCount" => "bookmark-manager-header-VisitCount",
+            "DateAdded" => "bookmark-manager-header-DateAdded",
+            "DateModified" => "bookmark-manager-header-DateModified",
+            _ => unreachable!(),
+        };
+        let cell_selector = match column {
+            "Name" => "bookmark-manager-cell-Name-0",
+            "Tags" => "bookmark-manager-cell-Tags-0",
+            "Location" => "bookmark-manager-cell-Location-0",
+            "LastVisited" => "bookmark-manager-cell-LastVisited-0",
+            "VisitCount" => "bookmark-manager-cell-VisitCount-0",
+            "DateAdded" => "bookmark-manager-cell-DateAdded-0",
+            "DateModified" => "bookmark-manager-cell-DateModified-0",
+            _ => unreachable!(),
+        };
+        let header = read(&mut visual, header_selector);
+        let cell = read(&mut visual, cell_selector);
+        assert!(
+            (f32::from(header.origin.x) - f32::from(cell.origin.x)).abs() <= 1.0,
+            "{column}: header {header:?} vs cell {cell:?}",
+        );
+        assert!(
+            (f32::from(header.size.width) - f32::from(cell.size.width)).abs() <= 1.0,
+            "{column}: header width {:?} vs cell width {:?}",
+            header.size.width,
+            cell.size.width,
+        );
+    }
+}
+
+#[cfg(test)]
+struct HistoryRowsProbe {
+    tokens: UiTokens,
+    visits: Vec<explorer_model::RecentNamespaceItem>,
+    ui: crate::bookmark_manager_window::BookmarkManagerUiState,
+}
+
+#[cfg(test)]
+impl Render for HistoryRowsProbe {
+    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+        let rows = bookmark_manager_history_visit_rows(
+            self.tokens,
+            &self.visits,
+            "",
+            0,
+            crate::bookmark_manager_window::HistoryBucket::Today,
+            &self.ui,
+            None,
+            None,
+        );
+        div().w(px(1000.0)).flex().items_center().children(rows)
+    }
+}
+
+#[gpui::test]
+fn bookmark_manager_history_rows_use_the_shared_column_contract(cx: &mut gpui::TestAppContext) {
+    let tokens = UiTokens::default();
+    let visit = explorer_model::RecentNamespaceItem {
+        identity: explorer_model::ShellIdentity {
+            stable_id: explorer_model::ShellItemId::from_provider_bytes(b"history-entry".to_vec())
+                .expect("stable id"),
+            descriptor: explorer_model::LocationDescriptor::file_system(
+                r"C:\Users\Example\Documents\Projects\SuperExplorer\a\very\long\folder\path",
+            ),
+            display_name: "History entry".to_owned(),
+            parsing_name: None,
+            serializable: true,
+            nonserializable_reason: None,
+        },
+        last_opened_epoch_seconds: 0,
+    };
+    let mut ui = crate::bookmark_manager_window::BookmarkManagerUiState::default();
+    ui.columns.last_visited = true;
+    ui.columns.visit_count = true;
+    ui.columns.date_modified = true;
+    let window = cx.open_window(gpui::size(px(1000.0), px(200.0)), |_, _| HistoryRowsProbe {
+        tokens,
+        visits: vec![visit],
+        ui,
+    });
+    let any_window = window.into();
+    cx.update_window(any_window, |_, window, cx| window.draw(cx).clear())
+        .expect("test window remains available");
+    let mut visual = gpui::VisualTestContext::from_window(any_window, cx);
+    let read = |visual: &mut gpui::VisualTestContext, selector: &'static str| {
+        visual
+            .debug_bounds(selector)
+            .unwrap_or_else(|| panic!("missing selector {selector}"))
+    };
+    for (column, selector, expected_width) in [
+        ("Name", "bookmark-history-cell-Name-0", 220.0),
+        ("Tags", "bookmark-history-cell-Tags-0", 128.0),
+        ("LastVisited", "bookmark-history-cell-LastVisited-0", 128.0),
+        ("VisitCount", "bookmark-history-cell-VisitCount-0", 128.0),
+        ("DateAdded", "bookmark-history-cell-DateAdded-0", 128.0),
+        (
+            "DateModified",
+            "bookmark-history-cell-DateModified-0",
+            128.0,
+        ),
+    ] {
+        let bounds = read(&mut visual, selector);
+        assert!(
+            (f32::from(bounds.size.width) - expected_width).abs() <= 1.0,
+            "{column}: expected width {expected_width}, got {}",
+            f32::from(bounds.size.width),
+        );
+    }
+    let location = read(&mut visual, "bookmark-history-cell-Location-0");
+    let expected_location = 1000.0 - 16.0 - 220.0 - 128.0 - 128.0 - 128.0 - 128.0 - 128.0;
+    assert!(
+        (f32::from(location.size.width) - expected_location).abs() <= 1.0,
+        "Location must absorb the flexible width, got {}",
+        f32::from(location.size.width),
     );
 }
