@@ -717,9 +717,9 @@ pub(crate) fn show(request: &ContextMenuRequest) -> Result<ContextMenuOutcome, E
     )?;
     let apk_devices = local_apk_devices(&request.target);
     let item_menu = matches!(request.target, ShellContextMenuTarget::Items { .. });
+    let shell_command_count = u32::try_from(command_count).unwrap_or(COMMAND_LAST - COMMAND_FIRST);
+    let first_custom_id = COMMAND_FIRST.saturating_add(shell_command_count);
     if item_menu || request.paste_available {
-        let first_custom_id = COMMAND_FIRST
-            .saturating_add(u32::try_from(command_count).unwrap_or(COMMAND_LAST - COMMAND_FIRST));
         unsafe { AppendMenuW(popup.get(), MF_SEPARATOR, 0, PCWSTR::null()) }.map_err(|error| {
             menu_error(
                 "append host command separator",
@@ -757,8 +757,7 @@ pub(crate) fn show(request: &ContextMenuRequest) -> Result<ContextMenuOutcome, E
             })?;
         }
     }
-    let apk_first_id = COMMAND_FIRST
-        .saturating_add(u32::try_from(command_count).unwrap_or(COMMAND_LAST - COMMAND_FIRST))
+    let apk_first_id = first_custom_id
         .saturating_add(u32::from(request.paste_available))
         .saturating_add(u32::from(item_menu));
     if let Some(menu_data) = &apk_devices {
@@ -999,6 +998,22 @@ pub(crate) fn show(request: &ContextMenuRequest) -> Result<ContextMenuOutcome, E
             }
         }
     }
+    if command_id >= first_custom_id {
+        if let Some(command) = host_command_from_app_owned_item(popup.get(), command_id, item_menu)
+            && host_command_applies_to_target(command, &request.target)
+        {
+            let _ = state.transition(ContextMenuSessionState::Finished);
+            let _ = state.release();
+            return Ok(ContextMenuOutcome::Delegated {
+                command_offset,
+                command,
+                target: request.target.clone(),
+            });
+        }
+        let _ = state.transition(ContextMenuSessionState::Finished);
+        let _ = state.release();
+        return Ok(ContextMenuOutcome::Cancelled);
+    }
     if let Some(command) = host_command_at_offset(
         &menu,
         popup.get(),
@@ -1095,12 +1110,34 @@ fn host_command_applies_to_target(
         || matches!(target, ShellContextMenuTarget::Items { items, .. } if items.len() == 1)
 }
 
+fn app_owned_host_command(label: &str, item_menu: bool) -> Option<ContextMenuHostCommand> {
+    if label == "貼上" {
+        return Some(ContextMenuHostCommand::Paste);
+    }
+    if item_menu && label == "加入書籤" {
+        return Some(ContextMenuHostCommand::AddBookmark);
+    }
+    None
+}
+
+fn host_command_from_app_owned_item(
+    popup: HMENU,
+    selected_id: u32,
+    item_menu: bool,
+) -> Option<ContextMenuHostCommand> {
+    command_label(popup, selected_id).and_then(|label| app_owned_host_command(&label, item_menu))
+}
+
 fn host_command_at_offset(
     menu: &IContextMenu,
     popup: HMENU,
     command_offset: u32,
     item_menu: bool,
 ) -> Option<ContextMenuHostCommand> {
+    let selected_id = COMMAND_FIRST.checked_add(command_offset)?;
+    if let Some(command) = host_command_from_app_owned_item(popup, selected_id, item_menu) {
+        return Some(command);
+    }
     let verb = canonical_verb_at_offset(menu, command_offset);
     if let Some(verb) = verb {
         tracing::debug!(command_offset, canonical_verb = %verb, "native context command selected");
@@ -1109,13 +1146,6 @@ fn host_command_at_offset(
         {
             return Some(command);
         }
-    }
-    let selected_id = COMMAND_FIRST.checked_add(command_offset)?;
-    if command_label(popup, selected_id).is_some_and(|label| label == "貼上") {
-        return Some(ContextMenuHostCommand::Paste);
-    }
-    if item_menu && command_label(popup, selected_id).is_some_and(|label| label == "加入書籤") {
-        return Some(ContextMenuHostCommand::AddBookmark);
     }
     if item_menu && command_label(popup, selected_id).is_some_and(|label| is_share_label(&label)) {
         return Some(ContextMenuHostCommand::Share);
@@ -2833,6 +2863,60 @@ mod tests {
     }
 
     #[test]
+    fn app_owned_labels_map_to_host_commands_without_shell_verbs() {
+        assert_eq!(
+            app_owned_host_command("貼上", false),
+            Some(ContextMenuHostCommand::Paste)
+        );
+        assert_eq!(
+            app_owned_host_command("加入書籤", true),
+            Some(ContextMenuHostCommand::AddBookmark)
+        );
+        assert_eq!(app_owned_host_command("加入書籤", false), None);
+        assert_eq!(app_owned_host_command("內容", true), None);
+    }
+
+    #[test]
+    fn app_owned_bookmark_command_does_not_query_shell_verbs_outside_range() {
+        let _guard = crate::clipboard::CLIPBOARD_TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        unsafe { OleInitialize(None) }.expect("OLE initialize");
+        let handler: IContextMenu3 = OwnerDrawFakeHandler {
+            messages: Arc::new(Mutex::new(Vec::new())),
+            query_flags: Arc::new(Mutex::new(Vec::new())),
+            release_trace: Arc::new(Mutex::new(Vec::new())),
+            owner: Arc::new(AtomicIsize::new(0)),
+            invoke_path: None,
+            invoked: Arc::new(AtomicBool::new(false)),
+            strict_command_ids: true,
+        }
+        .into();
+        let popup = OwnedMenu::create().expect("popup");
+        let menu: IContextMenu = handler.cast().expect("base context menu");
+        let command_count = query_menu(
+            &menu,
+            popup.get(),
+            true,
+            ContextMenuInvocationProfile::Explorer,
+        )
+        .expect("query controlled menu");
+        assert_eq!(command_count, 2);
+        let custom_id = COMMAND_FIRST
+            .saturating_add(u32::try_from(command_count).expect("bounded command count"));
+        unsafe { AppendMenuW(popup.get(), MF_STRING, custom_id as usize, w!("加入書籤")) }
+            .expect("append bookmark command");
+        assert_eq!(
+            host_command_at_offset(&menu, popup.get(), custom_id - COMMAND_FIRST, true),
+            Some(ContextMenuHostCommand::AddBookmark)
+        );
+        drop(popup);
+        drop(menu);
+        drop(handler);
+        unsafe { OleUninitialize() };
+    }
+
+    #[test]
     fn localized_share_labels_are_recognized_without_matching_unrelated_commands() {
         for label in [
             "Share",
@@ -3029,6 +3113,7 @@ mod tests {
         owner: Arc<AtomicIsize>,
         invoke_path: Option<PathBuf>,
         invoked: Arc<AtomicBool>,
+        strict_command_ids: bool,
     }
 
     impl Drop for OwnerDrawFakeHandler {
@@ -3062,6 +3147,9 @@ mod tests {
         }
 
         fn InvokeCommand(&self, _pici: *const CMINVOKECOMMANDINFO) -> WinResult<()> {
+            if self.strict_command_ids {
+                panic!("InvokeCommand must not run for app-owned commands");
+            }
             if let Some(path) = &self.invoke_path {
                 std::fs::write(path, b"created by controlled context-menu extension")
                     .expect("controlled extension mutation");
@@ -3078,6 +3166,9 @@ mod tests {
             pszname: PSTR,
             cchmax: u32,
         ) -> WinResult<()> {
+            if self.strict_command_ids && idcmd > 1 {
+                panic!("GetCommandString outside queried range: {idcmd}");
+            }
             if idcmd <= 1 && utype == GCS_VERBW {
                 let verb = if idcmd == 0 {
                     "Windows.ModernShare\0"
@@ -3650,6 +3741,7 @@ mod tests {
             owner: Arc::clone(&owner_handle),
             invoke_path: None,
             invoked: Arc::new(AtomicBool::new(false)),
+            strict_command_ids: false,
         }
         .into();
         let before = ContextMenuResourceSnapshot::capture();
@@ -3799,6 +3891,7 @@ mod tests {
             owner: Arc::new(AtomicIsize::new(0)),
             invoke_path: Some(created.clone()),
             invoked: Arc::clone(&invoked),
+            strict_command_ids: false,
         }
         .into();
         let mut owner_state = MenuOwnerState {

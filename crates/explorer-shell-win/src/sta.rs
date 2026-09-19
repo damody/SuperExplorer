@@ -1514,9 +1514,7 @@ fn process_command(
                     }),
                     DataTransferRequest::Paste { .. }
                     | DataTransferRequest::DropExternal { .. } => {
-                        tracing::error!(
-                            "background transfer reached synchronous dispatch"
-                        );
+                        tracing::error!("background transfer reached synchronous dispatch");
                         Err(ExplorerError::new(
                             ExplorerErrorKind::Internal,
                             "data_transfer",
@@ -1672,13 +1670,7 @@ fn process_command(
         } else {
             ErrorSeverity::Error
         };
-        record_process_error(
-            severity,
-            "shell",
-            &error.operation,
-            &error,
-            Some(file!()),
-        );
+        record_process_error(severity, "shell", &error.operation, &error, Some(file!()));
         let event = command_terminal_failure(command, context.clone(), error);
         publish_command_terminal(
             command,

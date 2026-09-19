@@ -17,20 +17,26 @@ use windows::{
     Win32::{
         Foundation::{HWND, LPARAM, WPARAM},
         System::{
-            Com::{CLSCTX_ALL, CoCreateInstance},
+            Com::{CLSCTX_ALL, CoCreateInstance, CoTaskMemFree, IServiceProvider},
+            Ole::IOleWindow,
             Variant::VARIANT,
         },
         UI::{
-            Shell::{IShellWindows, IWebBrowser2, ShellExecuteW, ShellWindows},
+            Shell::{
+                IShellBrowser, IShellDispatch, IShellWindows, IWebBrowser2, SBSP_ABSOLUTE,
+                SBSP_SAMEBROWSER, SHParseDisplayName, Shell, ShellExecuteW, ShellWindows,
+            },
             WindowsAndMessaging::{
                 AllowSetForegroundWindow, EnumWindows, FindWindowExW, GW_OWNER, GetClassNameW,
-                GetWindow, IsWindowVisible, PostMessageW, SW_SHOWNORMAL, SendMessageW,
-                SetForegroundWindow, WM_COMMAND,
+                GetWindow, IsWindowVisible, PostMessageW, SMTO_ABORTIFHUNG, SW_SHOWNORMAL,
+                SendMessageTimeoutW, SendMessageW, SetForegroundWindow, WM_COMMAND,
             },
         },
     },
-    core::{BOOL, BSTR, GUID, Interface, PCWSTR},
+    core::{BOOL, BSTR, GUID, HSTRING, IUnknown, Interface, PCWSTR},
 };
+
+const SID_S_TOP_LEVEL_BROWSER: GUID = GUID::from_u128(0x4C96BE40_915C_11CF_99D3_00AA004AE837);
 
 const NEW_TAB_COMMAND: usize = 0xA21B;
 const OPEN_TIMEOUT: Duration = Duration::from_secs(45);
@@ -104,31 +110,11 @@ fn open_file_explorer_windows_on_sta(
 ) -> Result<Vec<isize>, String> {
     let _ = unsafe { AllowSetForegroundWindow(ASFW_ANY) };
     let mut opened = Vec::with_capacity(windows.len());
-    let mut expected = Vec::new();
     for window in windows {
         let (targets, active) = handoff_targets(window);
-        expected.extend(targets.iter().cloned());
         opened.push(open_one_explorer_window(&targets, active)?);
     }
-    retry_missing_targets(&expected);
     Ok(opened)
-}
-
-fn retry_missing_targets(expected: &[String]) {
-    for target in expected {
-        let deadline = Instant::now() + Duration::from_secs(2);
-        while Instant::now() < deadline && !explorer_is_showing_target(target) {
-            thread::sleep(WAIT_SLICE);
-        }
-        if explorer_is_showing_target(target) {
-            continue;
-        }
-        let _ = launch_explorer(target, true);
-        let deadline = Instant::now() + Duration::from_secs(2);
-        while Instant::now() < deadline && !explorer_is_showing_target(target) {
-            thread::sleep(WAIT_SLICE);
-        }
-    }
 }
 
 fn handoff_targets(window: &ExplorerHandoffWindow) -> (Vec<String>, usize) {
@@ -163,33 +149,57 @@ fn open_one_explorer_window(targets: &[String], active: usize) -> Result<isize, 
         let _ = unsafe { SetForegroundWindow(HWND(hwnd as *mut c_void)) };
     }
     wait_until_showing(&first, Duration::from_secs(8));
-    for target in targets.iter().skip(1) {
-        let tabs_before = if hwnd != 0 {
-            tab_hwnds_of(hwnd)
-        } else {
-            Vec::new()
-        };
-        if hwnd != 0 {
-            let _ = unsafe { SetForegroundWindow(HWND(hwnd as *mut c_void)) };
-            request_new_tab(hwnd);
-            let new_tab = wait_for_new_tab(hwnd, &tabs_before, Duration::from_secs(2));
-            if !navigate_tab(hwnd, new_tab, target) {
-                launch_explorer(target, false)?;
+    if hwnd != 0 {
+        wait_until_com_ready(hwnd, Duration::from_secs(8));
+        for target in targets.iter().skip(1) {
+            if !open_tab_in_window(hwnd, target) {
+                tracing::warn!(
+                    target,
+                    "File Explorer handoff could not add a tab in the same window"
+                );
             }
-        } else {
-            launch_explorer(target, false)?;
+            wait_until_showing(target, Duration::from_secs(4));
         }
-        wait_until_showing(target, Duration::from_secs(4));
-    }
-    if hwnd != 0 && targets.len() > 1 {
-        select_tab(hwnd, active.min(targets.len() - 1));
+        if targets.len() > 1 {
+            select_tab(hwnd, active.min(targets.len() - 1));
+        }
     }
     Ok(hwnd)
 }
 
-fn launch_explorer(target: &str, _new_window: bool) -> Result<(), String> {
+fn open_tab_in_window(hwnd: isize, target: &str) -> bool {
+    let Some(windows) = shell_windows() else {
+        return false;
+    };
+    let before = collect_parent_browsers(&windows, hwnd);
+    let before_unknowns = unknowns_of(&before);
+    let before_count = before.len().max(tab_hwnds_of(hwnd).len());
+    let _ = unsafe { SetForegroundWindow(HWND(hwnd as *mut c_void)) };
+    request_new_tab(hwnd);
+    if let Some(browser) = wait_for_new_browser_in(&windows, hwnd, &before_unknowns, before_count) {
+        return navigate_browser(&browser, target);
+    }
+    request_new_tab_on_child(hwnd);
+    if let Some(browser) = wait_for_new_browser_in(&windows, hwnd, &before_unknowns, before_count) {
+        return navigate_browser(&browser, target);
+    }
+    false
+}
+
+fn launch_explorer(target: &str, new_window: bool) -> Result<(), String> {
     let _ = unsafe { AllowSetForegroundWindow(ASFW_ANY) };
+    if new_window && shell_explore(target).is_ok() {
+        return Ok(());
+    }
     shell_execute_open(target)
+}
+
+fn shell_explore(target: &str) -> Result<(), String> {
+    let shell: IShellDispatch = unsafe { CoCreateInstance(&Shell, None, CLSCTX_ALL) }
+        .map_err(|error| format!("IShellDispatch unavailable: {error}"))?;
+    let variant = VARIANT::from(BSTR::from(target));
+    unsafe { shell.Explore(&variant) }
+        .map_err(|error| format!("IShellDispatch.Explore failed for {target}: {error}"))
 }
 
 fn shell_execute_open(target: &str) -> Result<(), String> {
@@ -220,20 +230,6 @@ fn wait_until_showing(target: &str, timeout: Duration) {
     }
 }
 
-fn wait_for_new_tab(parent: isize, before: &[isize], timeout: Duration) -> Option<isize> {
-    let deadline = Instant::now() + timeout;
-    while Instant::now() < deadline {
-        if let Some(hwnd) = tab_hwnds_of(parent)
-            .into_iter()
-            .find(|hwnd| !before.contains(hwnd))
-        {
-            return Some(hwnd);
-        }
-        thread::sleep(WAIT_SLICE);
-    }
-    None
-}
-
 fn tab_hwnds_of(parent: isize) -> Vec<isize> {
     let mut tabs = Vec::new();
     let mut child = HWND::default();
@@ -256,18 +252,19 @@ fn tab_hwnds_of(parent: isize) -> Vec<isize> {
     tabs
 }
 
-fn navigate_tab(parent: isize, tab: Option<isize>, target: &str) -> bool {
-    let Some(browser) = browser_for_window(parent, tab) else {
-        return false;
-    };
-    let url = BSTR::from(target);
-    unsafe { browser.Navigate(&url, None, None, None, None) }.is_ok()
+fn shell_windows() -> Option<IShellWindows> {
+    unsafe { CoCreateInstance::<_, IShellWindows>(&ShellWindows, None, CLSCTX_ALL) }.ok()
 }
 
-fn browser_for_window(parent: isize, tab: Option<isize>) -> Option<IWebBrowser2> {
-    let windows =
-        unsafe { CoCreateInstance::<_, IShellWindows>(&ShellWindows, None, CLSCTX_ALL) }.ok()?;
+fn browsers_for_parent(parent: isize) -> Vec<IWebBrowser2> {
+    shell_windows()
+        .map(|windows| collect_parent_browsers(&windows, parent))
+        .unwrap_or_default()
+}
+
+fn collect_parent_browsers(windows: &IShellWindows, parent: isize) -> Vec<IWebBrowser2> {
     let count = unsafe { windows.Count() }.unwrap_or(0);
+    let mut browsers = Vec::new();
     for index in 0..count {
         let Ok(dispatch) = (unsafe { windows.Item(&VARIANT::from(index)) }) else {
             continue;
@@ -278,28 +275,145 @@ fn browser_for_window(parent: isize, tab: Option<isize>) -> Option<IWebBrowser2>
         let Ok(hwnd) = (unsafe { browser.HWND() }) else {
             continue;
         };
-        if hwnd.0 as isize != parent {
-            continue;
+        if hwnd.0 as isize == parent {
+            browsers.push(browser);
         }
-        if tab.is_none() {
-            return Some(browser);
+    }
+    browsers
+}
+
+fn unknowns_of(browsers: &[IWebBrowser2]) -> Vec<IUnknown> {
+    browsers
+        .iter()
+        .filter_map(|browser| browser.cast::<IUnknown>().ok())
+        .collect()
+}
+
+fn wait_until_com_ready(parent: isize, timeout: Duration) {
+    let deadline = Instant::now() + timeout;
+    while Instant::now() < deadline && browsers_for_parent(parent).is_empty() {
+        thread::sleep(WAIT_SLICE);
+    }
+}
+
+fn wait_for_new_browser_in(
+    windows: &IShellWindows,
+    parent: isize,
+    before_unknowns: &[IUnknown],
+    before_count: usize,
+) -> Option<IWebBrowser2> {
+    let deadline = Instant::now() + Duration::from_secs(3);
+    while Instant::now() < deadline {
+        let now = collect_parent_browsers(windows, parent);
+        if now.len() > before_unknowns.len() || tab_hwnds_of(parent).len() > before_count {
+            if let Some(browser) = pick_new_browser(&now, before_unknowns, parent) {
+                return Some(browser);
+            }
         }
-        let ole_tab = dispatch
-            .cast::<windows::Win32::System::Ole::IOleWindow>()
-            .ok()
-            .and_then(|ole| unsafe { ole.GetWindow() }.ok())
-            .map(|handle| handle.0 as isize);
-        if ole_tab == tab {
-            return Some(browser);
-        }
+        thread::sleep(WAIT_SLICE);
     }
     None
 }
 
+fn pick_new_browser(
+    browsers: &[IWebBrowser2],
+    before_unknowns: &[IUnknown],
+    parent: isize,
+) -> Option<IWebBrowser2> {
+    for browser in browsers {
+        let Ok(unknown) = browser.cast::<IUnknown>() else {
+            continue;
+        };
+        if before_unknowns.iter().all(|existing| existing != &unknown) {
+            return Some(browser.clone());
+        }
+    }
+    let active = first_tab_hwnd(parent);
+    browsers
+        .iter()
+        .find(|browser| tab_hwnd_from_browser(browser).is_some_and(|tab| Some(tab) == active))
+        .cloned()
+}
+
+fn tab_hwnd_from_browser(browser: &IWebBrowser2) -> Option<isize> {
+    shell_browser_from(browser)
+        .and_then(|shell_browser| shell_browser.cast::<IOleWindow>().ok())
+        .and_then(|ole| unsafe { ole.GetWindow() }.ok())
+        .map(|hwnd| hwnd.0 as isize)
+}
+
+fn shell_browser_from(browser: &IWebBrowser2) -> Option<IShellBrowser> {
+    let provider = browser.cast::<IServiceProvider>().ok()?;
+    unsafe { provider.QueryService(&SID_S_TOP_LEVEL_BROWSER) }
+        .or_else(|_| unsafe { provider.QueryService(&IShellBrowser::IID) })
+        .ok()
+}
+
+fn navigate_browser(browser: &IWebBrowser2, target: &str) -> bool {
+    if browse_object(browser, target) {
+        return true;
+    }
+    let file_url = filesystem_navigate_url(target);
+    let url = BSTR::from(file_url.as_str());
+    if unsafe { browser.Navigate(&url, None, None, None, None) }.is_ok() {
+        return true;
+    }
+    let url = BSTR::from(target);
+    unsafe { browser.Navigate(&url, None, None, None, None) }.is_ok()
+}
+
+fn filesystem_navigate_url(target: &str) -> String {
+    if target.starts_with("shell:") || target.starts_with("file:") {
+        return target.to_owned();
+    }
+    format!("file:///{}", target.replace('\\', "/"))
+}
+
+fn browse_object(browser: &IWebBrowser2, target: &str) -> bool {
+    let Some(shell_browser) = shell_browser_from(browser) else {
+        return false;
+    };
+    let value = HSTRING::from(target);
+    let mut pidl = std::ptr::null_mut();
+    if unsafe { SHParseDisplayName(&value, None, &raw mut pidl, 0, None) }.is_err()
+        || pidl.is_null()
+    {
+        return false;
+    }
+    let result = unsafe { shell_browser.BrowseObject(pidl, SBSP_SAMEBROWSER | SBSP_ABSOLUTE) };
+    unsafe { CoTaskMemFree(Some(pidl.cast())) };
+    result.is_ok()
+}
+
 fn request_new_tab(parent: isize) {
+    send_command(HWND(parent as *mut c_void), NEW_TAB_COMMAND, 0);
+}
+
+fn request_new_tab_on_child(parent: isize) {
     let tab = first_tab_hwnd(parent).unwrap_or(parent);
-    let handle = HWND(tab as *mut c_void);
-    let _ = unsafe { PostMessageW(Some(handle), WM_COMMAND, WPARAM(NEW_TAB_COMMAND), LPARAM(0)) };
+    let _ = unsafe {
+        PostMessageW(
+            Some(HWND(tab as *mut c_void)),
+            WM_COMMAND,
+            WPARAM(NEW_TAB_COMMAND),
+            LPARAM(0),
+        )
+    };
+}
+
+fn send_command(hwnd: HWND, command: usize, lparam: isize) {
+    let mut result = 0usize;
+    let _ = unsafe {
+        SendMessageTimeoutW(
+            hwnd,
+            WM_COMMAND,
+            WPARAM(command),
+            LPARAM(lparam),
+            SMTO_ABORTIFHUNG,
+            200,
+            Some(&raw mut result),
+        )
+    };
 }
 
 fn select_tab(parent: isize, index: usize) {
@@ -506,6 +620,28 @@ mod tests {
     }
 
     #[test]
+    fn one_window_with_multiple_tabs_stays_one_handoff_window() {
+        let window = ExplorerHandoffWindow {
+            tabs: vec![
+                LocationDescriptor::file_system(r"D:\se-alpha"),
+                LocationDescriptor::file_system(r"D:\se-beta"),
+                LocationDescriptor::file_system(r"D:\se-gamma"),
+            ],
+            active: 1,
+        };
+        let (targets, active) = handoff_targets(&window);
+        assert_eq!(
+            targets,
+            vec![
+                r"D:\se-alpha".to_owned(),
+                r"D:\se-beta".to_owned(),
+                r"D:\se-gamma".to_owned()
+            ]
+        );
+        assert_eq!(active, 1);
+    }
+
+    #[test]
     fn file_urls_match_filesystem_paths() {
         assert!(targets_match(
             &normalize_target(r"D:\SuperExplorer"),
@@ -539,5 +675,137 @@ mod tests {
         assert!(!hwnds.is_empty(), "handoff opened no Explorer window");
         close_explorer_windows(&hwnds);
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn live_open_keeps_multiple_tabs_in_one_window() {
+        use crate::{close_explorer_windows, snapshot_open_explorer_windows};
+        let _lock = crate::live_explorer_lock();
+        let root = std::path::PathBuf::from(format!(r"D:\se-handoff-tabs-{}", std::process::id()));
+        let folders = [root.join("alpha"), root.join("beta"), root.join("gamma")];
+        for folder in &folders {
+            std::fs::create_dir_all(folder).unwrap();
+        }
+        let opened = open_file_explorer_windows(&[ExplorerHandoffWindow {
+            tabs: folders
+                .iter()
+                .map(LocationDescriptor::file_system)
+                .collect(),
+            active: 1,
+        }]);
+        let mut hwnds = match opened {
+            Ok(hwnds) => hwnds,
+            Err(error) => {
+                let _ = std::fs::remove_dir_all(&root);
+                panic!("open File Explorer: {error}");
+            }
+        };
+        let deadline = Instant::now() + Duration::from_secs(15);
+        let mut prefix_windows = Vec::new();
+        while Instant::now() < deadline {
+            prefix_windows = snapshot_open_explorer_windows()
+                .ok()
+                .map(|windows| windows_with_prefix_tabs(&windows, &root))
+                .unwrap_or_default();
+            if prefix_windows.len() == 1 && prefix_windows[0].tabs.len() >= folders.len() {
+                break;
+            }
+            thread::sleep(WAIT_SLICE);
+        }
+        hwnds.extend(prefix_windows.iter().map(|window| window.hwnd));
+        close_explorer_windows(&hwnds);
+        let leftover = snapshot_open_explorer_windows()
+            .ok()
+            .map(|windows| windows_with_prefix_tabs(&windows, &root))
+            .unwrap_or_default();
+        close_explorer_windows(
+            &leftover
+                .iter()
+                .map(|window| window.hwnd)
+                .collect::<Vec<_>>(),
+        );
+        let _ = std::fs::remove_dir_all(&root);
+        assert_eq!(
+            prefix_windows.len(),
+            1,
+            "one SuperExplorer window with multiple tabs must convert to one File Explorer window, got {} windows: {:?}",
+            prefix_windows.len(),
+            prefix_windows
+                .iter()
+                .map(|window| window
+                    .tabs
+                    .iter()
+                    .map(|tab| format!("{} ({:?})", tab.display_title, tab.location))
+                    .collect::<Vec<_>>())
+                .collect::<Vec<_>>()
+        );
+        let found = folders
+            .iter()
+            .filter(|folder| snapshot_window_contains_path(&prefix_windows, folder))
+            .count();
+        assert_eq!(
+            found,
+            folders.len(),
+            "the single File Explorer window must keep every handed-off tab"
+        );
+    }
+
+    fn windows_with_prefix_tabs(
+        windows: &[crate::ExplorerWindowSnapshot],
+        prefix: &std::path::Path,
+    ) -> Vec<crate::ExplorerWindowSnapshot> {
+        let prefix_l = prefix
+            .to_string_lossy()
+            .replace('/', "\\")
+            .trim_end_matches('\\')
+            .to_ascii_lowercase();
+        windows
+            .iter()
+            .filter(|window| {
+                window.tabs.iter().any(|tab| {
+                    tab.location.path().is_some_and(|path| {
+                        let path = path
+                            .to_string_lossy()
+                            .replace('/', "\\")
+                            .trim_end_matches('\\')
+                            .to_ascii_lowercase();
+                        path == prefix_l || path.starts_with(&format!("{prefix_l}\\"))
+                    })
+                })
+            })
+            .cloned()
+            .collect()
+    }
+
+    fn snapshot_window_contains_path(
+        windows: &[crate::ExplorerWindowSnapshot],
+        expected: &std::path::Path,
+    ) -> bool {
+        let expected_name = expected
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("");
+        let expected_l = expected
+            .to_string_lossy()
+            .replace('/', "\\")
+            .trim_end_matches('\\')
+            .to_ascii_lowercase();
+        windows
+            .iter()
+            .flat_map(|window| window.tabs.iter())
+            .any(|tab| {
+                let title_match = tab.display_title.eq_ignore_ascii_case(expected_name);
+                let path_match = tab.location.path().is_some_and(|path| {
+                    let path = path
+                        .to_string_lossy()
+                        .replace('/', "\\")
+                        .trim_end_matches('\\')
+                        .to_ascii_lowercase();
+                    path == expected_l
+                        || path.ends_with(&expected_l)
+                        || path.ends_with(&format!("\\{expected_name}"))
+                });
+                title_match || path_match
+            })
     }
 }

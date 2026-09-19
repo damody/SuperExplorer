@@ -1129,9 +1129,7 @@ pub fn open_default(descriptor: &LocationDescriptor) -> Result<(), ExplorerError
                 LocationDescriptor::FileSystem(_)
                 | LocationDescriptor::ParsingName(_)
                 | LocationDescriptor::Virtual(_) => {
-                    tracing::error!(
-                        "open_default inner match received a non-namespace location"
-                    );
+                    tracing::error!("open_default inner match received a non-namespace location");
                     return Err(shell_error(
                         "resolve item to open",
                         None,
