@@ -447,12 +447,15 @@ pub enum ExplorerAction {
     SetFolderOptionCacheBudgets(explorer_model::CacheBudgetSettingsV1),
     SetFolderOptionTabMinWidth(u16),
     SetFolderOptionTabMaxWidth(u16),
+    ToggleFolderOptionMultiRowTabs,
+    SetFolderOptionTabRowCount(u16),
     ClearThumbnailCache,
     ToggleFolderOptionDetailsPane,
     ToggleFolderOptionPreviewPane,
     SetFolderOptionLocaleChoice(LocaleChoice),
     ToggleFolderOptionsLanguagePicker,
     SetFolderOptionSearchEngine(explorer_model::SearchEnginePreference),
+    ToggleFolderOptionMft,
     SetFolderOptionTheme(crate::theme::ColorTheme),
     ToggleRestorePreviousSession,
     ResetSavedSession,
@@ -837,12 +840,15 @@ impl ExplorerAction {
             Self::SetFolderOptionCacheBudgets(_) => "SetFolderOptionCacheBudgets",
             Self::SetFolderOptionTabMinWidth(_) => "SetFolderOptionTabMinWidth",
             Self::SetFolderOptionTabMaxWidth(_) => "SetFolderOptionTabMaxWidth",
+            Self::ToggleFolderOptionMultiRowTabs => "ToggleFolderOptionMultiRowTabs",
+            Self::SetFolderOptionTabRowCount(_) => "SetFolderOptionTabRowCount",
             Self::ClearThumbnailCache => "ClearThumbnailCache",
             Self::ToggleFolderOptionDetailsPane => "ToggleFolderOptionDetailsPane",
             Self::ToggleFolderOptionPreviewPane => "ToggleFolderOptionPreviewPane",
             Self::SetFolderOptionLocaleChoice(_) => "SetFolderOptionLocaleChoice",
             Self::ToggleFolderOptionsLanguagePicker => "ToggleFolderOptionsLanguagePicker",
             Self::SetFolderOptionSearchEngine(_) => "SetFolderOptionSearchEngine",
+            Self::ToggleFolderOptionMft => "ToggleFolderOptionMft",
             Self::SetFolderOptionTheme(_) => "SetFolderOptionTheme",
             Self::ToggleRestorePreviousSession => "ToggleRestorePreviousSession",
             Self::ResetSavedSession => "ResetSavedSession",
@@ -1196,6 +1202,9 @@ fn is_high_frequency_pointer_action(action: &ExplorerAction) -> bool {
             | ExplorerAction::UpdateDetailsColumnDragPreview { .. }
             | ExplorerAction::UpdateBookmarkDropCue { .. }
             | ExplorerAction::ReorderTabBeside { .. }
+            | ExplorerAction::SetFolderOptionTabMinWidth(_)
+            | ExplorerAction::SetFolderOptionTabMaxWidth(_)
+            | ExplorerAction::SetFolderOptionTabRowCount(_)
             | ExplorerAction::CommitDetailsColumnDrag
             | ExplorerAction::CancelDetailsColumnDrag
             | ExplorerAction::UpdateSidePaneResize { .. }
@@ -1661,12 +1670,15 @@ fn action_available(state: &AppViewState, action: &ExplorerAction) -> bool {
         | ExplorerAction::SetFolderOptionCacheBudgets(_)
         | ExplorerAction::SetFolderOptionTabMinWidth(_)
         | ExplorerAction::SetFolderOptionTabMaxWidth(_)
+        | ExplorerAction::ToggleFolderOptionMultiRowTabs
+        | ExplorerAction::SetFolderOptionTabRowCount(_)
         | ExplorerAction::ClearThumbnailCache
         | ExplorerAction::ToggleFolderOptionDetailsPane
         | ExplorerAction::ToggleFolderOptionPreviewPane
         | ExplorerAction::SetFolderOptionLocaleChoice(_)
         | ExplorerAction::ToggleFolderOptionsLanguagePicker
         | ExplorerAction::SetFolderOptionSearchEngine(_)
+        | ExplorerAction::ToggleFolderOptionMft
         | ExplorerAction::SetFolderOptionTheme(_)
         | ExplorerAction::ToggleRestorePreviousSession
         | ExplorerAction::ResetSavedSession
@@ -2383,6 +2395,18 @@ fn apply_action(state: &mut AppViewState, action: ExplorerAction) -> FocusSurfac
             });
             FocusSurface::CommandBar
         }
+        ExplorerAction::ToggleFolderOptionMultiRowTabs => {
+            state.update_folder_options(|settings| {
+                settings.multi_row_tabs = !settings.multi_row_tabs;
+            });
+            FocusSurface::CommandBar
+        }
+        ExplorerAction::SetFolderOptionTabRowCount(value) => {
+            state.update_folder_options(|settings| {
+                settings.tab_row_count = explorer_model::normalized_tab_row_count(value);
+            });
+            FocusSurface::CommandBar
+        }
         ExplorerAction::SetFolderOptionCacheBudgets(budgets) => {
             state.update_folder_options(|settings| {
                 settings.cache_budgets = budgets.normalized();
@@ -2432,6 +2456,10 @@ fn apply_action(state: &mut AppViewState, action: ExplorerAction) -> FocusSurfac
         ExplorerAction::ToggleFolderOptionsLanguagePicker => FocusSurface::CommandBar,
         ExplorerAction::SetFolderOptionSearchEngine(engine) => {
             state.set_folder_option_search_engine(engine);
+            FocusSurface::CommandBar
+        }
+        ExplorerAction::ToggleFolderOptionMft => {
+            state.toggle_folder_option_mft();
             FocusSurface::CommandBar
         }
         ExplorerAction::SetFolderOptionTheme(theme) => {

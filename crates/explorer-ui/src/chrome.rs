@@ -1,6 +1,7 @@
 //! Stateless Explorer chrome components for the M1 visual checkpoint.
 
 use std::{
+    cell::{Cell, RefCell},
     collections::{HashMap, HashSet},
     hash::{Hash, Hasher},
     rc::Rc,
@@ -62,7 +63,7 @@ fn extension_display_name(catalog: Catalog, extension: &crate::state::ExtensionO
 }
 use explorer_model::{DirectoryState, TabId, TabSearchState};
 use gpui::{
-    AccessibleAction, Anchor, AnchoredPositionMode, App, Background, BoxShadow, Context,
+    AccessibleAction, Anchor, AnchoredPositionMode, App, Background, Bounds, BoxShadow, Context,
     DispatchPhase, Focusable, FontWeight, IntoElement, MouseButton, MouseMoveEvent, MouseUpEvent,
     ObjectFit, Render, RenderImage, RenderOnce, Role, SharedString, Window, WindowControlArea,
     anchored, canvas, deferred, div, hsla, img, linear_color_stop, linear_gradient, point,
@@ -339,6 +340,7 @@ pub const CAPTION_MINIMIZE_ID: &str = "caption-minimize";
 pub const CAPTION_MAXIMIZE_ID: &str = "caption-maximize";
 pub const CAPTION_CLOSE_ID: &str = "caption-close";
 pub const TAB_STRIP_SCROLLBAR_ID: &str = "tab-strip-scrollbar";
+pub const TAB_STRIP_VSCROLLBAR_ID: &str = "tab-strip-vscrollbar";
 pub const COMMAND_BAR_ID: &str = "command-bar";
 pub const NAVIGATION_BAR_ID: &str = "navigation-bar";
 pub const ADDRESS_EDITOR_ID: &str = "breadcrumb-address-editor";
@@ -427,14 +429,14 @@ pub(crate) fn tab_strip_needed_width(
 ) -> f32 {
     let gap = tokens.layout.content_spacing.value();
     let padding = tokens.layout.control_padding_horizontal.value() * 2.0;
-    tab_count as f32 * tab_min_width + tab_count.saturating_sub(1) as f32 * gap + padding
+    let plus = tokens.layout.minimum_hit_target.value();
+    tab_count as f32 * tab_min_width + tab_count as f32 * gap + plus + padding
 }
 
 pub(crate) fn tab_strip_fallback_viewport(window_width: f32, tokens: UiTokens) -> f32 {
     (window_width
         - tokens.layout.caption_button_width.value() * 3.0
-        - tokens.layout.minimum_hit_target.value()
-        - tokens.layout.content_spacing.value())
+        - crate::layout::tabs::CAPTION_DRAG_RESERVE.value())
     .max(0.0)
 }
 
@@ -480,13 +482,101 @@ fn tab_overflow_track_for(
     state: &AppViewState,
     window_width: f32,
 ) -> f32 {
-    tab_strip_overflow_track_height(
-        handle,
-        tokens,
+    tab_strip_chrome_metrics(handle, tokens, state, window_width).extra_height
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct TabStripChromeMetrics {
+    extra_height: f32,
+    visible_rows: u16,
+    vertical_overflow: bool,
+    multi_row: bool,
+}
+
+#[allow(
+    clippy::cast_possible_truncation,
+    reason = "visible tab rows are clamped to the configured u16 maximum"
+)]
+fn tab_strip_chrome_metrics(
+    handle: Option<&gpui::ScrollHandle>,
+    tokens: UiTokens,
+    state: &AppViewState,
+    window_width: f32,
+) -> TabStripChromeMetrics {
+    let settings = state.view_settings();
+    if !settings.multi_row_tabs {
+        return TabStripChromeMetrics {
+            extra_height: tab_strip_overflow_track_height(
+                handle,
+                tokens,
+                state.tabs().tabs().len(),
+                tab_min_width_px(state),
+                tab_strip_fallback_viewport(window_width, tokens),
+            ),
+            visible_rows: 1,
+            vertical_overflow: false,
+            multi_row: false,
+        };
+    }
+    let max_rows = explorer_model::normalized_tab_row_count(settings.tab_row_count);
+    let needed = tab_strip_wrap_rows(
         state.tabs().tabs().len(),
         tab_min_width_px(state),
-        tab_strip_fallback_viewport(window_width, tokens),
-    )
+        tab_strip_wrap_available_width(window_width, tokens, false),
+        tokens,
+    );
+    let vertical_overflow = needed > usize::from(max_rows);
+    let needed = if vertical_overflow {
+        tab_strip_wrap_rows(
+            state.tabs().tabs().len(),
+            tab_min_width_px(state),
+            tab_strip_wrap_available_width(window_width, tokens, true),
+            tokens,
+        )
+    } else {
+        needed
+    };
+    let visible_rows = (needed as u16).clamp(1, max_rows);
+    TabStripChromeMetrics {
+        extra_height: f32::from(visible_rows.saturating_sub(1))
+            * tokens.layout.title_tab_height.value(),
+        visible_rows,
+        vertical_overflow: needed > usize::from(max_rows),
+        multi_row: true,
+    }
+}
+
+fn tab_strip_wrap_available_width(
+    window_width: f32,
+    tokens: UiTokens,
+    vertical_scrollbar: bool,
+) -> f32 {
+    let track = if vertical_scrollbar {
+        tokens.layout.content_spacing.value() * 1.5
+    } else {
+        0.0
+    };
+    (tab_strip_fallback_viewport(window_width, tokens) - track).max(0.0)
+}
+
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    clippy::cast_precision_loss,
+    reason = "finite tab-strip width is converted into a positive column count"
+)]
+fn tab_strip_wrap_rows(
+    tab_count: usize,
+    tab_min_width: f32,
+    available_width: f32,
+    tokens: UiTokens,
+) -> usize {
+    let gap = tokens.layout.content_spacing.value();
+    let padding = tokens.layout.control_padding_horizontal.value() * 2.0;
+    let inner = (available_width - padding).max(0.0);
+    let cell = tab_min_width.max(1.0) + gap;
+    let columns = ((inner + gap) / cell).floor().max(1.0) as usize;
+    tab_count.saturating_add(1).div_ceil(columns).max(1)
 }
 
 pub(crate) fn explorer_file_origin_y_with_tab_overflow(
@@ -5651,7 +5741,10 @@ pub(crate) fn folder_options_window_content(
     let page = draft.page;
     let apply_error = draft.apply_error.clone();
     let search_engine = draft.settings.search_engine;
-    let search_engine_availability = draft.search_engine_availability;
+    let search_engine_availability = draft
+        .search_engine_availability
+        .with_mft_feature(draft.settings.mft_enabled);
+    let mft_enabled = draft.settings.mft_enabled;
     let settings = draft.settings;
     let title = catalog.t("dialogs-folder-options");
     div()
@@ -5762,8 +5855,11 @@ pub(crate) fn folder_options_window_content(
                                 draft.theme,
                                 search_engine,
                                 search_engine_availability,
+                                mft_enabled,
                                 settings.tab_min_width,
                                 settings.tab_max_width,
+                                settings.multi_row_tabs,
+                                settings.tab_row_count,
                                 catalog,
                                 windows_negotiated_locale,
                                 language_picker_open,
@@ -6047,8 +6143,11 @@ fn folder_options_general_page(
     theme: crate::theme::ColorTheme,
     search_engine: explorer_model::SearchEnginePreference,
     search_engine_availability: explorer_model::SearchEngineAvailability,
+    mft_enabled: bool,
     tab_min_width: u16,
     tab_max_width: u16,
+    multi_row_tabs: bool,
+    tab_row_count: u16,
     catalog: Catalog,
     windows_negotiated_locale: explorer_model::AppLocale,
     language_picker_open: bool,
@@ -6076,10 +6175,19 @@ fn folder_options_general_page(
             theme,
             on_action.clone(),
         ))
+        .child(folder_option_checkbox(
+            "folder-option-enable-mft",
+            catalog.t("settings-enable-mft"),
+            mft_enabled,
+            ExplorerAction::ToggleFolderOptionMft,
+            tokens,
+            on_action.clone(),
+        ))
         .child(folder_options_search_engine_group(
             tokens,
             search_engine,
             search_engine_availability,
+            mft_enabled,
             catalog,
             on_action.clone(),
         ))
@@ -6094,6 +6202,20 @@ fn folder_options_general_page(
             catalog,
             tab_min_width,
             tab_max_width,
+            on_action.clone(),
+        ))
+        .child(folder_option_checkbox(
+            "folder-option-multi-row-tabs",
+            catalog.t("settings-multi-row-tabs"),
+            multi_row_tabs,
+            ExplorerAction::ToggleFolderOptionMultiRowTabs,
+            tokens,
+            on_action.clone(),
+        ))
+        .child(folder_option_tab_row_count(
+            tokens,
+            catalog,
+            tab_row_count,
             on_action.clone(),
         ))
         .child(folder_option_group(
@@ -6265,6 +6387,7 @@ fn folder_options_search_engine_group(
     tokens: UiTokens,
     selected: explorer_model::SearchEnginePreference,
     availability: explorer_model::SearchEngineAvailability,
+    mft_enabled: bool,
     catalog: Catalog,
     on_action: Option<ActionCallback>,
 ) -> impl IntoElement {
@@ -6301,7 +6424,11 @@ fn folder_options_search_engine_group(
         .child(folder_option_search_engine_radio(
             "folder-option-search-engine-mft",
             catalog.t("settings-search-engine-mft"),
-            catalog.t("settings-search-engine-unsupported-mft"),
+            catalog.t(if mft_enabled {
+                "settings-search-engine-unsupported-mft"
+            } else {
+                "settings-search-engine-unsupported-mft-disabled"
+            }),
             selected == explorer_model::SearchEnginePreference::Mft,
             availability
                 .support(explorer_model::SearchEnginePreference::Mft)
@@ -7048,25 +7175,39 @@ fn folder_option_tab_max_width(
     value: u16,
     on_action: Option<ActionCallback>,
 ) -> impl IntoElement {
+    let min_width = explorer_model::normalized_tab_min_width(min_width);
     let value = explorer_model::normalized_tab_max_width(value, min_width);
-    let decrease =
-        ExplorerAction::SetFolderOptionTabMaxWidth(explorer_model::normalized_tab_max_width(
-            value.saturating_sub(explorer_model::TAB_MIN_WIDTH_STEP),
-            min_width,
-        ));
-    let increase =
-        ExplorerAction::SetFolderOptionTabMaxWidth(explorer_model::normalized_tab_max_width(
-            value.saturating_add(explorer_model::TAB_MIN_WIDTH_STEP),
-            min_width,
-        ));
-    folder_option_px_stepper(
+    folder_option_numeric_slider(
         "folder-option-tab-max-width",
         catalog.t("settings-tab-max-width"),
         value,
-        decrease,
-        increase,
+        min_width,
+        explorer_model::MAX_TAB_MAX_WIDTH,
+        explorer_model::TAB_MIN_WIDTH_STEP,
+        catalog.t("settings-px"),
+        ExplorerAction::SetFolderOptionTabMaxWidth,
         tokens,
-        catalog,
+        on_action,
+    )
+}
+
+fn folder_option_tab_row_count(
+    tokens: UiTokens,
+    catalog: Catalog,
+    value: u16,
+    on_action: Option<ActionCallback>,
+) -> impl IntoElement {
+    let value = explorer_model::normalized_tab_row_count(value);
+    folder_option_numeric_slider(
+        "folder-option-tab-row-count",
+        catalog.t("settings-tab-max-rows"),
+        value,
+        explorer_model::MIN_TAB_ROW_COUNT,
+        explorer_model::MAX_TAB_ROW_COUNT,
+        1,
+        catalog.t("settings-rows"),
+        ExplorerAction::SetFolderOptionTabRowCount,
+        tokens,
         on_action,
     )
 }
@@ -7078,42 +7219,71 @@ fn folder_option_tab_min_width(
     on_action: Option<ActionCallback>,
 ) -> impl IntoElement {
     let value = explorer_model::normalized_tab_min_width(value);
-    let decrease =
-        ExplorerAction::SetFolderOptionTabMinWidth(explorer_model::normalized_tab_min_width(
-            value.saturating_sub(explorer_model::TAB_MIN_WIDTH_STEP),
-        ));
-    let increase =
-        ExplorerAction::SetFolderOptionTabMinWidth(explorer_model::normalized_tab_min_width(
-            value.saturating_add(explorer_model::TAB_MIN_WIDTH_STEP),
-        ));
-    folder_option_px_stepper(
+    folder_option_numeric_slider(
         "folder-option-tab-min-width",
         catalog.t("settings-tab-min-width"),
         value,
-        decrease,
-        increase,
+        explorer_model::MIN_TAB_MIN_WIDTH,
+        explorer_model::MAX_TAB_MIN_WIDTH,
+        explorer_model::TAB_MIN_WIDTH_STEP,
+        catalog.t("settings-px"),
+        ExplorerAction::SetFolderOptionTabMinWidth,
         tokens,
-        catalog,
         on_action,
     )
 }
 
-fn folder_option_px_stepper(
+fn folder_option_slider_value(
+    pointer_x: f32,
+    left: f32,
+    width: f32,
+    min: u16,
+    max: u16,
+    step: u16,
+) -> u16 {
+    if width <= 1.0 || max <= min {
+        return min;
+    }
+    let t = ((pointer_x - left) / width).clamp(0.0, 1.0);
+    let step = step.max(1);
+    let steps = ((f32::from(max.saturating_sub(min)) / f32::from(step)).round() as u16).max(1);
+    let index = (t * f32::from(steps)).round() as u16;
+    if index >= steps {
+        max
+    } else {
+        min.saturating_add(index.saturating_mul(step)).min(max)
+    }
+}
+
+fn folder_option_numeric_slider(
     id: &'static str,
     label: impl Into<SharedString>,
     value: u16,
-    decrease: ExplorerAction,
-    increase: ExplorerAction,
+    min: u16,
+    max: u16,
+    step: u16,
+    unit: impl Into<SharedString>,
+    make_action: fn(u16) -> ExplorerAction,
     tokens: UiTokens,
-    catalog: Catalog,
     on_action: Option<ActionCallback>,
 ) -> impl IntoElement {
     let label = label.into();
+    let unit = unit.into();
+    let value = value.clamp(min, max);
+    let decrease = make_action(value.saturating_sub(step).max(min));
+    let increase = make_action(value.saturating_add(step).min(max));
+    let fill = if max > min {
+        f32::from(value.saturating_sub(min)) / f32::from(max.saturating_sub(min))
+    } else {
+        1.0
+    };
+    let track_bounds = Rc::new(RefCell::new(None::<Bounds<gpui::Pixels>>));
+    let dragging = Rc::new(Cell::new(false));
     div()
         .id(id)
         .role(Role::Group)
         .aria_label(label.clone())
-        .h(px(tokens.layout.minimum_hit_target.value()))
+        .min_h(px(tokens.layout.minimum_hit_target.value()))
         .flex()
         .items_center()
         .justify_between()
@@ -7125,6 +7295,19 @@ fn folder_option_px_stepper(
                 .flex()
                 .items_center()
                 .gap(px(tokens.layout.content_spacing.value()))
+                .child(folder_option_slider_track(
+                    SharedString::from(format!("{id}-slider")),
+                    fill,
+                    value,
+                    min,
+                    max,
+                    step,
+                    make_action,
+                    track_bounds,
+                    dragging,
+                    tokens,
+                    on_action.clone(),
+                ))
                 .child(folder_option_stepper_button(
                     SharedString::from(format!("{id}-decrease")),
                     "−",
@@ -7138,7 +7321,7 @@ fn folder_option_px_stepper(
                         .min_w(px(72.0))
                         .flex()
                         .justify_center()
-                        .child(format!("{value} {}", catalog.t("settings-px"))),
+                        .child(format!("{value} {unit}")),
                 )
                 .child(folder_option_stepper_button(
                     SharedString::from(format!("{id}-increase")),
@@ -7148,6 +7331,92 @@ fn folder_option_px_stepper(
                     on_action,
                 )),
         )
+}
+
+fn folder_option_slider_track(
+    id: SharedString,
+    fill: f32,
+    value: u16,
+    min: u16,
+    max: u16,
+    step: u16,
+    make_action: fn(u16) -> ExplorerAction,
+    track_bounds: Rc<RefCell<Option<Bounds<gpui::Pixels>>>>,
+    dragging: Rc<Cell<bool>>,
+    tokens: UiTokens,
+    on_action: Option<ActionCallback>,
+) -> impl IntoElement {
+    let colors = tokens.theme.colors;
+    let bounds_for_paint = track_bounds.clone();
+    let apply = on_action.map(|callback| {
+        let bounds = track_bounds.clone();
+        Rc::new(move |pointer_x: f32, window: &mut Window, cx: &mut App| {
+            let Some(track) = *bounds.borrow() else {
+                return;
+            };
+            let next = folder_option_slider_value(
+                pointer_x,
+                f32::from(track.origin.x),
+                f32::from(track.size.width),
+                min,
+                max,
+                step,
+            );
+            if next != value {
+                callback(&make_action(next), window, cx);
+            }
+        })
+    });
+    div()
+        .id(id)
+        .role(Role::Slider)
+        .aria_numeric_value(f64::from(value))
+        .aria_min_numeric_value(f64::from(min))
+        .aria_max_numeric_value(f64::from(max))
+        .relative()
+        .w(px(220.0))
+        .h(px(18.0))
+        .flex()
+        .items_center()
+        .rounded(px(9.0))
+        .overflow_hidden()
+        .border(px(1.0))
+        .border_color(colors.divider.to_gpui())
+        .cursor_pointer()
+        .child(
+            canvas(
+                move |bounds, _, _| {
+                    bounds_for_paint.replace(Some(bounds));
+                },
+                |_, _, _, _| {},
+            )
+            .absolute()
+            .inset_0(),
+        )
+        .child(div().h_full().w(relative(fill)).bg(colors.accent.to_gpui()))
+        .child(div().flex_1().h_full().bg(colors.control_fill.to_gpui()))
+        .when_some(apply, |track, apply| {
+            let drag_start = dragging.clone();
+            let drag_move = dragging.clone();
+            let drag_end = dragging;
+            let move_apply = apply.clone();
+            track
+                .on_mouse_down(MouseButton::Left, move |event, window, cx| {
+                    drag_start.set(true);
+                    apply(f32::from(event.position.x), window, cx);
+                    cx.stop_propagation();
+                })
+                .on_mouse_move(move |event, window, cx| {
+                    if drag_move.get() && event.dragging() {
+                        move_apply(f32::from(event.position.x), window, cx);
+                        cx.stop_propagation();
+                    }
+                })
+                .on_mouse_up(MouseButton::Left, move |_, _, cx| {
+                    drag_end.set(false);
+                    cx.stop_propagation();
+                })
+        })
 }
 
 fn folder_option_stepper_button(
@@ -12975,6 +13244,7 @@ impl RenderOnce for FileViewHost {
                     })
                     .when(explicit_row_width.is_none(), Styled::w_full)
                     .h(px(item_height))
+                    .overflow_hidden()
                     .flex_none()
                     .flex()
                     .items_center()
@@ -14415,6 +14685,8 @@ fn explorer_vertical_scrollbar(
         .role(Role::ScrollBar)
         .aria_label(if id == "navigation-scrollbar" {
             "Navigation pane vertical scroll bar"
+        } else if id == TAB_STRIP_VSCROLLBAR_ID {
+            "Tab strip vertical scroll bar"
         } else {
             "File view vertical scroll bar"
         })
@@ -17674,17 +17946,27 @@ impl RenderOnce for WindowChrome {
                 )
             })
             .collect();
-        let overflow_track = tab_overflow_track_for(
+        let tab_metrics = tab_strip_chrome_metrics(
             self.tab_scroll.as_ref(),
             self.tokens,
             &self.state,
             f32::from(window.viewport_size().width),
         );
+        if tab_metrics.multi_row
+            && let Some(handle) = self.tab_scroll.as_ref()
+        {
+            let offset = handle.offset();
+            if f32::from(offset.x) != 0.0 {
+                handle.set_offset(point(px(0.0), offset.y));
+            }
+        }
 
         div()
             .id(WINDOW_CHROME_ID)
             .relative()
-            .h(px(layout.title_tab_height.value() + overflow_track))
+            .h(px(
+                layout.title_tab_height.value() + tab_metrics.extra_height
+            ))
             .w_full()
             .flex_none()
             .flex()
@@ -17723,22 +18005,75 @@ impl RenderOnce for WindowChrome {
             .child(
                 div()
                     .id("window-chrome-tab-row")
-                    .h(px(layout.title_tab_height.value()))
+                    .h(px(
+                        layout.title_tab_height.value() + tab_metrics.extra_height
+                    ))
                     .w_full()
                     .flex_none()
                     .flex()
-                    .items_center()
+                    .when(tab_metrics.multi_row, |element| element.items_start())
+                    .when(!tab_metrics.multi_row, |element| element.items_center())
+                    .child(
+                        div()
+                            .id(TAB_STRIP_ID)
+                            .debug_selector(|| TAB_STRIP_ID.to_owned())
+                            .relative()
+                            .h_full()
+                            .when(tab_metrics.multi_row, |element| element.flex_1())
+                            .when(!tab_metrics.multi_row, |element| element.flex_initial())
+                            .min_w(px(0.0))
+                            .flex()
+                            .when(tab_metrics.multi_row, |element| {
+                                element.flex_wrap().items_start().content_start()
+                            })
+                            .when(!tab_metrics.multi_row, |element| element.items_end())
+                            .when(
+                                tab_metrics.multi_row && tab_metrics.vertical_overflow,
+                                |element| element.overflow_y_scroll(),
+                            )
+                            .when(
+                                tab_metrics.multi_row && !tab_metrics.vertical_overflow,
+                                |element| element.overflow_hidden(),
+                            )
+                            .when(
+                                !tab_metrics.multi_row,
+                                StatefulInteractiveElement::overflow_x_scroll,
+                            )
+                            .when_some(self.tab_scroll.clone(), |element, handle| {
+                                element.track_scroll(&handle)
+                            })
+                            .on_scroll_wheel(|_, _, cx| cx.refresh_windows())
+                            .gap(px(layout.content_spacing.value()))
+                            .px(px(layout.control_padding_horizontal.value()))
+                            .child(region_probe(TAB_STRIP_ID, Some(WINDOW_CHROME_ID), "normal"))
+                            .children(tabs)
+                            .child(new_tab_button(
+                                self.tokens,
+                                self.state.catalog(),
+                                self.on_action.clone(),
+                            ))
+                            .when(tab_metrics.vertical_overflow, |element| {
+                                element.when_some(self.tab_scroll.clone(), |element, handle| {
+                                    element.child(explorer_vertical_scrollbar(
+                                        TAB_STRIP_VSCROLLBAR_ID,
+                                        crate::interaction::ScrollbarKind::TabStripVertical,
+                                        &handle,
+                                        self.tokens,
+                                        self.on_action.clone(),
+                                    ))
+                                })
+                            }),
+                    )
                     .child(
                         div()
                             .id(WINDOW_DRAG_REGION_ID)
+                            .debug_selector(|| WINDOW_DRAG_REGION_ID.to_owned())
                             .relative()
                             .window_control_area(WindowControlArea::Drag)
                             .h_full()
                             .flex_1()
-                            .min_w(px(0.0))
+                            .min_w(px(crate::layout::tabs::CAPTION_DRAG_RESERVE.value()))
                             .overflow_hidden()
-                            .flex()
-                            .items_end()
                             .on_mouse_down(MouseButton::Left, |event, window, _| {
                                 if event.click_count == 2 {
                                     window.zoom_window();
@@ -17750,35 +18085,6 @@ impl RenderOnce for WindowChrome {
                                 WINDOW_DRAG_REGION_ID,
                                 Some(WINDOW_CHROME_ID),
                                 "normal",
-                            ))
-                            .child(
-                                div()
-                                    .id(TAB_STRIP_ID)
-                                    .debug_selector(|| TAB_STRIP_ID.to_owned())
-                                    .relative()
-                                    .h_full()
-                                    .flex_1()
-                                    .min_w(px(0.0))
-                                    .flex()
-                                    .items_end()
-                                    .overflow_x_scroll()
-                                    .when_some(self.tab_scroll.clone(), |element, handle| {
-                                        element.track_scroll(&handle)
-                                    })
-                                    .on_scroll_wheel(|_, _, cx| cx.refresh_windows())
-                                    .gap(px(layout.content_spacing.value()))
-                                    .px(px(layout.control_padding_horizontal.value()))
-                                    .child(region_probe(
-                                        TAB_STRIP_ID,
-                                        Some(WINDOW_CHROME_ID),
-                                        "normal",
-                                    ))
-                                    .children(tabs),
-                            )
-                            .child(new_tab_button(
-                                self.tokens,
-                                self.state.catalog(),
-                                self.on_action.clone(),
                             )),
                     )
                     .child(caption_button(
@@ -17806,16 +18112,19 @@ impl RenderOnce for WindowChrome {
                         true,
                     )),
             )
-            .when(overflow_track > 0.0, |element| {
-                element.when_some(self.tab_scroll.clone(), |element, handle| {
-                    element.child(tab_strip_scrollbar(
-                        &handle,
-                        self.tokens,
-                        catalog,
-                        self.on_action.clone(),
-                    ))
-                })
-            })
+            .when(
+                tab_metrics.extra_height > 0.0 && !tab_metrics.multi_row,
+                |element| {
+                    element.when_some(self.tab_scroll.clone(), |element, handle| {
+                        element.child(tab_strip_scrollbar(
+                            &handle,
+                            self.tokens,
+                            catalog,
+                            self.on_action.clone(),
+                        ))
+                    })
+                },
+            )
     }
 }
 
@@ -18252,6 +18561,7 @@ fn caption_button(
     let colors = tokens.theme.colors;
     div()
         .id(id)
+        .debug_selector(move || id.to_owned())
         .role(Role::Button)
         .relative()
         .aria_label(semantic_label)
@@ -20705,34 +21015,61 @@ mod tests {
             .split("fn explorer_tab(")
             .next()
             .expect("tab strip precedes tab renderer");
-        assert!(tab_strip.contains(".flex_1()"));
+        assert!(tab_strip.contains(".flex_initial()"));
         assert!(tab_strip.contains(".min_w(px(0.0))"));
-        assert!(tab_strip.contains(".overflow_x_scroll()"));
+        assert!(tab_strip.contains("overflow_x_scroll"));
+        assert!(tab_strip.contains("flex_wrap"));
+        assert!(tab_strip.contains("overflow_y_scroll"));
+        assert!(tab_strip.contains("TAB_STRIP_VSCROLLBAR_ID"));
         assert!(tab_strip.contains("track_scroll"));
+        assert!(tab_strip.contains("new_tab_button"));
         assert!(tab_strip.contains("tab_strip_scrollbar"));
         let drag = production
             .split(".id(WINDOW_DRAG_REGION_ID)")
             .nth(1)
             .expect("drag region exists")
-            .split(".id(TAB_STRIP_ID)")
+            .split("fn caption_button(")
             .next()
-            .expect("drag region precedes tab strip");
+            .expect("drag region precedes caption buttons");
         assert!(
-            drag.contains(".min_w(px(0.0))"),
-            "drag region must shrink so caption buttons keep their reserved width"
+            drag.contains("CAPTION_DRAG_RESERVE"),
+            "caption-adjacent drag strip must keep a 50px window-move handle"
         );
         assert!(drag.contains(".overflow_hidden()"));
         assert!(production.contains("tab_strip_overflow_track_height"));
         assert!(
-            production.contains("overflow_track > 0.0"),
+            production.contains("tab_metrics.extra_height > 0.0 && !tab_metrics.multi_row"),
             "tab scrollbar must occupy extra chrome height only while tabs overflow"
         );
         assert!(production.contains("folder_option_tab_min_width"));
         assert!(production.contains("folder_option_tab_max_width"));
+        assert!(production.contains("folder_option_tab_row_count"));
         assert!(production.contains("SetFolderOptionTabMinWidth"));
         assert!(production.contains("SetFolderOptionTabMaxWidth"));
+        assert!(production.contains("ToggleFolderOptionMultiRowTabs"));
+        assert!(production.contains("SetFolderOptionTabRowCount"));
         assert!(production.contains("settings-tab-min-width"));
         assert!(production.contains("settings-tab-max-width"));
+        assert!(production.contains("settings-multi-row-tabs"));
+        assert!(production.contains("settings-tab-max-rows"));
+        assert!(production.contains("folder_option_slider_track"));
+        assert!(production.contains("Role::Slider"));
+    }
+
+    #[test]
+    fn folder_option_slider_snaps_pointer_to_stepped_range() {
+        assert_eq!(
+            super::folder_option_slider_value(0.0, 0.0, 100.0, 96, 600, 10),
+            96
+        );
+        assert_eq!(
+            super::folder_option_slider_value(100.0, 0.0, 100.0, 96, 600, 10),
+            600
+        );
+        assert_eq!(
+            super::folder_option_slider_value(50.0, 0.0, 100.0, 100, 200, 10),
+            150
+        );
     }
 
     #[test]
@@ -20746,6 +21083,17 @@ mod tests {
             super::tab_strip_overflow_track_height(None, tokens, 11, 300.0, 1_200.0) > 0.0,
             "tabs that cannot fit at min width must grow the chrome for a scrollbar"
         );
+    }
+
+    #[test]
+    fn multi_row_tabs_wrap_then_grow_chrome_and_vertical_scroll() {
+        let tokens = UiTokens::default();
+        let rows = super::tab_strip_wrap_rows(20, 150.0, 500.0, tokens);
+        assert!(
+            rows > 3,
+            "crowded tabs wrap onto more than the default 3 rows"
+        );
+        assert_eq!(super::tab_strip_wrap_rows(1, 150.0, 1_200.0, tokens), 1);
     }
 
     #[test]
@@ -20905,6 +21253,11 @@ mod tests {
             "folder_options_theme_page",
             "folder_options_search_engine_group",
             "search_engine_availability",
+            "folder-option-enable-mft",
+            "ToggleFolderOptionMft",
+            "folder-option-multi-row-tabs",
+            "ToggleFolderOptionMultiRowTabs",
+            "folder_option_tab_row_count",
         ] {
             assert!(
                 page.contains(required),
@@ -20927,6 +21280,7 @@ mod tests {
             "SetFolderOptionSearchEngine",
             "settings-search-engine-unsupported-everything",
             "settings-search-engine-unsupported-mft",
+            "settings-search-engine-unsupported-mft-disabled",
             "settings-search-engine-unsupported-file-enumeration",
         ] {
             assert!(

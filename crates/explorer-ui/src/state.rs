@@ -388,6 +388,15 @@ pub struct AboutInfoV1 {
     pub author: String,
 }
 
+const MFT_RELATED_PLUGIN_IDS: &[&str] = &[
+    "rust-folder-size-visual-column",
+    "rust-folder-size-map-view",
+];
+
+fn is_mft_related_plugin(package_id: &str) -> bool {
+    MFT_RELATED_PLUGIN_IDS.contains(&package_id)
+}
+
 fn official_extensions_v1() -> Vec<ExtensionOptionV1> {
     vec![
         ExtensionOptionV1 {
@@ -2991,8 +3000,13 @@ impl AppViewState {
         availability: explorer_model::SearchEngineAvailability,
     ) {
         self.search_engine_availability = availability;
+        self.adopt_available_search_engine();
         if let Some(draft) = &mut self.folder_options {
             draft.search_engine_availability = availability;
+            let resolved = availability
+                .with_mft_feature(draft.settings.mft_enabled)
+                .resolve(draft.settings.search_engine);
+            draft.settings.search_engine = resolved;
         }
     }
 
@@ -3012,6 +3026,18 @@ impl AppViewState {
         })
     }
 
+    fn effective_search_engine_availability(&self) -> explorer_model::SearchEngineAvailability {
+        self.search_engine_availability_for_current_location()
+            .with_mft_feature(self.view_settings().mft_enabled)
+    }
+
+    fn adopt_available_search_engine(&mut self) {
+        let availability = self.effective_search_engine_availability();
+        for tab in self.tabs.tabs_mut() {
+            tab.view.settings.search_engine = availability.resolve(tab.view.settings.search_engine);
+        }
+    }
+
     pub(crate) fn set_folder_option_search_engine(
         &mut self,
         engine: explorer_model::SearchEnginePreference,
@@ -3021,12 +3047,39 @@ impl AppViewState {
         };
         if !draft
             .search_engine_availability
+            .with_mft_feature(draft.settings.mft_enabled)
             .support(engine)
             .is_available()
         {
             return;
         }
         draft.settings.search_engine = engine;
+    }
+
+    pub(crate) fn toggle_folder_option_mft(&mut self) {
+        let Some(draft) = self.folder_options.as_mut() else {
+            return;
+        };
+        draft.settings.mft_enabled = !draft.settings.mft_enabled;
+        let enabled = draft.settings.mft_enabled;
+        let related: Vec<usize> = self
+            .extensions
+            .iter()
+            .enumerate()
+            .filter(|(_, extension)| is_mft_related_plugin(extension.package_id))
+            .map(|(index, _)| index)
+            .collect();
+        let draft = self.folder_options.as_mut().expect("draft remains open");
+        for index in related {
+            if let Some(flag) = draft.extension_enabled.get_mut(index) {
+                *flag = enabled;
+            }
+        }
+        let resolved = draft
+            .search_engine_availability
+            .with_mft_feature(enabled)
+            .resolve(draft.settings.search_engine);
+        draft.settings.search_engine = resolved;
     }
 
     pub fn extensions(&self) -> &[ExtensionOptionV1] {
@@ -3169,8 +3222,15 @@ impl AppViewState {
 
     pub(crate) fn apply_folder_options(&mut self) -> FolderOptionsApplyResultV1 {
         if let Some(draft) = self.folder_options.clone() {
+            let mut draft = draft;
+            let resolved = draft
+                .search_engine_availability
+                .with_mft_feature(draft.settings.mft_enabled)
+                .resolve(draft.settings.search_engine);
+            draft.settings.search_engine = resolved;
             if !draft
                 .search_engine_availability
+                .with_mft_feature(draft.settings.mft_enabled)
                 .can_apply(draft.settings.search_engine)
             {
                 return self.reject_folder_options_apply(
@@ -3184,6 +3244,11 @@ impl AppViewState {
                 applied.settings.tab_min_width,
                 applied.settings.tab_max_width,
             );
+            self.sync_tab_strip_layout(
+                applied.settings.multi_row_tabs,
+                applied.settings.tab_row_count,
+            );
+            self.sync_mft_enabled(applied.settings.mft_enabled);
             self.restore_previous_session = applied.restore_previous_session;
             self.apply_locale_choice(applied.locale_choice);
             self.current_color_theme = applied.theme;
@@ -3204,6 +3269,10 @@ impl AppViewState {
                     .unwrap_or_else(std::sync::PoisonError::into_inner)
                     .clear();
             }
+            if !self.extension_enabled("rust-folder-size-visual-column") {
+                self.column_registry
+                    .unregister_package(crate::folder_size_column::FOLDER_SIZE_COLUMN_PACKAGE_ID);
+            }
             if !self.extensions.iter().any(|extension| {
                 extension.package_id == "rust-folder-size-map-view" && extension.enabled
             }) {
@@ -3213,10 +3282,11 @@ impl AppViewState {
                 self.folder_options_applied_revision.saturating_add(1);
             let revision = self.folder_options_applied_revision;
             self.last_applied_folder_options = Some((applied.clone(), revision));
-            if let Some(draft) = &mut self.folder_options {
-                draft.applied_baseline = applied;
-                draft.applied_revision = revision;
-                draft.apply_error = None;
+            if let Some(stored) = &mut self.folder_options {
+                stored.settings.search_engine = resolved;
+                stored.applied_baseline = applied;
+                stored.applied_revision = revision;
+                stored.apply_error = None;
             }
             return FolderOptionsApplyResultV1::Applied { revision };
         }
@@ -3252,6 +3322,11 @@ impl AppViewState {
             applied.settings.tab_min_width,
             applied.settings.tab_max_width,
         );
+        self.sync_tab_strip_layout(
+            applied.settings.multi_row_tabs,
+            applied.settings.tab_row_count,
+        );
+        self.sync_mft_enabled(applied.settings.mft_enabled);
         self.restore_previous_session = applied.restore_previous_session;
         self.apply_locale_choice(applied.locale_choice);
         self.current_color_theme = applied.theme;
@@ -3283,6 +3358,20 @@ impl AppViewState {
         for tab in self.tabs.tabs_mut() {
             tab.view.settings.tab_min_width = tab_min_width;
             tab.view.settings.tab_max_width = tab_max_width;
+        }
+    }
+
+    fn sync_tab_strip_layout(&mut self, multi_row_tabs: bool, tab_row_count: u16) {
+        let tab_row_count = explorer_model::normalized_tab_row_count(tab_row_count);
+        for tab in self.tabs.tabs_mut() {
+            tab.view.settings.multi_row_tabs = multi_row_tabs;
+            tab.view.settings.tab_row_count = tab_row_count;
+        }
+    }
+
+    fn sync_mft_enabled(&mut self, enabled: bool) {
+        for tab in self.tabs.tabs_mut() {
+            tab.view.settings.mft_enabled = enabled;
         }
     }
 
@@ -4985,11 +5074,15 @@ impl AppViewState {
             .tabs
             .active_tab_mut()
             .begin_search_request(input.clone())?;
+        let engine = self
+            .effective_search_engine_availability()
+            .resolve(self.tabs.active_tab().view.settings.search_engine);
+        self.tabs.active_tab_mut().view.settings.search_engine = engine;
         Some(ExplorerCommand::StartSearch {
             context,
             location,
             input: explorer_model::SearchInput::new(input),
-            engine: self.tabs.active_tab().view.settings.search_engine,
+            engine,
         })
     }
 
@@ -13079,7 +13172,7 @@ mod tests {
     }
 
     #[test]
-    fn folder_options_apply_rejects_unsupported_search_engine_when_an_alternative_exists() {
+    fn folder_options_auto_selects_file_enumeration_when_everything_is_unavailable() {
         let mut state = AppViewState::default();
         state.open_folder_options();
         state.set_search_engine_availability(explorer_model::SearchEngineAvailability::from_facts(
@@ -13091,29 +13184,11 @@ mod tests {
         ));
         assert_eq!(
             state.folder_options().unwrap().settings.search_engine,
-            explorer_model::SearchEnginePreference::Everything
-        );
-        assert_eq!(
-            state.apply_folder_options(),
-            FolderOptionsApplyResultV1::Rejected {
-                reason: super::FolderOptionsApplyFailureV1::Validation,
-            }
-        );
-        assert!(
-            state
-                .folder_options()
-                .unwrap()
-                .apply_error
-                .as_ref()
-                .is_some_and(|error| !error.is_empty())
+            explorer_model::SearchEnginePreference::FileEnumeration
         );
         assert_eq!(
             state.view_settings().search_engine,
-            explorer_model::SearchEnginePreference::Everything
-        );
-
-        state.set_folder_option_search_engine(
-            explorer_model::SearchEnginePreference::FileEnumeration,
+            explorer_model::SearchEnginePreference::FileEnumeration
         );
         assert_eq!(
             state.apply_folder_options(),
@@ -13122,6 +13197,97 @@ mod tests {
         assert_eq!(
             state.view_settings().search_engine,
             explorer_model::SearchEnginePreference::FileEnumeration
+        );
+    }
+
+    #[test]
+    fn folder_options_auto_selects_mft_when_everything_is_unavailable() {
+        let mut state = AppViewState::default();
+        state.open_folder_options();
+        state.set_search_engine_availability(explorer_model::SearchEngineAvailability::from_facts(
+            explorer_model::SearchEngineFacts {
+                has_local_filesystem_path: true,
+                everything_available: false,
+                mft_index_available: true,
+            },
+        ));
+        assert_eq!(
+            state.folder_options().unwrap().settings.search_engine,
+            explorer_model::SearchEnginePreference::Mft
+        );
+        assert_eq!(
+            state.apply_folder_options(),
+            FolderOptionsApplyResultV1::Applied { revision: 1 }
+        );
+        assert_eq!(
+            state.view_settings().search_engine,
+            explorer_model::SearchEnginePreference::Mft
+        );
+    }
+
+    #[test]
+    fn folder_options_mft_toggle_syncs_related_plugins() {
+        let mut state = AppViewState::default();
+        state.open_folder_options();
+        assert!(state.folder_options().unwrap().settings.mft_enabled);
+        assert!(
+            state
+                .folder_options()
+                .unwrap()
+                .extension_enabled
+                .iter()
+                .zip(state.extensions())
+                .filter(|(_, extension)| super::is_mft_related_plugin(extension.package_id))
+                .all(|(enabled, _)| *enabled)
+        );
+
+        state.toggle_folder_option_mft();
+        let draft = state.folder_options().unwrap();
+        assert!(!draft.settings.mft_enabled);
+        assert!(
+            draft
+                .extension_enabled
+                .iter()
+                .zip(state.extensions())
+                .filter(|(_, extension)| super::is_mft_related_plugin(extension.package_id))
+                .all(|(enabled, _)| !*enabled)
+        );
+
+        state.set_search_engine_availability(explorer_model::SearchEngineAvailability::from_facts(
+            explorer_model::SearchEngineFacts {
+                has_local_filesystem_path: true,
+                everything_available: false,
+                mft_index_available: true,
+            },
+        ));
+        assert_eq!(
+            state.folder_options().unwrap().settings.search_engine,
+            explorer_model::SearchEnginePreference::FileEnumeration,
+            "MFT search is unavailable while the General MFT switch is off"
+        );
+
+        state.toggle_folder_option_mft();
+        let draft = state.folder_options().unwrap();
+        assert!(draft.settings.mft_enabled);
+        assert!(
+            draft
+                .extension_enabled
+                .iter()
+                .zip(state.extensions())
+                .filter(|(_, extension)| super::is_mft_related_plugin(extension.package_id))
+                .all(|(enabled, _)| *enabled)
+        );
+        assert_eq!(
+            state.apply_folder_options(),
+            FolderOptionsApplyResultV1::Applied { revision: 1 }
+        );
+        assert!(state.view_settings().mft_enabled);
+        assert!(
+            state
+                .extensions()
+                .iter()
+                .filter(|extension| super::is_mft_related_plugin(extension.package_id))
+                .all(|extension| extension.enabled)
         );
     }
 

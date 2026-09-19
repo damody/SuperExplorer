@@ -215,6 +215,12 @@ struct DirectoryFactsDemandV1 {
 
 impl DirectoryFactsDemandV1 {
     fn from_settings(settings: &explorer_model::ViewSettings) -> Self {
+        if !settings.mft_enabled {
+            return Self {
+                file_count: false,
+                folder_count: false,
+            };
+        }
         Self {
             file_count: settings.details_column_visible(&explorer_model::ColumnId::FileCount),
             folder_count: settings.details_column_visible(&explorer_model::ColumnId::FolderCount),
@@ -1168,6 +1174,7 @@ pub struct ExplorerRoot {
     file_scroll: gpui::ScrollHandle,
     tab_scroll: gpui::ScrollHandle,
     file_viewport_width: f32,
+    pending_file_row_reveal: Option<usize>,
     file_performance: Arc<performance::FileViewPerformanceCounters>,
     focus_handle: Option<gpui::FocusHandle>,
     breadcrumb_menu_focus: Option<gpui::FocusHandle>,
@@ -1780,6 +1787,7 @@ impl ExplorerRoot {
             file_scroll: gpui::ScrollHandle::new(),
             tab_scroll: gpui::ScrollHandle::new(),
             file_viewport_width: 0.0,
+            pending_file_row_reveal: None,
             file_performance: Arc::new(performance::FileViewPerformanceCounters::default()),
             focus_handle: None,
             breadcrumb_menu_focus: None,
@@ -2094,6 +2102,7 @@ impl ExplorerRoot {
         >,
     ) {
         self.search_engine_probe = Some(probe);
+        self.refresh_search_engine_availability();
     }
 
     fn refresh_search_engine_availability(&mut self) {
@@ -3702,6 +3711,54 @@ impl ExplorerRoot {
             .set_offset(gpui::point(px(0.0), px(-offset.max(0.0))));
     }
 
+    fn ensure_file_row_visible(&mut self, row_index: usize, window: &Window) {
+        self.pending_file_row_reveal = Some(row_index);
+        self.apply_pending_file_row_reveal(window);
+    }
+
+    fn apply_pending_file_row_reveal(&mut self, window: &Window) {
+        let Some(row_index) = self.pending_file_row_reveal else {
+            return;
+        };
+        let item_count = self.state.visible_row_count();
+        if item_count == 0 {
+            return;
+        }
+        let view_settings = self.state.view_settings();
+        let layout = chrome::spatial_grid_layout(
+            chrome::spatial_grid_metrics(&view_settings, self.tokens.layout),
+            self.file_viewport_width,
+            item_count,
+        );
+        let header_height = if view_settings.mode == explorer_model::ViewMode::Details {
+            self.tokens.layout.details_header_height.value()
+        } else {
+            0.0
+        };
+        let measured = f32::from(self.file_scroll.bounds().size.height);
+        let fallback = chrome::explorer_file_viewport_height(window, self.tokens);
+        let viewport_height =
+            if measured > 0.0 { measured } else { fallback }.max(layout.metrics.cell_height);
+        if viewport_height <= 0.0 {
+            return;
+        }
+        let current = (-f32::from(self.file_scroll.offset().y)).max(0.0);
+        if let Some(target) = file_view::ensure_visible_scroll_offset(
+            row_index,
+            item_count,
+            layout.metrics.cell_height,
+            layout.columns,
+            header_height,
+            viewport_height,
+            current,
+        ) {
+            let offset = self.file_scroll.offset();
+            self.file_scroll
+                .set_offset(gpui::point(offset.x, px(-target)));
+        }
+        self.pending_file_row_reveal = None;
+    }
+
     #[doc(hidden)]
     pub fn file_performance_snapshot_for_test(&self) -> performance::FileViewPerformanceSnapshot {
         self.file_performance.snapshot()
@@ -4094,6 +4151,7 @@ impl ExplorerRoot {
             file_scroll: gpui::ScrollHandle::new(),
             tab_scroll: gpui::ScrollHandle::new(),
             file_viewport_width: 0.0,
+            pending_file_row_reveal: None,
             file_performance: Arc::new(performance::FileViewPerformanceCounters::default()),
             focus_handle: None,
             breadcrumb_menu_focus: None,
@@ -4214,6 +4272,7 @@ impl ExplorerRoot {
             file_scroll: gpui::ScrollHandle::new(),
             tab_scroll: gpui::ScrollHandle::new(),
             file_viewport_width: 0.0,
+            pending_file_row_reveal: None,
             file_performance: Arc::new(performance::FileViewPerformanceCounters::default()),
             focus_handle: None,
             breadcrumb_menu_focus: None,
@@ -6146,6 +6205,7 @@ impl ExplorerRoot {
 
     /// Submits text from the dedicated search editor to the active tab's independent generation.
     pub fn submit_search(&mut self, input: impl Into<String>) -> bool {
+        self.refresh_search_engine_availability();
         let Some(command) = self.state.begin_active_search(input.into()) else {
             return false;
         };
@@ -6553,7 +6613,9 @@ impl ExplorerRoot {
             interaction::ScrollbarKind::Navigation => &self.navigation_scroll,
             interaction::ScrollbarKind::FileView
             | interaction::ScrollbarKind::FileViewHorizontal => &self.file_scroll,
-            interaction::ScrollbarKind::TabStrip => &self.tab_scroll,
+            interaction::ScrollbarKind::TabStrip | interaction::ScrollbarKind::TabStripVertical => {
+                &self.tab_scroll
+            }
         };
         let bounds = handle.bounds();
         let horizontal = matches!(
@@ -6575,7 +6637,9 @@ impl ExplorerRoot {
                 )
             }
             interaction::ScrollbarKind::TabStrip => f32::from(handle.max_offset().x).max(0.0),
-            interaction::ScrollbarKind::Navigation | interaction::ScrollbarKind::FileView => {
+            interaction::ScrollbarKind::Navigation
+            | interaction::ScrollbarKind::FileView
+            | interaction::ScrollbarKind::TabStripVertical => {
                 f32::from(handle.max_offset().y).max(0.0)
             }
         };
@@ -7967,12 +8031,15 @@ impl ExplorerRoot {
         if action == ExplorerAction::RefreshTortoiseGitStatus {
             let _ = self.refresh_tortoise_git_status();
         }
-        if let ExplorerAction::SelectItem { row_index } = &action {
-            self.file_scroll.scroll_to_item(*row_index);
+        if let ExplorerAction::SelectItem { row_index }
+        | ExplorerAction::FocusItem { row_index }
+        | ExplorerAction::SelectRange { row_index, .. } = &action
+        {
+            self.ensure_file_row_visible(*row_index, window);
         } else if matches!(action, ExplorerAction::TypeAheadFileView { .. })
             && let Some(row_index) = self.state.focused_row_index()
         {
-            self.file_scroll.scroll_to_item(row_index);
+            self.ensure_file_row_visible(row_index, window);
         }
         match action {
             ExplorerAction::BeginContextItemGesture { .. } => {
@@ -9606,6 +9673,7 @@ impl Render for ExplorerRoot {
         }
         self.file_viewport_width =
             chrome::explorer_file_viewport_width(window, &self.state, self.tokens);
+        self.apply_pending_file_row_reveal(window);
         let view_settings = self.state.view_settings();
         let rebuilds_before = self.state.presentation_rebuilds();
         let file_presentation = self.state.directory_presentation();

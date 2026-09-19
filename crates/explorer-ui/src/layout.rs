@@ -67,7 +67,7 @@ pub mod lock_recovery {
 }
 
 /// Window tab strip geometry. Tabs keep a configurable minimum width and
-/// scroll when they cannot all fit beside the caption buttons.
+/// scroll horizontally, or wrap onto extra rows when multi-row tabs are enabled.
 pub mod tabs {
     use super::LogicalPx;
 
@@ -77,6 +77,8 @@ pub mod tabs {
     pub const MIN_WIDTH: LogicalPx = LogicalPx::new(96.0);
     /// Right-edge fade over clipped title glyphs.
     pub const TITLE_FADE_WIDTH: LogicalPx = LogicalPx::new(24.0);
+    /// Empty caption-adjacent strip reserved for dragging the window.
+    pub const CAPTION_DRAG_RESERVE: LogicalPx = LogicalPx::new(50.0);
 }
 
 /// Feature-specific geometry shared by the corresponding render paths.
@@ -429,6 +431,7 @@ mod tests {
         assert!(super::tabs::TITLE_FADE_WIDTH.value() > 0.0);
         assert!(super::tabs::TITLE_FADE_WIDTH.value() < super::tabs::MIN_WIDTH.value());
         assert!(super::tabs::PREFERRED_WIDTH.value() >= 160.0);
+        assert!((super::tabs::CAPTION_DRAG_RESERVE.value() - 50.0).abs() < f32::EPSILON);
     }
 
     #[test]

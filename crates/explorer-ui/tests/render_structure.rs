@@ -1,9 +1,9 @@
 use explorer_ui::{
     ExplorerRoot,
     chrome::{
-        ACTIVE_TAB_ID, ADDRESS_EDITOR_ID, COMMAND_BAR_ID, EXPLORER_WINDOW_ID, FILE_VIEW_HOST_ID,
-        NAVIGATION_BAR_ID, NAVIGATION_DIVIDER_ID, NAVIGATION_PANE_ID, NEW_TAB_BUTTON_ID,
-        SEARCH_BOX_ID, STATUS_BAR_ID, TAB_STRIP_ID,
+        ACTIVE_TAB_ID, ADDRESS_EDITOR_ID, CAPTION_MINIMIZE_ID, COMMAND_BAR_ID, EXPLORER_WINDOW_ID,
+        FILE_VIEW_HOST_ID, NAVIGATION_BAR_ID, NAVIGATION_DIVIDER_ID, NAVIGATION_PANE_ID,
+        NEW_TAB_BUTTON_ID, SEARCH_BOX_ID, STATUS_BAR_ID, TAB_STRIP_ID, WINDOW_DRAG_REGION_ID,
     },
     layout,
 };
@@ -44,6 +44,23 @@ fn initial_render_contains_every_m1_region(cx: &mut TestAppContext) {
         "a single tab must not stretch past the preferred width, got {}",
         f32::from(tab.size.width)
     );
+    let plus = visual
+        .debug_bounds(NEW_TAB_BUTTON_ID)
+        .expect("new tab button is rendered");
+    let minimize = visual
+        .debug_bounds(CAPTION_MINIMIZE_ID)
+        .expect("minimize caption is rendered");
+    assert!(
+        plus.origin.x + plus.size.width
+            <= tab.origin.x + tab.size.width + plus.size.width + px(16.0),
+        "the new-tab button must sit beside the rightmost tab"
+    );
+    assert!(
+        f32::from(minimize.origin.x - (plus.origin.x + plus.size.width))
+            >= layout::tabs::CAPTION_DRAG_RESERVE.value() - 1.0,
+        "caption buttons must keep a 50px window-drag gap, got {}",
+        f32::from(minimize.origin.x - (plus.origin.x + plus.size.width))
+    );
 }
 
 #[gpui::test]
@@ -68,9 +85,6 @@ fn crowded_tabs_shrink_below_preferred_width_and_stay_in_the_strip(cx: &mut Test
     let tab = visual
         .debug_bounds(ACTIVE_TAB_ID)
         .expect("active tab is rendered");
-    let plus = visual
-        .debug_bounds(NEW_TAB_BUTTON_ID)
-        .expect("new tab button stays pinned after shrinking tabs");
     assert!(
         tab.size.width >= px(layout::tabs::MIN_WIDTH.value() - 0.5),
         "crowded tabs must not shrink below the floor, got {}",
@@ -81,9 +95,13 @@ fn crowded_tabs_shrink_below_preferred_width_and_stay_in_the_strip(cx: &mut Test
         "default tabs must not grow past the preferred width, got {}",
         f32::from(tab.size.width)
     );
-    let plus_right = plus.origin.x + plus.size.width;
+    let drag = visual
+        .debug_bounds(WINDOW_DRAG_REGION_ID)
+        .expect("caption-adjacent drag strip is rendered");
     assert!(
-        plus_right <= strip.origin.x + strip.size.width + plus.size.width + px(8.0),
-        "the new-tab button must stay pinned beside the scrolling tabs"
+        f32::from(drag.size.width) >= layout::tabs::CAPTION_DRAG_RESERVE.value() - 1.0,
+        "caption buttons must keep a 50px window-drag gap, got {}",
+        f32::from(drag.size.width)
     );
+    let _ = strip;
 }

@@ -30,6 +30,7 @@ pub enum ScrollbarKind {
     FileView,
     FileViewHorizontal,
     TabStrip,
+    TabStripVertical,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]

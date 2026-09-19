@@ -500,6 +500,50 @@ pub fn fixed_virtual_range(
     }
 }
 
+/// Scroll offset that keeps a presentation row fully in the unobscured viewport.
+///
+/// `header_height` is both the in-content Details spacer and the pinned overlay
+/// that covers the top of the scroll host. GPUI `ScrollHandle::scroll_to_item`
+/// indexes realized children (probes, spacers, overscan), not this index.
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    clippy::cast_precision_loss,
+    reason = "validated finite row geometry is converted from presentation index to logical pixels"
+)]
+pub fn ensure_visible_scroll_offset(
+    row_index: usize,
+    item_count: usize,
+    cell_height: f32,
+    columns: usize,
+    header_height: f32,
+    viewport_height: f32,
+    scroll_offset: f32,
+) -> Option<f32> {
+    if item_count == 0 || cell_height <= 0.0 || viewport_height <= 0.0 {
+        return None;
+    }
+    let row_index = row_index.min(item_count - 1);
+    let columns = columns.max(1);
+    let visual_row = row_index / columns;
+    let row_top = header_height + visual_row as f32 * cell_height;
+    let row_bottom = row_top + cell_height;
+    let viewport_top = scroll_offset.max(0.0);
+    let visible_top = viewport_top + header_height.max(0.0);
+    let visible_bottom = viewport_top + viewport_height;
+    let target = if row_top < visible_top {
+        (row_top - header_height.max(0.0)).max(0.0)
+    } else if row_bottom > visible_bottom {
+        (row_bottom - viewport_height).max(0.0)
+    } else {
+        return None;
+    };
+    (target - viewport_top)
+        .abs()
+        .gt(&f32::EPSILON)
+        .then_some(target)
+}
+
 /// Column and realized-range geometry for fixed-size wrapped views.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct VirtualGrid {
@@ -1016,6 +1060,50 @@ mod tests {
             filtered.ordered_indices(),
             reused.ordered_indices()
         ));
+    }
+
+    #[test]
+    fn clicking_a_visible_details_row_does_not_change_scroll_offset() {
+        let header = 28.0;
+        let row_height = 32.0;
+        let viewport = 640.0;
+        let offset = row_height * 40.0;
+        assert_eq!(
+            ensure_visible_scroll_offset(40, 10_000, row_height, 1, header, viewport, offset),
+            None
+        );
+        assert_eq!(
+            ensure_visible_scroll_offset(45, 10_000, row_height, 1, header, viewport, offset),
+            None
+        );
+    }
+
+    #[test]
+    fn typeahead_jump_scrolls_a_distant_details_row_into_view() {
+        let header = 28.0;
+        let row_height = 32.0;
+        let viewport = 640.0;
+        let target =
+            ensure_visible_scroll_offset(500, 10_000, row_height, 1, header, viewport, 0.0)
+                .expect("z-prefix row is below the first page");
+        assert!((target - (header + row_height * 501.0 - viewport)).abs() < f32::EPSILON);
+        assert!(target > viewport);
+    }
+
+    #[test]
+    fn keyboard_selection_only_scrolls_when_the_row_leaves_the_unobscured_viewport() {
+        let header = 28.0;
+        let row_height = 32.0;
+        let viewport = 640.0;
+        let offset = row_height * 40.0;
+        assert_eq!(
+            ensure_visible_scroll_offset(0, 10_000, row_height, 1, header, viewport, offset),
+            Some(0.0)
+        );
+        let below =
+            ensure_visible_scroll_offset(80, 10_000, row_height, 1, header, viewport, offset)
+                .expect("row below viewport");
+        assert!((below - (header + row_height * 81.0 - viewport)).abs() < f32::EPSILON);
     }
 
     #[test]
