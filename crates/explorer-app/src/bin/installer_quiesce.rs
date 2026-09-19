@@ -102,11 +102,7 @@ fn run(args: Vec<std::ffi::OsString>) -> Result<String, String> {
     ))
 }
 
-fn parse_millis(
-    args: &[std::ffi::OsString],
-    index: usize,
-    flag: &str,
-) -> Result<Duration, String> {
+fn parse_millis(args: &[std::ffi::OsString], index: usize, flag: &str) -> Result<Duration, String> {
     let value = args
         .get(index)
         .ok_or_else(|| format!("missing {flag} value"))?
@@ -186,14 +182,15 @@ fn matching_process_ids(target: &Path) -> Result<Vec<u32>, String> {
 }
 
 fn string_from_utf16_nul(buffer: &[u16]) -> String {
-    let length = buffer.iter().position(|unit| *unit == 0).unwrap_or(buffer.len());
+    let length = buffer
+        .iter()
+        .position(|unit| *unit == 0)
+        .unwrap_or(buffer.len());
     String::from_utf16_lossy(&buffer[..length])
 }
 
 fn process_image_path(process_id: u32) -> Option<PathBuf> {
-    let handle = unsafe {
-        OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, process_id).ok()?
-    };
+    let handle = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, process_id).ok()? };
     struct Process(HANDLE);
     impl Drop for Process {
         fn drop(&mut self) {
@@ -206,19 +203,27 @@ fn process_image_path(process_id: u32) -> Option<PathBuf> {
     let mut buffer = [0u16; 32768];
     let mut length = buffer.len() as u32;
     unsafe {
-        QueryFullProcessImageNameW(process.0, PROCESS_NAME_WIN32, windows::core::PWSTR(buffer.as_mut_ptr()), &mut length)
-            .ok()?;
+        QueryFullProcessImageNameW(
+            process.0,
+            PROCESS_NAME_WIN32,
+            windows::core::PWSTR(buffer.as_mut_ptr()),
+            &mut length,
+        )
+        .ok()?;
     }
-    Some(strip_verbatim_prefix(PathBuf::from(String::from_utf16_lossy(
-        &buffer[..length as usize],
-    ))))
+    Some(strip_verbatim_prefix(PathBuf::from(
+        String::from_utf16_lossy(&buffer[..length as usize]),
+    )))
 }
 
 fn close_main_windows(process_ids: &[u32]) {
     for process_id in process_ids {
         let mut state = *process_id;
         unsafe {
-            let _ = EnumWindows(Some(close_window_for_pid), LPARAM(&mut state as *mut u32 as isize));
+            let _ = EnumWindows(
+                Some(close_window_for_pid),
+                LPARAM(&mut state as *mut u32 as isize),
+            );
         }
     }
 }
@@ -285,7 +290,8 @@ mod tests {
         let outside_root = fixture.path().join("outside");
         fs::create_dir_all(&target_root).expect("target root");
         fs::create_dir_all(&outside_root).expect("outside root");
-        let cmd = PathBuf::from(env::var("SystemRoot").expect("SystemRoot")).join("System32/cmd.exe");
+        let cmd =
+            PathBuf::from(env::var("SystemRoot").expect("SystemRoot")).join("System32/cmd.exe");
         let target_exe = target_root.join(TARGET_FILE_NAME);
         let outside_exe = outside_root.join(TARGET_FILE_NAME);
         fs::copy(&cmd, &target_exe).expect("copy target");

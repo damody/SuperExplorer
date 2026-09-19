@@ -613,11 +613,23 @@ local function main()
             cwd = root,
             log_path = path(logs, "installer-superexplorer-pre-install-quiesce.log"),
         })
+        local silent_helper = path(root, "installer", "silent-install-elevated.ps1")
+        require_file(silent_helper, "SuperExplorer elevated silent install helper")
         local ok, failure = pcall(function()
             process.run({
                 stage = "同步安裝 SuperExplorer 測試版本",
-                exe = output,
-                args = { "/S" },
+                exe = powershell_exe(),
+                args = {
+                    "-NoLogo",
+                    "-NoProfile",
+                    "-NonInteractive",
+                    "-ExecutionPolicy",
+                    "Bypass",
+                    "-File",
+                    silent_helper,
+                    "-InstallerPath",
+                    output,
+                },
                 cwd = dist,
                 log_path = path(logs, "installer-superexplorer-silent-install.log"),
             })

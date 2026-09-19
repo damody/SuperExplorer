@@ -9,8 +9,8 @@ mod ui;
 use anyhow::{Context, Result, bail};
 use std::{
     env, fs,
-    mem::size_of,
     io::{Cursor, Read, Write},
+    mem::size_of,
     os::windows::ffi::OsStrExt,
     path::{Path, PathBuf},
     process::{Command, Stdio},
@@ -24,7 +24,8 @@ pub(crate) const PRODUCT_NAME: &str = "SuperExplorer";
 pub(crate) const PRODUCT_PUBLISHER: &str = "Damody";
 const PRODUCT_URL: &str = "https://github.com/damody/SuperExplorer";
 const PRODUCT_REG_KEY: &str = r"Software\SuperExplorer";
-const PRODUCT_UNINSTALL_KEY: &str = r"Software\Microsoft\Windows\CurrentVersion\Uninstall\SuperExplorer";
+const PRODUCT_UNINSTALL_KEY: &str =
+    r"Software\Microsoft\Windows\CurrentVersion\Uninstall\SuperExplorer";
 const SERVICE_NAME: &str = "SuperExplorerMft";
 
 fn main() {
@@ -52,7 +53,9 @@ fn run() -> Result<()> {
         }
         return ui::run_uninstall();
     }
-    if is_silent() || has_flag(&args, "--skip-service") || flag_value(&args, "--install-directory").is_some()
+    if is_silent()
+        || has_flag(&args, "--skip-service")
+        || flag_value(&args, "--install-directory").is_some()
     {
         return install(&args);
     }
@@ -67,7 +70,10 @@ fn is_uninstall_request(args: &[String]) -> bool {
     args.iter().any(|arg| arg == "--uninstall")
         || env::current_exe()
             .ok()
-            .and_then(|path| path.file_name().map(|name| name.to_string_lossy().eq_ignore_ascii_case("Uninstall.exe")))
+            .and_then(|path| {
+                path.file_name()
+                    .map(|name| name.to_string_lossy().eq_ignore_ascii_case("Uninstall.exe"))
+            })
             .unwrap_or(false)
 }
 
@@ -83,13 +89,13 @@ fn has_flag(args: &[String], name: &str) -> bool {
 }
 
 fn create_installer(args: &[String]) -> Result<()> {
-    let payload = PathBuf::from(
-        flag_value(args, "--payload-dir").context("missing --payload-dir")?,
-    );
+    let payload =
+        PathBuf::from(flag_value(args, "--payload-dir").context("missing --payload-dir")?);
     let output = PathBuf::from(flag_value(args, "--output").context("missing --output")?);
     let stub = env::current_exe().context("current setup stub")?;
     let zip_bytes = zip_directory(&payload)?;
-    let mut stub_bytes = fs::read(&stub).with_context(|| format!("read stub {}", stub.display()))?;
+    let mut stub_bytes =
+        fs::read(&stub).with_context(|| format!("read stub {}", stub.display()))?;
     stub_bytes.extend_from_slice(&zip_bytes);
     stub_bytes.extend_from_slice(&(zip_bytes.len() as u64).to_le_bytes());
     stub_bytes.extend_from_slice(MAGIC);
@@ -105,7 +111,8 @@ fn zip_directory(root: &Path) -> Result<Vec<u8>> {
     let mut bytes = Vec::new();
     {
         let mut zip = ZipWriter::new(Cursor::new(&mut bytes));
-        let options = SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
+        let options =
+            SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
         add_zip_tree(&mut zip, root, Path::new(""), options)?;
         zip.finish()?;
     }
@@ -145,7 +152,8 @@ fn read_overlay() -> Result<Vec<u8>> {
         bail!("this SuperExplorer setup binary has no payload; rebuild with --create-installer");
     }
     let size_offset = bytes.len() - 16;
-    let zip_size = u64::from_le_bytes(bytes[size_offset..size_offset + 8].try_into().unwrap()) as usize;
+    let zip_size =
+        u64::from_le_bytes(bytes[size_offset..size_offset + 8].try_into().unwrap()) as usize;
     let zip_start = size_offset
         .checked_sub(zip_size)
         .context("installer overlay is truncated")?;
@@ -221,7 +229,9 @@ pub(crate) fn install_to(
     let quiesce = staging.path().join("superexplorer-quiesce.exe");
     if quiesce.is_file() {
         run_checked(
-            Command::new(&quiesce).arg("--install-directory").arg(&install_dir),
+            Command::new(&quiesce)
+                .arg("--install-directory")
+                .arg(&install_dir),
             "close running SuperExplorer",
         )?;
     }
@@ -254,7 +264,10 @@ pub(crate) fn install_to(
     progress("Finishing", 100);
     let version = fs::read_to_string(install_dir.join("setup-version.txt"))
         .unwrap_or_else(|_| "unknown".to_owned());
-    println!("installed SuperExplorer {version} to {}", install_dir.display());
+    println!(
+        "installed SuperExplorer {version} to {}",
+        install_dir.display()
+    );
     Ok(())
 }
 
@@ -262,7 +275,11 @@ pub(crate) fn uninstall(args: &[String]) -> Result<()> {
     let skip_service = has_flag(args, "--skip-service");
     let install_dir = flag_value(args, "--install-directory")
         .map(PathBuf::from)
-        .or_else(|| env::current_exe().ok().and_then(|path| path.parent().map(Path::to_path_buf)))
+        .or_else(|| {
+            env::current_exe()
+                .ok()
+                .and_then(|path| path.parent().map(Path::to_path_buf))
+        })
         .context("unable to resolve uninstall directory")?;
     if !skip_service {
         ensure_administrator(&install_dir)?;
@@ -270,7 +287,9 @@ pub(crate) fn uninstall(args: &[String]) -> Result<()> {
     let quiesce = install_dir.join("superexplorer-quiesce.exe");
     if quiesce.is_file() {
         run_checked(
-            Command::new(&quiesce).arg("--install-directory").arg(&install_dir),
+            Command::new(&quiesce)
+                .arg("--install-directory")
+                .arg(&install_dir),
             "close running SuperExplorer",
         )?;
     }
@@ -297,8 +316,9 @@ fn copy_tree(from: &Path, to: &Path) -> Result<()> {
             fs::create_dir_all(&dest)?;
             copy_tree(&entry.path(), &dest)?;
         } else {
-            fs::copy(entry.path(), &dest)
-                .with_context(|| format!("copy {} -> {}", entry.path().display(), dest.display()))?;
+            fs::copy(entry.path(), &dest).with_context(|| {
+                format!("copy {} -> {}", entry.path().display(), dest.display())
+            })?;
         }
     }
     Ok(())
@@ -369,7 +389,10 @@ fn stop_service() -> Result<()> {
         return Ok(());
     }
     let (stop_code, stop_text) = sc(&["stop", SERVICE_NAME])?;
-    if stop_code != 0 && !stop_text.contains("1061") && !stop_text.contains("1062") && !stop_text.contains("1060")
+    if stop_code != 0
+        && !stop_text.contains("1061")
+        && !stop_text.contains("1062")
+        && !stop_text.contains("1060")
     {
         bail!("unable to stop {SERVICE_NAME}: {stop_text}");
     }
@@ -530,7 +553,12 @@ fn relaunch_elevated() -> Result<()> {
 }
 
 fn wide(value: impl AsRef<Path>) -> Vec<u16> {
-    value.as_ref().as_os_str().encode_wide().chain(Some(0)).collect()
+    value
+        .as_ref()
+        .as_os_str()
+        .encode_wide()
+        .chain(Some(0))
+        .collect()
 }
 
 fn message_box(title: &str, body: &str) {
@@ -579,7 +607,11 @@ fn write_uninstall_registry(install_dir: &Path) -> Result<()> {
         .trim()
         .to_owned();
     let uninstall = format!("\"{}\\Uninstall.exe\"", install_dir.display());
-    set_reg_sz(PRODUCT_REG_KEY, "InstallDir", &install_dir.display().to_string())?;
+    set_reg_sz(
+        PRODUCT_REG_KEY,
+        "InstallDir",
+        &install_dir.display().to_string(),
+    )?;
     set_reg_sz(PRODUCT_UNINSTALL_KEY, "DisplayName", PRODUCT_NAME)?;
     set_reg_sz(PRODUCT_UNINSTALL_KEY, "DisplayVersion", &version)?;
     set_reg_sz(PRODUCT_UNINSTALL_KEY, "Publisher", PRODUCT_PUBLISHER)?;
@@ -600,7 +632,17 @@ fn write_uninstall_registry(install_dir: &Path) -> Result<()> {
 
 fn set_reg_sz(key: &str, name: &str, value: &str) -> Result<()> {
     let status = Command::new(r"C:\Windows\System32\reg.exe")
-        .args(["add", &format!(r"HKLM\{key}"), "/v", name, "/t", "REG_SZ", "/d", value, "/f"])
+        .args([
+            "add",
+            &format!(r"HKLM\{key}"),
+            "/v",
+            name,
+            "/t",
+            "REG_SZ",
+            "/d",
+            value,
+            "/f",
+        ])
         .stdout(Stdio::null())
         .stderr(Stdio::piped())
         .status()

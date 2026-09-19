@@ -4,7 +4,9 @@
 )]
 #![allow(unsafe_op_in_unsafe_fn)]
 
-use crate::{PRODUCT_NAME, PRODUCT_PUBLISHER, default_install_dir, install_to, payload_version, uninstall};
+use crate::{
+    PRODUCT_NAME, PRODUCT_PUBLISHER, default_install_dir, install_to, payload_version, uninstall,
+};
 use anyhow::Result;
 use std::{
     cell::RefCell,
@@ -35,15 +37,16 @@ use windows::{
                 SIGDN_FILESYSPATH,
             },
             WindowsAndMessaging::{
-                BS_DEFPUSHBUTTON, BS_PUSHBUTTON, CS_HREDRAW, CS_VREDRAW, CW_USEDEFAULT,
-                CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, ES_AUTOHSCROLL,
-                ES_READONLY, GetClientRect, GetMessageW, HICON, HMENU, IMAGE_ICON, IDC_ARROW,
-                IsDialogMessageW, LR_DEFAULTSIZE, LoadCursorW, LoadImageW, MSG,
-                PostQuitMessage, RegisterClassExW, SW_SHOW, SendMessageW, SetWindowLongPtrW,
-                SetWindowTextW, ShowWindow, TranslateMessage, WINDOW_EX_STYLE, WM_CLOSE, WM_COMMAND,
-                WM_CREATE, WM_CTLCOLORSTATIC, WM_DESTROY, WM_PAINT, WM_SETFONT, WNDCLASSEXW,
-                WS_BORDER, WS_CAPTION, WS_CHILD, WS_MINIMIZEBOX, WS_OVERLAPPED, WS_SYSMENU,
-                WS_TABSTOP, WS_VISIBLE, GWLP_USERDATA, IMAGE_FLAGS, WINDOW_STYLE,
+                AdjustWindowRectEx, BS_DEFPUSHBUTTON, BS_PUSHBUTTON, CS_HREDRAW, CS_VREDRAW,
+                CW_USEDEFAULT, CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW,
+                ES_AUTOHSCROLL, ES_READONLY, GWLP_USERDATA, GetClientRect, GetMessageW, HICON,
+                HMENU, IDC_ARROW, IMAGE_FLAGS, IMAGE_ICON, IsDialogMessageW, LR_DEFAULTSIZE,
+                LoadCursorW, LoadImageW, MSG, PostQuitMessage, RegisterClassExW, SW_SHOW,
+                SWP_NOZORDER, SendMessageW, SetWindowLongPtrW, SetWindowPos, SetWindowTextW,
+                ShowWindow, TranslateMessage, WINDOW_EX_STYLE, WINDOW_STYLE, WM_CLOSE, WM_COMMAND,
+                WM_CREATE, WM_CTLCOLORSTATIC, WM_DESTROY, WM_PAINT, WM_SETFONT, WM_SIZE,
+                WNDCLASSEXW, WS_BORDER, WS_CAPTION, WS_CHILD, WS_MINIMIZEBOX, WS_OVERLAPPED,
+                WS_SYSMENU, WS_TABSTOP, WS_VISIBLE,
             },
         },
     },
@@ -73,6 +76,12 @@ const PAGE_ERROR: i32 = 4;
 
 const HEADER_COLOR: COLORREF = COLORREF(0x00_5A_3A_1B);
 const ACCENT: COLORREF = COLORREF(0x00_D4_7A_2E);
+const CLIENT_WIDTH: i32 = 760;
+const CLIENT_HEIGHT: i32 = 560;
+const HEADER_HEIGHT: i32 = 96;
+const FOOTER_HEIGHT: i32 = 80;
+const BUTTON_WIDTH: i32 = 120;
+const BUTTON_HEIGHT: i32 = 36;
 
 struct Wizard {
     _hwnd: HWND,
@@ -120,7 +129,9 @@ pub(crate) fn run_uninstall() -> Result<()> {
 
 fn confirm_uninstall() -> Result<bool> {
     use windows::Win32::UI::{
-        Controls::{TASKDIALOG_COMMON_BUTTON_FLAGS, TASKDIALOGCONFIG, TaskDialogIndirect, TD_WARNING_ICON},
+        Controls::{
+            TASKDIALOG_COMMON_BUTTON_FLAGS, TASKDIALOGCONFIG, TD_WARNING_ICON, TaskDialogIndirect,
+        },
         WindowsAndMessaging::IDYES,
     };
     unsafe {
@@ -128,7 +139,8 @@ fn confirm_uninstall() -> Result<bool> {
         config.cbSize = size_of::<TASKDIALOGCONFIG>() as u32;
         config.pszWindowTitle = w!("SuperExplorer");
         config.pszMainInstruction = w!("Uninstall SuperExplorer?");
-        config.pszContent = w!("Program files will be removed. Bookmarks and the MFT cache are kept.");
+        config.pszContent =
+            w!("Program files will be removed. Bookmarks and the MFT cache are kept.");
         config.dwCommonButtons = TASKDIALOG_COMMON_BUTTON_FLAGS(6);
         config.Anonymous1.pszMainIcon = TD_WARNING_ICON;
         let mut button = 0;
@@ -191,15 +203,23 @@ unsafe fn show_wizard(_uninstall: bool) -> Result<()> {
     RegisterClassExW(&wc);
 
     let title = wide("SuperExplorer Setup");
+    let style = WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX;
+    let mut outer = RECT {
+        left: 0,
+        top: 0,
+        right: CLIENT_WIDTH,
+        bottom: CLIENT_HEIGHT,
+    };
+    AdjustWindowRectEx(&mut outer, style, false, WINDOW_EX_STYLE::default())?;
     let hwnd = CreateWindowExW(
         WINDOW_EX_STYLE::default(),
         PCWSTR(class.as_ptr()),
         PCWSTR(title.as_ptr()),
-        WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX,
+        style,
         CW_USEDEFAULT,
         CW_USEDEFAULT,
-        660,
-        500,
+        outer.right - outer.left,
+        outer.bottom - outer.top,
         None,
         None,
         Some(instance.into()),
@@ -223,6 +243,10 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
                 let _ = error;
                 PostQuitMessage(1);
             }
+            LRESULT(0)
+        }
+        WM_SIZE => {
+            layout_wizard(hwnd);
             LRESULT(0)
         }
         WM_PAINT => {
@@ -317,20 +341,57 @@ unsafe fn create_children(hwnd: HWND) -> Result<()> {
         font,
         font_title,
         header_brush,
-        install_dir: default_install_dir().unwrap_or_else(|_| PathBuf::from(r"C:\Program Files\SuperExplorer")),
+        install_dir: default_install_dir()
+            .unwrap_or_else(|_| PathBuf::from(r"C:\Program Files\SuperExplorer")),
         version: payload_version(),
         error: String::new(),
         working: false,
     });
 
-    wizard.title = child(hwnd, "STATIC", "", WS_CHILD | WS_VISIBLE, 24, 108, 600, 32, IDC_TITLE, instance.into())?;
-    wizard.subtitle = child(hwnd, "STATIC", "", WS_CHILD | WS_VISIBLE, 24, 144, 600, 24, IDC_SUBTITLE, instance.into())?;
-    wizard.body = child(hwnd, "STATIC", "", WS_CHILD | WS_VISIBLE, 24, 180, 600, 96, IDC_BODY, instance.into())?;
+    wizard.title = child(
+        hwnd,
+        "STATIC",
+        "",
+        WS_CHILD | WS_VISIBLE,
+        24,
+        108,
+        600,
+        32,
+        IDC_TITLE,
+        instance.into(),
+    )?;
+    wizard.subtitle = child(
+        hwnd,
+        "STATIC",
+        "",
+        WS_CHILD | WS_VISIBLE,
+        24,
+        144,
+        600,
+        24,
+        IDC_SUBTITLE,
+        instance.into(),
+    )?;
+    wizard.body = child(
+        hwnd,
+        "STATIC",
+        "",
+        WS_CHILD | WS_VISIBLE,
+        24,
+        180,
+        600,
+        96,
+        IDC_BODY,
+        instance.into(),
+    )?;
     wizard.path = child(
         hwnd,
         "EDIT",
         &wizard.install_dir.display().to_string(),
-        WS_CHILD | WS_TABSTOP | WS_BORDER | WINDOW_STYLE(ES_AUTOHSCROLL as u32 | ES_READONLY as u32),
+        WS_CHILD
+            | WS_TABSTOP
+            | WS_BORDER
+            | WINDOW_STYLE(ES_AUTOHSCROLL as u32 | ES_READONLY as u32),
         24,
         280,
         470,
@@ -338,7 +399,18 @@ unsafe fn create_children(hwnd: HWND) -> Result<()> {
         IDC_PATH,
         instance.into(),
     )?;
-    wizard.browse = child(hwnd, "BUTTON", "Browse...", WS_CHILD | WS_TABSTOP | WINDOW_STYLE(BS_PUSHBUTTON as u32), 504, 278, 110, 32, IDC_BROWSE, instance.into())?;
+    wizard.browse = child(
+        hwnd,
+        "BUTTON",
+        "Browse...",
+        WS_CHILD | WS_TABSTOP | WINDOW_STYLE(BS_PUSHBUTTON as u32),
+        504,
+        278,
+        110,
+        32,
+        IDC_BROWSE,
+        instance.into(),
+    )?;
     wizard.progress = CreateWindowExW(
         WINDOW_EX_STYLE::default(),
         PROGRESS_CLASSW,
@@ -353,12 +425,72 @@ unsafe fn create_children(hwnd: HWND) -> Result<()> {
         Some(instance.into()),
         None,
     )?;
-    let _ = SendMessageW(wizard.progress, PBM_SETRANGE32, Some(WPARAM(0)), Some(LPARAM(100)));
-    wizard.status = child(hwnd, "STATIC", "", WS_CHILD, 24, 316, 590, 24, IDC_STATUS, instance.into())?;
-    wizard.launch = child(hwnd, "BUTTON", "Launch SuperExplorer", WS_CHILD | WS_TABSTOP | WINDOW_STYLE(3), 24, 280, 300, 24, IDC_LAUNCH, instance.into())?;
-    wizard.back = child(hwnd, "BUTTON", "< Back", WS_CHILD | WS_VISIBLE | WS_TABSTOP | WINDOW_STYLE(BS_PUSHBUTTON as u32), 250, 420, 110, 32, IDC_BACK, instance.into())?;
-    wizard.next = child(hwnd, "BUTTON", "Next >", WS_CHILD | WS_VISIBLE | WS_TABSTOP | WINDOW_STYLE(BS_DEFPUSHBUTTON as u32), 370, 420, 110, 32, IDC_NEXT, instance.into())?;
-    wizard.cancel = child(hwnd, "BUTTON", "Cancel", WS_CHILD | WS_VISIBLE | WS_TABSTOP | WINDOW_STYLE(BS_PUSHBUTTON as u32), 490, 420, 110, 32, IDC_CANCEL, instance.into())?;
+    let _ = SendMessageW(
+        wizard.progress,
+        PBM_SETRANGE32,
+        Some(WPARAM(0)),
+        Some(LPARAM(100)),
+    );
+    wizard.status = child(
+        hwnd,
+        "STATIC",
+        "",
+        WS_CHILD,
+        24,
+        316,
+        590,
+        24,
+        IDC_STATUS,
+        instance.into(),
+    )?;
+    wizard.launch = child(
+        hwnd,
+        "BUTTON",
+        "Launch SuperExplorer",
+        WS_CHILD | WS_TABSTOP | WINDOW_STYLE(3),
+        24,
+        280,
+        300,
+        24,
+        IDC_LAUNCH,
+        instance.into(),
+    )?;
+    wizard.back = child(
+        hwnd,
+        "BUTTON",
+        "< Back",
+        WS_CHILD | WS_VISIBLE | WS_TABSTOP | WINDOW_STYLE(BS_PUSHBUTTON as u32),
+        250,
+        420,
+        110,
+        32,
+        IDC_BACK,
+        instance.into(),
+    )?;
+    wizard.next = child(
+        hwnd,
+        "BUTTON",
+        "Next >",
+        WS_CHILD | WS_VISIBLE | WS_TABSTOP | WINDOW_STYLE(BS_DEFPUSHBUTTON as u32),
+        370,
+        420,
+        110,
+        32,
+        IDC_NEXT,
+        instance.into(),
+    )?;
+    wizard.cancel = child(
+        hwnd,
+        "BUTTON",
+        "Cancel",
+        WS_CHILD | WS_VISIBLE | WS_TABSTOP | WINDOW_STYLE(BS_PUSHBUTTON as u32),
+        490,
+        420,
+        110,
+        32,
+        IDC_CANCEL,
+        instance.into(),
+    )?;
 
     for hwnd in [
         wizard.title,
@@ -372,12 +504,23 @@ unsafe fn create_children(hwnd: HWND) -> Result<()> {
         wizard.next,
         wizard.cancel,
     ] {
-        let _ = SendMessageW(hwnd, WM_SETFONT, Some(WPARAM(font.0 as usize)), Some(LPARAM(1)));
+        let _ = SendMessageW(
+            hwnd,
+            WM_SETFONT,
+            Some(WPARAM(font.0 as usize)),
+            Some(LPARAM(1)),
+        );
     }
-    let _ = SendMessageW(wizard.title, WM_SETFONT, Some(WPARAM(font_title.0 as usize)), Some(LPARAM(1)));
+    let _ = SendMessageW(
+        wizard.title,
+        WM_SETFONT,
+        Some(WPARAM(font_title.0 as usize)),
+        Some(LPARAM(1)),
+    );
 
     SetWindowLongPtrW(hwnd, GWLP_USERDATA, (&raw const *wizard) as isize);
     WIZARD.with(|slot| *slot.borrow_mut() = Some(wizard));
+    layout_wizard(hwnd);
     apply_page();
     Ok(())
 }
@@ -412,6 +555,132 @@ unsafe fn child(
     )?)
 }
 
+fn layout_wizard(hwnd: HWND) {
+    let mut rc = RECT::default();
+    unsafe {
+        GetClientRect(hwnd, &mut rc).ok();
+    }
+    let width = rc.right;
+    let height = rc.bottom;
+    if width <= 0 || height <= 0 {
+        return;
+    }
+    let margin = 28;
+    let content_top = HEADER_HEIGHT + 20;
+    let footer_top = height - FOOTER_HEIGHT;
+    let button_y = footer_top + (FOOTER_HEIGHT - BUTTON_HEIGHT) / 2;
+    let gap = 12;
+    let cancel_x = width - margin - BUTTON_WIDTH;
+    let next_x = cancel_x - gap - BUTTON_WIDTH;
+    let back_x = next_x - gap - BUTTON_WIDTH;
+    let content_width = width - margin * 2;
+    WIZARD.with(|slot| {
+        let slot = slot.borrow();
+        let Some(wizard) = slot.as_ref() else { return };
+        unsafe {
+            let _ = SetWindowPos(
+                wizard.title,
+                None,
+                margin,
+                content_top,
+                content_width,
+                36,
+                SWP_NOZORDER,
+            );
+            let _ = SetWindowPos(
+                wizard.subtitle,
+                None,
+                margin,
+                content_top + 40,
+                content_width,
+                28,
+                SWP_NOZORDER,
+            );
+            let _ = SetWindowPos(
+                wizard.body,
+                None,
+                margin,
+                content_top + 76,
+                content_width,
+                120,
+                SWP_NOZORDER,
+            );
+            let _ = SetWindowPos(
+                wizard.path,
+                None,
+                margin,
+                content_top + 210,
+                content_width - BUTTON_WIDTH - gap,
+                32,
+                SWP_NOZORDER,
+            );
+            let _ = SetWindowPos(
+                wizard.browse,
+                None,
+                width - margin - BUTTON_WIDTH,
+                content_top + 208,
+                BUTTON_WIDTH,
+                BUTTON_HEIGHT,
+                SWP_NOZORDER,
+            );
+            let _ = SetWindowPos(
+                wizard.progress,
+                None,
+                margin,
+                content_top + 210,
+                content_width,
+                28,
+                SWP_NOZORDER,
+            );
+            let _ = SetWindowPos(
+                wizard.status,
+                None,
+                margin,
+                content_top + 248,
+                content_width,
+                28,
+                SWP_NOZORDER,
+            );
+            let _ = SetWindowPos(
+                wizard.launch,
+                None,
+                margin,
+                content_top + 210,
+                content_width,
+                28,
+                SWP_NOZORDER,
+            );
+            let _ = SetWindowPos(
+                wizard.back,
+                None,
+                back_x,
+                button_y,
+                BUTTON_WIDTH,
+                BUTTON_HEIGHT,
+                SWP_NOZORDER,
+            );
+            let _ = SetWindowPos(
+                wizard.next,
+                None,
+                next_x,
+                button_y,
+                BUTTON_WIDTH,
+                BUTTON_HEIGHT,
+                SWP_NOZORDER,
+            );
+            let _ = SetWindowPos(
+                wizard.cancel,
+                None,
+                cancel_x,
+                button_y,
+                BUTTON_WIDTH,
+                BUTTON_HEIGHT,
+                SWP_NOZORDER,
+            );
+        }
+    });
+}
+
 unsafe fn paint_header(hwnd: HWND) {
     let mut ps = zeroed();
     let hdc = BeginPaint(hwnd, &mut ps);
@@ -421,7 +690,7 @@ unsafe fn paint_header(hwnd: HWND) {
         left: 0,
         top: 0,
         right: rc.right,
-        bottom: 88,
+        bottom: HEADER_HEIGHT,
     };
     WIZARD.with(|slot| {
         if let Some(wizard) = slot.borrow().as_ref() {
@@ -436,16 +705,16 @@ unsafe fn paint_header(hwnd: HWND) {
             let _ = TextOutW(hdc, 24, 52, &subtitle[..subtitle.len().saturating_sub(1)]);
             let accent = RECT {
                 left: 0,
-                top: 88,
+                top: HEADER_HEIGHT,
                 right: rc.right,
-                bottom: 92,
+                bottom: HEADER_HEIGHT + 4,
             };
             let brush = CreateSolidBrush(ACCENT);
             FillRect(hdc, &accent, brush);
             let _ = DeleteObject(brush.into());
             let footer = RECT {
                 left: 0,
-                top: rc.bottom - 64,
+                top: rc.bottom - FOOTER_HEIGHT,
                 right: rc.right,
                 bottom: rc.bottom,
             };
@@ -522,7 +791,14 @@ fn apply_page() {
 }
 
 unsafe fn show(hwnd: HWND, visible: bool) {
-    let _ = ShowWindow(hwnd, if visible { SW_SHOW } else { windows::Win32::UI::WindowsAndMessaging::SW_HIDE });
+    let _ = ShowWindow(
+        hwnd,
+        if visible {
+            SW_SHOW
+        } else {
+            windows::Win32::UI::WindowsAndMessaging::SW_HIDE
+        },
+    );
 }
 
 unsafe fn set_text(hwnd: HWND, text: &str) {
@@ -558,7 +834,12 @@ unsafe fn on_command(hwnd: HWND, id: i32) {
             }
         }
         IDC_NEXT => {
-            let page = WIZARD.with(|slot| slot.borrow().as_ref().map(|wizard| wizard.page).unwrap_or(0));
+            let page = WIZARD.with(|slot| {
+                slot.borrow()
+                    .as_ref()
+                    .map(|wizard| wizard.page)
+                    .unwrap_or(0)
+            });
             match page {
                 PAGE_WELCOME => {
                     WIZARD.with(|slot| {
@@ -605,7 +886,9 @@ fn start_install(hwnd: HWND) {
         })
     });
     apply_page();
-    let Some(install_dir) = install_dir else { return };
+    let Some(install_dir) = install_dir else {
+        return;
+    };
     let hwnd_bits = hwnd.0 as usize;
     thread::spawn(move || {
         let hwnd = HWND(hwnd_bits as *mut c_void);
@@ -622,7 +905,10 @@ fn start_install(hwnd: HWND) {
             let _ = text;
         });
         let ok = result.is_ok();
-        let error = result.err().map(|error| error.to_string()).unwrap_or_default();
+        let error = result
+            .err()
+            .map(|error| error.to_string())
+            .unwrap_or_default();
         let wide_error = wide(&error);
         unsafe {
             let _ = SendMessageW(
@@ -640,7 +926,12 @@ unsafe fn update_progress(hwnd: HWND, percent: u32, lparam: LPARAM) {
     let _ = hwnd;
     WIZARD.with(|slot| {
         if let Some(wizard) = slot.borrow().as_ref() {
-            let _ = SendMessageW(wizard.progress, PBM_SETPOS, Some(WPARAM(percent as usize)), None);
+            let _ = SendMessageW(
+                wizard.progress,
+                PBM_SETPOS,
+                Some(WPARAM(percent as usize)),
+                None,
+            );
             if lparam.0 != 0 {
                 let _ = SetWindowTextW(wizard.status, PCWSTR(lparam.0 as *const u16));
             }
@@ -681,8 +972,11 @@ fn string_from_pcwstr(value: PCWSTR) -> String {
 fn browse_folder(owner: HWND) -> Option<PathBuf> {
     use windows::Win32::System::Com::{CLSCTX_INPROC_SERVER, CoCreateInstance};
     unsafe {
-        let dialog: IFileOpenDialog = CoCreateInstance(&FileOpenDialog, None, CLSCTX_INPROC_SERVER).ok()?;
-        dialog.SetOptions(FOS_PICKFOLDERS | FOS_FORCEFILESYSTEM).ok()?;
+        let dialog: IFileOpenDialog =
+            CoCreateInstance(&FileOpenDialog, None, CLSCTX_INPROC_SERVER).ok()?;
+        dialog
+            .SetOptions(FOS_PICKFOLDERS | FOS_FORCEFILESYSTEM)
+            .ok()?;
         dialog.Show(Some(owner)).ok()?;
         let item: IShellItem = dialog.GetResult().ok()?;
         let name = item.GetDisplayName(SIGDN_FILESYSPATH).ok()?;

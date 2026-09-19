@@ -176,7 +176,7 @@ assert_contains(build, '"-p", "explorer-setup"', "first-party setup crate build"
 assert_contains(build, '"--create-installer"', "first-party setup pack")
 assert_contains(build, 'if options.auto_install and not options.no_launch then',
     "explicit SuperExplorer auto-install branch")
-assert_contains(build, 'args = { "/S" }', "silent installer argument")
+assert_contains(build, "silent-install-elevated.ps1", "elevated silent install helper")
 local pack_at = assert(build:find('"--create-installer"', 1, true), "test installer pack missing")
 local publish_at = assert(build:find("publish.apk(temporary_output, output)", 1, true),
     "installer publish missing")
@@ -191,8 +191,17 @@ assert_contains(auto_install_block, "quiesce-superexplorer.ps1",
     "pre-install SuperExplorer quiesce helper")
 assert_contains(auto_install_block, "ProgramW6432",
     "pre-install quiesce Program Files fallback")
+assert_contains(auto_install_block, "silent-install-elevated.ps1",
+    "auto-install uses elevated silent helper")
+assert_contains(auto_install_block, "-InstallerPath",
+    "elevated silent helper receives the packed installer")
+local silent_helper = read_file(root .. "/installer/silent-install-elevated.ps1")
+assert_contains(silent_helper, "RunAs", "elevated silent install must request UAC")
+assert_contains(silent_helper, "/S", "elevated helper still uses silent setup")
+assert_contains(silent_helper, "Test-Administrator",
+    "elevated helper skips UAC when already admin")
 local quiesce_at = assert(auto_install_block:find("quiesce-superexplorer.ps1", 1, true))
-local silent_at = assert(auto_install_block:find('args = { "/S" }', 1, true))
+local silent_at = assert(auto_install_block:find("silent-install-elevated.ps1", 1, true))
 assert(quiesce_at < silent_at, "SuperExplorer must be closed after packaging and before silent install")
 assert_contains(auto_install_block, "pcall(start_verified_superexplorer",
     "failed auto-install still restarts SuperExplorer")
