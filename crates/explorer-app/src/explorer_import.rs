@@ -18,6 +18,7 @@ pub const INITIAL_TABS_ENV: &str = "SUPEREXPLORER_INITIAL_TABS";
 pub const INITIAL_TABS_FILE_ENV: &str = "SUPEREXPLORER_INITIAL_TABS_FILE";
 pub const WIN_E_ENV: &str = "SUPEREXPLORER_WIN_E";
 pub const IMPORT_PATH_PREFIX_ENV: &str = "SUPEREXPLORER_IMPORT_PATH_PREFIX";
+pub const RESTORE_WINDOW_ID_ENV: &str = "SUPEREXPLORER_RESTORE_WINDOW_ID";
 const ENV_PAYLOAD_SOFT_LIMIT: usize = 24 * 1024;
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -97,6 +98,43 @@ pub fn consume_launch_import(first_ordinary_process: bool) -> LaunchImport {
             }
         }
     }
+}
+
+/// Parses the child-window restore identity supplied by the first ordinary process.
+pub fn parse_restore_window_id() -> Option<explorer_model::PersistedWindowId> {
+    let raw = env::var(RESTORE_WINDOW_ID_ENV).ok()?;
+    raw.trim()
+        .parse::<u64>()
+        .ok()
+        .map(explorer_model::PersistedWindowId::new)
+}
+
+/// Spawns one `SuperExplorer` window that restores an already-remembered window identity.
+///
+/// # Errors
+///
+/// Returns a spawn or process-launch error when the child cannot be started.
+pub fn spawn_restored_window(window_id: explorer_model::PersistedWindowId) -> Result<(), String> {
+    let exe = env::current_exe().map_err(|error| format!("current exe: {error}"))?;
+    let mut command = Command::new(exe);
+    command
+        .env(RESTORE_WINDOW_ID_ENV, window_id.get().to_string())
+        .env_remove(WIN_E_ENV)
+        .env_remove(INITIAL_TABS_ENV)
+        .env_remove(INITIAL_TABS_FILE_ENV)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    // SAFETY: the pid is an integer; the call only grants foreground permission
+    // to the imported SuperExplorer window.
+    let _ = unsafe { windows::Win32::UI::WindowsAndMessaging::AllowSetForegroundWindow(u32::MAX) };
+    let child = command
+        .spawn()
+        .map_err(|error| format!("spawn SuperExplorer: {error}"))?;
+    let _ =
+        unsafe { windows::Win32::UI::WindowsAndMessaging::AllowSetForegroundWindow(child.id()) };
+    drop(child);
+    Ok(())
 }
 
 pub fn this_pc_entry() -> HistoryEntry {
@@ -253,6 +291,25 @@ fn window_from_payload(payload: &ImportedTabsPayload) -> Option<ExplorerWindowSt
 mod tests {
     use super::*;
     use explorer_shell_win::ExplorerTabSnapshot;
+
+    #[test]
+    fn restore_window_id_env_parses_only_valid_integers() {
+        unsafe {
+            env::set_var(RESTORE_WINDOW_ID_ENV, "42");
+        }
+        assert_eq!(
+            parse_restore_window_id().map(explorer_model::PersistedWindowId::get),
+            Some(42)
+        );
+        unsafe {
+            env::set_var(RESTORE_WINDOW_ID_ENV, "not-a-number");
+        }
+        assert!(parse_restore_window_id().is_none());
+        unsafe {
+            env::remove_var(RESTORE_WINDOW_ID_ENV);
+        }
+        assert!(parse_restore_window_id().is_none());
+    }
 
     #[test]
     fn payload_round_trips_every_tab_and_active_index() {

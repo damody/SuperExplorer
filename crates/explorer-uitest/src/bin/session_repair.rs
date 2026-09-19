@@ -31,8 +31,10 @@ fn main() -> Result<()> {
         serde_json::from_slice(&bytes).context("deserialize recoverable session envelope")?;
     let mut payload = stale.payload;
     if enable_immersive {
-        for tab in &mut payload.tabs {
-            tab.view_settings.immersive_native_context_menus = true;
+        for window in &mut payload.windows {
+            for tab in &mut window.tabs {
+                tab.view_settings.immersive_native_context_menus = true;
+            }
         }
     }
     let repaired = PersistedSessionEnvelope::new(

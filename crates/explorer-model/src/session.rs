@@ -27,7 +27,11 @@ const fn default_immersive_native_context_menus() -> bool {
 }
 
 /// Current durable session schema.
-pub const SESSION_SCHEMA_VERSION: u16 = 4;
+pub const SESSION_SCHEMA_VERSION: u16 = 5;
+
+/// Upper bound on remembered top-level windows kept in one session.
+pub const MAX_PERSISTED_WINDOWS: usize = 32;
+
 const MAX_PROVENANCE_BYTES: usize = 256;
 const MAX_DISPLAY_TITLE_BYTES: usize = 4 * 1024;
 const MAX_PIN_NAME_BYTES: usize = 4 * 1024;
@@ -393,6 +397,54 @@ pub struct PersistedTab {
     pub view_settings: PersistedViewSettings,
 }
 
+/// Stable identity of one remembered top-level window.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct PersistedWindowId(u64);
+
+impl PersistedWindowId {
+    /// Identity assigned to a pre-v5 single-window session during migration.
+    pub const LEGACY: Self = Self(1);
+
+    /// Builds an identity from an explicit integer.
+    pub const fn new(value: u64) -> Self {
+        Self(value)
+    }
+
+    /// Returns the underlying integer.
+    pub const fn get(self) -> u64 {
+        self.0
+    }
+
+    /// Generates a collision-resistant identity for one login session.
+    pub fn generate() -> Self {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static COUNTER: AtomicU64 = AtomicU64::new(0);
+        let counter = COUNTER.fetch_add(1, Ordering::Relaxed);
+        let elapsed = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default();
+        let nanos = elapsed
+            .as_secs()
+            .wrapping_mul(1_000_000_000)
+            .wrapping_add(u64::from(elapsed.subsec_nanos()));
+        let mixed = nanos.rotate_left(17)
+            ^ u64::from(std::process::id()).rotate_left(41)
+            ^ counter.rotate_left(5);
+        Self(mixed | (1_u64 << 63))
+    }
+}
+
+/// Durable state for one remembered top-level window.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PersistedWindow {
+    pub window_id: PersistedWindowId,
+    pub placement: PersistedWindowPlacement,
+    pub tabs: Vec<PersistedTab>,
+    pub active_tab_id: TabId,
+}
+
 /// Durable Quick Access entry with stable explicit order.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -413,9 +465,8 @@ pub struct PersistedSessionPayload {
     /// Named color theme id (`windows-light`, `one-dark`, …). `None` is Windows Light.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub theme: Option<String>,
-    pub window: PersistedWindowPlacement,
-    pub tabs: Vec<PersistedTab>,
-    pub active_tab_id: TabId,
+    /// Every remembered window, ordered from oldest-written to most-recently-written.
+    pub windows: Vec<PersistedWindow>,
     pub quick_access: Vec<PersistedQuickAccessPin>,
     #[serde(default)]
     pub bookmarks: crate::Bookmarks,
@@ -435,9 +486,7 @@ pub struct PersistedSessionEnvelope {
 /// A fully validated plan safe for asynchronous location reconstruction.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RestorePlan {
-    pub window: PersistedWindowPlacement,
-    pub tabs: Vec<PersistedTab>,
-    pub active_tab_id: TabId,
+    pub windows: Vec<PersistedWindow>,
     pub quick_access: Vec<PersistedQuickAccessPin>,
     pub bookmarks: crate::Bookmarks,
 }
@@ -570,43 +619,131 @@ impl PersistedSessionEnvelope {
         provenance: SessionProvenance,
         limits: RoadmapLimits,
     ) -> Result<Self, SessionValidationError> {
-        let tabs = window
-            .tabs()
-            .iter()
-            .map(|tab| {
-                let current = tab.history.current().ok_or_else(|| {
-                    SessionValidationError::Invariant("tab has no current history entry".to_owned())
-                })?;
-                Ok(PersistedTab {
-                    tab_id: tab.id,
-                    current: PersistedHistoryEntry::from(current),
-                    back: tab
-                        .history
-                        .back_entries()
-                        .iter()
-                        .map(PersistedHistoryEntry::from)
-                        .collect(),
-                    forward: tab
-                        .history
-                        .forward_entries()
-                        .iter()
-                        .map(PersistedHistoryEntry::from)
-                        .collect(),
-                    view_settings: PersistedViewSettings::from(tab.view.settings.clone()),
-                })
-            })
-            .collect::<Result<Vec<_>, SessionValidationError>>()?;
+        Self::project_window(
+            PersistedWindowId::generate(),
+            window,
+            placement,
+            quick_access,
+            bookmarks,
+            restore_enabled,
+            locale,
+            theme,
+            write_generation,
+            provenance,
+            limits,
+        )
+    }
+
+    /// Projects one remembered window's runtime state into a single-window envelope.
+    ///
+    /// # Errors
+    ///
+    /// Returns a validation or serialization error when runtime state cannot form a bounded
+    /// reconstructible snapshot.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "the projection mirrors the persisted global fields plus one window identity"
+    )]
+    pub fn project_window(
+        window_id: PersistedWindowId,
+        window: &ExplorerWindowState,
+        placement: PersistedWindowPlacement,
+        quick_access: &[PersistedQuickAccessPin],
+        bookmarks: &crate::Bookmarks,
+        restore_enabled: bool,
+        locale: Option<AppLocale>,
+        theme: Option<String>,
+        write_generation: u64,
+        provenance: SessionProvenance,
+        limits: RoadmapLimits,
+    ) -> Result<Self, SessionValidationError> {
+        let projected = PersistedWindow::from_runtime(window_id, window, placement)?;
+        Self::project_windows(
+            vec![projected],
+            quick_access,
+            bookmarks,
+            restore_enabled,
+            locale,
+            theme,
+            write_generation,
+            provenance,
+            limits,
+        )
+    }
+
+    /// Projects an already-built window set with the shared global fields.
+    ///
+    /// # Errors
+    ///
+    /// Returns a validation or serialization error when the set cannot form a bounded
+    /// reconstructible snapshot.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "the projection mirrors the persisted payload fields exactly"
+    )]
+    pub fn project_windows(
+        windows: Vec<PersistedWindow>,
+        quick_access: &[PersistedQuickAccessPin],
+        bookmarks: &crate::Bookmarks,
+        restore_enabled: bool,
+        locale: Option<AppLocale>,
+        theme: Option<String>,
+        write_generation: u64,
+        provenance: SessionProvenance,
+        limits: RoadmapLimits,
+    ) -> Result<Self, SessionValidationError> {
         let payload = PersistedSessionPayload {
             restore_enabled,
             locale,
             theme,
-            window: placement,
-            tabs,
-            active_tab_id: window.active_tab_id(),
+            windows,
             quick_access: quick_access.to_vec(),
             bookmarks: bookmarks.clone(),
         };
         Self::new(write_generation, provenance, payload, limits)
+    }
+
+    /// Merges one incoming envelope's windows into this on-disk base.
+    ///
+    /// Every incoming window upserts by [`PersistedWindowId`] and moves to the end of the
+    /// stored order. The incoming envelope's global fields win. Oldest windows are dropped
+    /// when [`MAX_PERSISTED_WINDOWS`] is exceeded.
+    ///
+    /// # Errors
+    ///
+    /// Returns a validation or serialization error when the merged set is not representable.
+    pub fn merge_window_set(
+        &self,
+        incoming: &Self,
+        limits: RoadmapLimits,
+    ) -> Result<Self, SessionValidationError> {
+        let mut windows = self.payload.windows.clone();
+        for candidate in &incoming.payload.windows {
+            if let Some(existing) = windows
+                .iter()
+                .position(|window| window.window_id == candidate.window_id)
+            {
+                windows.remove(existing);
+            }
+            windows.push(candidate.clone());
+        }
+        while windows.len() > MAX_PERSISTED_WINDOWS {
+            windows.remove(0);
+        }
+        let payload = PersistedSessionPayload {
+            restore_enabled: incoming.payload.restore_enabled,
+            locale: incoming.payload.locale,
+            theme: incoming.payload.theme.clone(),
+            windows,
+            quick_access: incoming.payload.quick_access.clone(),
+            bookmarks: incoming.payload.bookmarks.clone(),
+        };
+        Self::new(
+            incoming.write_generation,
+            incoming.provenance.clone(),
+            payload,
+            limits,
+        )
     }
 
     /// Creates and validates a current-version envelope.
@@ -690,21 +827,30 @@ impl PersistedSessionEnvelope {
             serde_json::from_slice(bytes).map_err(SessionValidationError::json)?;
         match header.schema_version {
             SESSION_SCHEMA_VERSION => Self::decode(bytes, limits).map(|value| (value, false)),
-            3 => {
-                let legacy: LegacySessionV3 =
+            4 => {
+                let legacy: LegacySessionV4 =
                     serde_json::from_slice(bytes).map_err(SessionValidationError::json)?;
-                let migrated = Self::new(
-                    legacy.write_generation.saturating_add(1),
+                Self::migrate_legacy_payload(
+                    legacy.write_generation,
                     legacy.provenance,
                     legacy.payload,
                     limits,
-                )?;
-                Ok((migrated, true))
+                )
+            }
+            3 => {
+                let legacy: LegacySessionV3 =
+                    serde_json::from_slice(bytes).map_err(SessionValidationError::json)?;
+                Self::migrate_legacy_payload(
+                    legacy.write_generation,
+                    legacy.provenance,
+                    legacy.payload,
+                    limits,
+                )
             }
             2 => {
                 let legacy: LegacySessionV2 =
                     serde_json::from_slice(bytes).map_err(SessionValidationError::json)?;
-                let payload = PersistedSessionPayload {
+                let payload = LegacySessionPayloadV4 {
                     restore_enabled: legacy.payload.restore_enabled,
                     locale: None,
                     theme: None,
@@ -714,24 +860,22 @@ impl PersistedSessionEnvelope {
                     quick_access: legacy.payload.quick_access,
                     bookmarks: crate::Bookmarks::default(),
                 };
-                let migrated = Self::new(
-                    legacy.write_generation.saturating_add(1),
+                Self::migrate_legacy_payload(
+                    legacy.write_generation,
                     legacy.provenance,
                     payload,
                     limits,
-                )?;
-                Ok((migrated, true))
+                )
             }
             1 => {
                 let legacy: LegacySessionV1 =
                     serde_json::from_slice(bytes).map_err(SessionValidationError::json)?;
-                let migrated = Self::new(
-                    legacy.write_generation.saturating_add(1),
+                Self::migrate_legacy_payload(
+                    legacy.write_generation,
                     legacy.provenance,
                     legacy.payload,
                     limits,
-                )?;
-                Ok((migrated, true))
+                )
             }
             0 => {
                 let legacy: LegacySessionV0 =
@@ -741,16 +885,122 @@ impl PersistedSessionEnvelope {
                         legacy.schema_version,
                     ));
                 }
-                let migrated = Self::new(
-                    legacy.write_generation.saturating_add(1),
+                Self::migrate_legacy_payload(
+                    legacy.write_generation,
                     legacy.provenance,
                     legacy.payload,
                     limits,
-                )?;
-                Ok((migrated, true))
+                )
             }
             version => Err(SessionValidationError::UnsupportedSchema(version)),
         }
+    }
+
+    fn migrate_legacy_payload(
+        write_generation: u64,
+        provenance: SessionProvenance,
+        legacy: LegacySessionPayloadV4,
+        limits: RoadmapLimits,
+    ) -> Result<(Self, bool), SessionValidationError> {
+        let payload = PersistedSessionPayload {
+            restore_enabled: legacy.restore_enabled,
+            locale: legacy.locale,
+            theme: legacy.theme,
+            windows: vec![PersistedWindow {
+                window_id: PersistedWindowId::LEGACY,
+                placement: legacy.window,
+                tabs: legacy.tabs,
+                active_tab_id: legacy.active_tab_id,
+            }],
+            quick_access: legacy.quick_access,
+            bookmarks: legacy.bookmarks,
+        };
+        let migrated = Self::new(
+            write_generation.saturating_add(1),
+            provenance,
+            payload,
+            limits,
+        )?;
+        Ok((migrated, true))
+    }
+
+    /// Recovers a current-schema envelope by dropping individually unusable windows.
+    ///
+    /// This never bypasses a checksum mismatch; callers must fail closed on that case.
+    /// Returns the recovered envelope and the number of dropped windows, or `None`
+    /// when the header, provenance, or every window is unusable.
+    pub fn recover_window_set(
+        bytes: &[u8],
+        limits: RoadmapLimits,
+    ) -> Option<(Self, usize)> {
+        if bytes.len() > limits.max_state_payload_bytes {
+            return None;
+        }
+        let value: serde_json::Value = serde_json::from_slice(bytes).ok()?;
+        if value.get("schema_version")?.as_u64()? != u64::from(SESSION_SCHEMA_VERSION) {
+            return None;
+        }
+        let write_generation = value.get("write_generation")?.as_u64()?;
+        let provenance: SessionProvenance =
+            serde_json::from_value(value.get("provenance")?.clone()).ok()?;
+        let payload = value.get("payload")?.as_object()?;
+        let restore_enabled = payload.get("restore_enabled")?.as_bool()?;
+        let locale: Option<AppLocale> = payload
+            .get("locale")
+            .cloned()
+            .map(serde_json::from_value)
+            .transpose()
+            .ok()?;
+        let theme: Option<String> = payload
+            .get("theme")
+            .cloned()
+            .map(serde_json::from_value)
+            .transpose()
+            .ok()?;
+        let quick_access: Vec<PersistedQuickAccessPin> = serde_json::from_value(
+            payload
+                .get("quick_access")
+                .cloned()
+                .unwrap_or_else(|| serde_json::Value::Array(Vec::new())),
+        )
+        .ok()?;
+        let bookmarks: crate::Bookmarks = payload
+            .get("bookmarks")
+            .cloned()
+            .map(serde_json::from_value)
+            .transpose()
+            .ok()?
+            .unwrap_or_default();
+        let raw_windows = payload.get("windows")?.as_array()?.clone();
+        let total = raw_windows.len();
+        let mut windows = Vec::new();
+        let mut seen = HashSet::new();
+        for candidate in raw_windows {
+            let Ok(window) = serde_json::from_value::<PersistedWindow>(candidate) else {
+                continue;
+            };
+            if !seen.insert(window.window_id) {
+                continue;
+            }
+            if validate_persisted_window(&window, windows.len(), limits).is_err() {
+                continue;
+            }
+            windows.push(window);
+        }
+        if windows.is_empty() {
+            return None;
+        }
+        let dropped = total.saturating_sub(windows.len());
+        let payload = PersistedSessionPayload {
+            restore_enabled,
+            locale,
+            theme,
+            windows,
+            quick_access,
+            bookmarks,
+        };
+        let envelope = Self::new(write_generation, provenance, payload, limits).ok()?;
+        Some((envelope, dropped))
     }
 
     /// Converts validated durable state into an owned restore plan.
@@ -764,9 +1014,7 @@ impl PersistedSessionEnvelope {
     ) -> Result<RestorePlan, SessionValidationError> {
         self.validate(limits)?;
         Ok(RestorePlan {
-            window: self.payload.window,
-            tabs: self.payload.tabs.clone(),
-            active_tab_id: self.payload.active_tab_id,
+            windows: self.payload.windows.clone(),
             quick_access: self.payload.quick_access.clone(),
             bookmarks: self.payload.bookmarks.clone(),
         })
@@ -797,49 +1045,26 @@ impl PersistedSessionEnvelope {
             ));
         }
         validate_provenance(&self.provenance)?;
-        validate_rect(self.payload.window.normal_bounds, "window.normal_bounds")?;
-        validate_rect(
-            self.payload.window.source_work_area,
-            "window.source_work_area",
-        )?;
-        if !(MIN_DPI..=MAX_DPI).contains(&self.payload.window.source_dpi) {
-            return Err(SessionValidationError::InvalidField {
-                field: "window.source_dpi".to_owned(),
-                reason: "DPI is outside the supported reconstruction range".to_owned(),
-            });
-        }
-        if self.payload.tabs.is_empty() {
+        if self.payload.windows.is_empty() {
             return Err(SessionValidationError::Invariant(
-                "session must contain at least one tab".to_owned(),
+                "session must contain at least one window".to_owned(),
             ));
         }
-        if self.payload.tabs.len() > limits.max_tabs {
+        if self.payload.windows.len() > MAX_PERSISTED_WINDOWS {
             return Err(SessionValidationError::BoundExceeded {
-                field: "tabs".to_owned(),
-                value: self.payload.tabs.len(),
-                maximum: limits.max_tabs,
+                field: "windows".to_owned(),
+                value: self.payload.windows.len(),
+                maximum: MAX_PERSISTED_WINDOWS,
             });
         }
-        let mut tab_ids = HashSet::new();
-        for (index, tab) in self.payload.tabs.iter().enumerate() {
-            if !tab_ids.insert(tab.tab_id) {
+        let mut window_ids = HashSet::new();
+        for (window_index, window) in self.payload.windows.iter().enumerate() {
+            if !window_ids.insert(window.window_id) {
                 return Err(SessionValidationError::Invariant(
-                    "session contains duplicate tab identities".to_owned(),
+                    "session contains duplicate window identities".to_owned(),
                 ));
             }
-            validate_history_entry(&tab.current, &format!("tabs[{index}].current"), limits)?;
-            validate_history(&tab.back, &format!("tabs[{index}].back"), limits)?;
-            validate_history(&tab.forward, &format!("tabs[{index}].forward"), limits)?;
-            validate_view_settings(
-                &tab.view_settings,
-                &format!("tabs[{index}].view_settings"),
-                limits,
-            )?;
-        }
-        if !tab_ids.contains(&self.payload.active_tab_id) {
-            return Err(SessionValidationError::Invariant(
-                "active tab identity is not present".to_owned(),
-            ));
+            validate_persisted_window(window, window_index, limits)?;
         }
         let mut pin_identities = HashSet::new();
         let mut pin_orders = HashSet::new();
@@ -919,8 +1144,52 @@ impl PersistedSessionEnvelope {
     }
 }
 
-impl RestorePlan {
-    /// Resolves saved locations, drops stale history entries, and creates tab shells in saved order.
+impl PersistedWindow {
+    /// Projects one runtime window into durable tab shells.
+    ///
+    /// # Errors
+    ///
+    /// Returns an invariant error when a runtime tab has no current history entry.
+    pub fn from_runtime(
+        window_id: PersistedWindowId,
+        window: &ExplorerWindowState,
+        placement: PersistedWindowPlacement,
+    ) -> Result<Self, SessionValidationError> {
+        let tabs = window
+            .tabs()
+            .iter()
+            .map(|tab| {
+                let current = tab.history.current().ok_or_else(|| {
+                    SessionValidationError::Invariant("tab has no current history entry".to_owned())
+                })?;
+                Ok(PersistedTab {
+                    tab_id: tab.id,
+                    current: PersistedHistoryEntry::from(current),
+                    back: tab
+                        .history
+                        .back_entries()
+                        .iter()
+                        .map(PersistedHistoryEntry::from)
+                        .collect(),
+                    forward: tab
+                        .history
+                        .forward_entries()
+                        .iter()
+                        .map(PersistedHistoryEntry::from)
+                        .collect(),
+                    view_settings: PersistedViewSettings::from(tab.view.settings.clone()),
+                })
+            })
+            .collect::<Result<Vec<_>, SessionValidationError>>()?;
+        Ok(Self {
+            window_id,
+            placement,
+            tabs,
+            active_tab_id: window.active_tab_id(),
+        })
+    }
+
+    /// Resolves this window's saved locations into a validated runtime window.
     ///
     /// The resolver may return a canonical replacement entry. A missing current location walks
     /// filesystem ancestors before falling back to the configured start location.
@@ -928,7 +1197,7 @@ impl RestorePlan {
     /// # Errors
     ///
     /// Returns a tab invariant error if reconstructed identities are empty, duplicate, or invalid.
-    pub fn resolve_window(
+    pub fn resolve(
         &self,
         configured_start: HistoryEntry,
         mut resolve: impl FnMut(&LocationDescriptor) -> Option<HistoryEntry>,
@@ -1185,7 +1454,7 @@ struct LegacySessionV0 {
     schema_version: u16,
     write_generation: u64,
     provenance: SessionProvenance,
-    payload: PersistedSessionPayload,
+    payload: LegacySessionPayloadV4,
 }
 
 #[derive(Deserialize)]
@@ -1197,7 +1466,7 @@ struct LegacySessionV1 {
     _checksum: u64,
     write_generation: u64,
     provenance: SessionProvenance,
-    payload: PersistedSessionPayload,
+    payload: LegacySessionPayloadV4,
 }
 
 #[derive(Deserialize)]
@@ -1209,7 +1478,36 @@ struct LegacySessionV3 {
     _checksum: u64,
     write_generation: u64,
     provenance: SessionProvenance,
-    payload: PersistedSessionPayload,
+    payload: LegacySessionPayloadV4,
+}
+
+/// Single-window payload used by schema versions 0, 1, 3, and 4.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct LegacySessionPayloadV4 {
+    restore_enabled: bool,
+    #[serde(default)]
+    locale: Option<AppLocale>,
+    #[serde(default)]
+    theme: Option<String>,
+    window: PersistedWindowPlacement,
+    tabs: Vec<PersistedTab>,
+    active_tab_id: TabId,
+    quick_access: Vec<PersistedQuickAccessPin>,
+    #[serde(default)]
+    bookmarks: crate::Bookmarks,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct LegacySessionV4 {
+    #[serde(rename = "schema_version")]
+    _schema_version: u16,
+    #[serde(rename = "checksum")]
+    _checksum: u64,
+    write_generation: u64,
+    provenance: SessionProvenance,
+    payload: LegacySessionPayloadV4,
 }
 
 #[derive(Deserialize)]
@@ -1432,6 +1730,73 @@ fn validate_provenance(value: &SessionProvenance) -> Result<(), SessionValidatio
         "provenance.windows_build",
         MAX_PROVENANCE_BYTES,
     )
+}
+
+fn validate_persisted_window(
+    window: &PersistedWindow,
+    window_index: usize,
+    limits: RoadmapLimits,
+) -> Result<(), SessionValidationError> {
+    validate_rect(
+        window.placement.normal_bounds,
+        &format!("windows[{window_index}].placement.normal_bounds"),
+    )?;
+    validate_rect(
+        window.placement.source_work_area,
+        &format!("windows[{window_index}].placement.source_work_area"),
+    )?;
+    if !(MIN_DPI..=MAX_DPI).contains(&window.placement.source_dpi) {
+        return Err(SessionValidationError::InvalidField {
+            field: format!("windows[{window_index}].placement.source_dpi"),
+            reason: "DPI is outside the supported reconstruction range".to_owned(),
+        });
+    }
+    if window.tabs.is_empty() {
+        return Err(SessionValidationError::Invariant(
+            "window must contain at least one tab".to_owned(),
+        ));
+    }
+    if window.tabs.len() > limits.max_tabs {
+        return Err(SessionValidationError::BoundExceeded {
+            field: format!("windows[{window_index}].tabs"),
+            value: window.tabs.len(),
+            maximum: limits.max_tabs,
+        });
+    }
+    let mut tab_ids = HashSet::new();
+    for (index, tab) in window.tabs.iter().enumerate() {
+        if !tab_ids.insert(tab.tab_id) {
+            return Err(SessionValidationError::Invariant(
+                "window contains duplicate tab identities".to_owned(),
+            ));
+        }
+        validate_history_entry(
+            &tab.current,
+            &format!("windows[{window_index}].tabs[{index}].current"),
+            limits,
+        )?;
+        validate_history(
+            &tab.back,
+            &format!("windows[{window_index}].tabs[{index}].back"),
+            limits,
+        )?;
+        validate_history(
+            &tab.forward,
+            &format!("windows[{window_index}].tabs[{index}].forward"),
+            limits,
+        )?;
+        validate_view_settings(
+            &tab.view_settings,
+            &format!("windows[{window_index}].tabs[{index}].view_settings"),
+            limits,
+        )?;
+    }
+    if !tab_ids.contains(&window.active_tab_id) {
+        return Err(SessionValidationError::Invariant(
+            "active tab identity is not present".to_owned(),
+        ));
+    }
+    Ok(())
 }
 
 fn validate_rect(value: PersistedRect, field: &str) -> Result<(), SessionValidationError> {
@@ -1781,6 +2146,24 @@ mod tests {
         .expect("project fixture")
     }
 
+    /// Rewrites a current envelope into the single-window payload shape used before schema 5.
+    fn as_legacy_payload_value(envelope: &PersistedSessionEnvelope) -> serde_json::Value {
+        let mut value = serde_json::to_value(envelope).expect("value");
+        let payload = value["payload"].as_object_mut().expect("payload");
+        let windows = payload.remove("windows").expect("windows");
+        let mut window = windows[0].as_object().expect("window").clone();
+        payload.insert(
+            "window".to_owned(),
+            window.remove("placement").expect("placement"),
+        );
+        payload.insert("tabs".to_owned(), window.remove("tabs").expect("tabs"));
+        payload.insert(
+            "active_tab_id".to_owned(),
+            window.remove("active_tab_id").expect("active"),
+        );
+        value
+    }
+
     #[test]
     fn projection_excludes_transient_state_and_round_trips_deterministically() {
         let envelope = projected();
@@ -1921,7 +2304,7 @@ mod tests {
         );
 
         let mut invalid_enum: serde_json::Value = serde_json::from_slice(&bytes).expect("enum");
-        invalid_enum["payload"]["tabs"][0]["view_settings"]["mode"] =
+        invalid_enum["payload"]["windows"][0]["tabs"][0]["view_settings"]["mode"] =
             serde_json::json!("future_hologram");
         assert!(
             PersistedSessionEnvelope::decode(
@@ -1936,7 +2319,7 @@ mod tests {
     fn validation_rejects_tab_history_location_column_window_and_payload_bounds() {
         let limits = RoadmapLimits::default();
         let mut envelope = projected();
-        envelope.payload.tabs.clear();
+        envelope.payload.windows.clear();
         assert!(matches!(
             PersistedSessionEnvelope::new(
                 envelope.write_generation,
@@ -1948,7 +2331,7 @@ mod tests {
         ));
 
         let mut envelope = projected();
-        envelope.payload.window.normal_bounds.width = 0;
+        envelope.payload.windows[0].placement.normal_bounds.width = 0;
         assert!(
             PersistedSessionEnvelope::new(
                 envelope.write_generation,
@@ -1969,18 +2352,21 @@ mod tests {
     #[test]
     fn schema_two_migrates_with_an_empty_bookmark_collection() {
         let envelope = projected();
-        let mut value = serde_json::to_value(envelope).expect("value");
+        let mut value = as_legacy_payload_value(&envelope);
         value["schema_version"] = serde_json::json!(2);
-        value["payload"]
-            .as_object_mut()
-            .expect("payload")
-            .remove("bookmarks");
+        {
+            let payload = value["payload"].as_object_mut().expect("payload");
+            payload.remove("bookmarks");
+            payload.remove("locale");
+            payload.remove("theme");
+        }
         let bytes = serde_json::to_vec(&value).expect("bytes");
         let (migrated, performed) =
             PersistedSessionEnvelope::decode_or_migrate(&bytes, RoadmapLimits::default())
                 .expect("migration");
         assert!(performed);
         assert!(migrated.payload.bookmarks.entries().is_empty());
+        assert_eq!(migrated.payload.windows.len(), 1);
         assert_eq!(migrated.schema_version, SESSION_SCHEMA_VERSION);
     }
 
@@ -2038,7 +2424,7 @@ mod tests {
     #[test]
     fn schema_three_without_locale_migrates_to_none() {
         let envelope = projected();
-        let mut value = serde_json::to_value(&envelope).expect("value");
+        let mut value = as_legacy_payload_value(&envelope);
         value["schema_version"] = serde_json::json!(3);
         value["payload"]
             .as_object_mut()
@@ -2050,6 +2436,7 @@ mod tests {
                 .expect("v3 migration");
         assert!(performed);
         assert_eq!(migrated.payload.locale, None);
+        assert_eq!(migrated.payload.windows.len(), 1);
         assert_eq!(migrated.schema_version, SESSION_SCHEMA_VERSION);
     }
 
@@ -2076,10 +2463,14 @@ mod tests {
         let plan = envelope
             .restore_plan(RoadmapLimits::default())
             .expect("restore plan");
-        assert_eq!(plan.tabs.len(), 2);
-        assert_eq!(plan.active_tab_id, plan.tabs[1].tab_id);
+        assert_eq!(plan.windows.len(), 1);
+        assert_eq!(plan.windows[0].tabs.len(), 2);
+        assert_eq!(
+            plan.windows[0].active_tab_id,
+            plan.windows[0].tabs[1].tab_id
+        );
         assert_eq!(plan.quick_access[0].order, 0);
-        assert_eq!(plan.window, placement());
+        assert_eq!(plan.windows[0].placement, placement());
     }
 
     #[test]
@@ -2106,7 +2497,8 @@ mod tests {
         assert!(migrated);
         assert_eq!(decoded.schema_version, SESSION_SCHEMA_VERSION);
         assert_eq!(decoded.write_generation, 8);
-        assert_eq!(decoded.payload.tabs.len(), 2);
+        assert_eq!(decoded.payload.windows.len(), 1);
+        assert_eq!(decoded.payload.windows[0].tabs.len(), 2);
     }
 
     #[test]
@@ -2287,5 +2679,123 @@ mod tests {
             runtime.cache_budgets.folder_size_cache_ttl_seconds,
             crate::FOLDER_SIZE_CACHE_TTL_MAX_SECONDS
         );
+    }
+
+    #[test]
+    fn schema_v4_migrates_single_window_into_window_set() {
+        let envelope = projected();
+        let mut value = as_legacy_payload_value(&envelope);
+        value["schema_version"] = serde_json::json!(4);
+        let bytes = serde_json::to_vec(&value).expect("bytes");
+        let (migrated, performed) =
+            PersistedSessionEnvelope::decode_or_migrate(&bytes, RoadmapLimits::default())
+                .expect("v4 migration");
+        assert!(performed);
+        assert_eq!(migrated.schema_version, SESSION_SCHEMA_VERSION);
+        assert_eq!(migrated.payload.windows.len(), 1);
+        assert_eq!(
+            migrated.payload.windows[0].window_id,
+            PersistedWindowId::LEGACY
+        );
+        assert_eq!(migrated.payload.windows[0].tabs.len(), 2);
+    }
+
+    #[test]
+    fn merge_window_set_upserts_by_id_and_preserves_siblings() {
+        let limits = RoadmapLimits::default();
+        let first = projected();
+        let first_id = first.payload.windows[0].window_id;
+
+        let mut second = projected();
+        second.payload.windows[0].window_id = PersistedWindowId::new(77);
+        let merged = first
+            .merge_window_set(&second, limits)
+            .expect("merge distinct window");
+        assert_eq!(merged.payload.windows.len(), 2);
+        assert_eq!(merged.payload.windows[0].window_id, first_id);
+        assert_eq!(
+            merged.payload.windows[1].window_id,
+            PersistedWindowId::new(77)
+        );
+
+        let mut updated = projected();
+        updated.payload.windows[0].window_id = first_id;
+        updated.payload.windows[0].tabs.truncate(1);
+        updated.payload.windows[0].active_tab_id = updated.payload.windows[0].tabs[0].tab_id;
+        let replaced = first
+            .merge_window_set(&updated, limits)
+            .expect("merge existing window");
+        assert_eq!(replaced.payload.windows.len(), 1);
+        assert_eq!(replaced.payload.windows[0].tabs.len(), 1);
+    }
+
+    #[test]
+    fn merge_window_set_drops_oldest_windows_over_the_bound() {
+        let limits = RoadmapLimits::default();
+        let mut base = projected();
+        base.payload.windows = (0..MAX_PERSISTED_WINDOWS)
+            .map(|index| {
+                let mut window = projected().payload.windows[0].clone();
+                window.window_id = PersistedWindowId::new(index as u64 + 2);
+                window
+            })
+            .collect();
+        let base = PersistedSessionEnvelope::new(
+            base.write_generation,
+            base.provenance,
+            base.payload,
+            limits,
+        )
+        .expect("bounded base");
+
+        let mut incoming = projected();
+        incoming.payload.windows[0].window_id = PersistedWindowId::new(9_999);
+        let merged = base
+            .merge_window_set(&incoming, limits)
+            .expect("overflow merge");
+        assert_eq!(merged.payload.windows.len(), MAX_PERSISTED_WINDOWS);
+        assert_eq!(
+            merged.payload.windows.last().map(|window| window.window_id),
+            Some(PersistedWindowId::new(9_999))
+        );
+        assert!(
+            !merged
+                .payload
+                .windows
+                .iter()
+                .any(|window| window.window_id == PersistedWindowId::new(2))
+        );
+    }
+
+    #[test]
+    fn restore_plan_resolves_each_window_independently() {
+        let envelope = projected();
+        let plan = envelope
+            .restore_plan(RoadmapLimits::default())
+            .expect("plan");
+        let window = plan.windows[0]
+            .resolve(
+                HistoryEntry::new(LocationDescriptor::file_system(r"C:\"), "C:"),
+                |location| Some(HistoryEntry::new(location.clone(), "restored")),
+            )
+            .expect("resolve");
+        assert_eq!(window.tabs().len(), 2);
+    }
+
+    #[test]
+    fn duplicate_window_id_is_rejected() {
+        let limits = RoadmapLimits::default();
+        let mut envelope = projected();
+        let duplicate = envelope.payload.windows[0].clone();
+        envelope.payload.windows.push(duplicate);
+        assert!(matches!(
+            PersistedSessionEnvelope::new(
+                envelope.write_generation,
+                envelope.provenance,
+                envelope.payload,
+                limits
+            ),
+            Err(SessionValidationError::Invariant(_))
+        ));
     }
 }

@@ -136,12 +136,13 @@ pub use remote::{
     new_remote_container_identity, remember_network_place, remote_container_identity,
 };
 pub use session::{
-    PersistedColumn, PersistedColumnLayoutEntry, PersistedColumnWidths, PersistedExtensionSort,
-    PersistedHistoryEntry, PersistedQuickAccessPin, PersistedRect, PersistedSessionEnvelope,
-    PersistedSessionPayload, PersistedSort, PersistedSortDirection, PersistedTab,
-    PersistedViewMode, PersistedViewSettings, PersistedWindowPlacement, RestorePlan,
-    SESSION_SCHEMA_VERSION, SessionLoadOutcome, SessionLoadSource, SessionProvenance,
-    SessionResetScope, SessionStore, SessionStoreError, SessionValidationError,
+    MAX_PERSISTED_WINDOWS, PersistedColumn, PersistedColumnLayoutEntry, PersistedColumnWidths,
+    PersistedExtensionSort, PersistedHistoryEntry, PersistedQuickAccessPin, PersistedRect,
+    PersistedSessionEnvelope, PersistedSessionPayload, PersistedSort, PersistedSortDirection,
+    PersistedTab, PersistedViewMode, PersistedViewSettings, PersistedWindow, PersistedWindowId,
+    PersistedWindowPlacement, RestorePlan, SESSION_SCHEMA_VERSION, SessionLoadOutcome,
+    SessionLoadSource, SessionProvenance, SessionResetScope, SessionStore, SessionStoreError,
+    SessionValidationError,
 };
 pub use thumbnail::{
     ThumbnailConsumer, ThumbnailFallbackReason, ThumbnailMode, ThumbnailPixelError,

@@ -83,10 +83,11 @@ fn combined_restore_namespace_thumbnail_broker_preview_and_save_flow() {
         .expect("saved envelope")
         .restore_plan(limits)
         .expect("restore plan");
-    assert_eq!(restored.tabs.len(), 1);
-    assert!(restored.tabs[0].view_settings.preview_pane);
-    let restored_window = restored
-        .resolve_window(
+    assert_eq!(restored.windows.len(), 1);
+    assert!(restored.windows[0].tabs[0].view_settings.preview_pane);
+    let restored_placement = restored.windows[0].placement;
+    let restored_window = restored.windows[0]
+        .resolve(
             HistoryEntry::new(LocationDescriptor::file_system(r"C:\"), "C:"),
             |location| Some(HistoryEntry::new(location.clone(), "restored")),
         )
@@ -129,7 +130,7 @@ fn combined_restore_namespace_thumbnail_broker_preview_and_save_flow() {
 
     let second = PersistedSessionEnvelope::project(
         &restored_window,
-        restored.window,
+        restored_placement,
         &restored.quick_access,
         true,
         None,

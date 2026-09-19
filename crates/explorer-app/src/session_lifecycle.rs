@@ -9,8 +9,8 @@ use std::{
 use explorer_common::RoadmapLimits;
 use explorer_model::{
     AppLocale, ExplorerWindowState, PersistedQuickAccessPin, PersistedRect,
-    PersistedSessionEnvelope, PersistedWindowPlacement, SessionProvenance, SessionStore,
-    SessionStoreError,
+    PersistedSessionEnvelope, PersistedWindowId, PersistedWindowPlacement, SessionProvenance,
+    SessionStore, SessionStoreError,
 };
 
 use crate::bookmark_store::BookmarkStore;
@@ -57,7 +57,8 @@ impl PendingSnapshot {
     fn project(&self) -> Result<PersistedSessionEnvelope, SessionStoreError> {
         match self {
             Self::Envelope(envelope) => Ok(envelope.clone()),
-            Self::Runtime(runtime) => PersistedSessionEnvelope::project_with_bookmarks(
+            Self::Runtime(runtime) => PersistedSessionEnvelope::project_window(
+                runtime.window_id,
                 &runtime.window,
                 runtime.placement,
                 &runtime.quick_access,
@@ -78,6 +79,7 @@ impl PendingSnapshot {
 #[derive(Clone, Debug)]
 pub struct RuntimeSessionSnapshot {
     pub window: ExplorerWindowState,
+    pub window_id: PersistedWindowId,
     pub placement: PersistedWindowPlacement,
     pub quick_access: Vec<PersistedQuickAccessPin>,
     pub bookmarks: explorer_model::Bookmarks,

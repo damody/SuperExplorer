@@ -80,7 +80,24 @@ impl WindowsSessionStore {
             .map_err(ReadFailure::Io)?;
         PersistedSessionEnvelope::decode_or_migrate(&bytes, self.limits)
             .map(|(envelope, migrated)| Some(LoadedSnapshot { envelope, migrated }))
-            .map_err(|error| ReadFailure::Invalid(error.to_string()))
+            .or_else(|error| {
+                if matches!(
+                    error,
+                    explorer_model::SessionValidationError::ChecksumMismatch { .. }
+                ) {
+                    return Err(ReadFailure::Invalid(error.to_string()));
+                }
+                match PersistedSessionEnvelope::recover_window_set(&bytes, self.limits) {
+                    Some((envelope, dropped)) => {
+                        tracing::warn!(dropped, "Recovered session by dropping invalid windows");
+                        Ok(Some(LoadedSnapshot {
+                            envelope,
+                            migrated: true,
+                        }))
+                    }
+                    None => Err(ReadFailure::Invalid(error.to_string())),
+                }
+            })
     }
 
     fn quarantine(&self, path: &Path) -> io::Result<()> {
@@ -230,8 +247,11 @@ impl SessionStore for WindowsSessionStore {
                 };
                 match scope {
                     SessionResetScope::ViewSettings => {
-                        for tab in &mut envelope.payload.tabs {
-                            tab.view_settings = explorer_model::PersistedViewSettings::default();
+                        for window in &mut envelope.payload.windows {
+                            for tab in &mut window.tabs {
+                                tab.view_settings =
+                                    explorer_model::PersistedViewSettings::default();
+                            }
                         }
                     }
                     SessionResetScope::QuickAccess => envelope.payload.quick_access.clear(),
@@ -247,6 +267,106 @@ impl SessionStore for WindowsSessionStore {
                 self.save(&envelope)
             }
         }
+    }
+}
+
+/// Serializes whole-envelope read-modify-write cycles across `SuperExplorer` processes.
+struct SessionWriteMutex(SessionWriteMutexHandle);
+
+#[cfg(windows)]
+type SessionWriteMutexHandle = windows::Win32::Foundation::HANDLE;
+
+#[cfg(not(windows))]
+type SessionWriteMutexHandle = ();
+
+#[cfg(windows)]
+#[allow(
+    unsafe_code,
+    reason = "cross-process session writes require a named Win32 mutex and handle APIs"
+)]
+impl SessionWriteMutex {
+    const NAME: &'static str = "Local\\SuperExplorer.SessionWrite.v1";
+
+    fn acquire() -> Result<Self, SessionStoreError> {
+        use windows::{
+            Win32::{
+                Foundation::{CloseHandle, WAIT_ABANDONED, WAIT_OBJECT_0},
+                System::Threading::{CreateMutexW, WaitForSingleObject},
+            },
+            core::PCWSTR,
+        };
+        let wide: Vec<u16> = Self::NAME.encode_utf16().chain([0]).collect();
+        // SAFETY: the name buffer is live and NUL-terminated for the duration of the call.
+        let handle = unsafe { CreateMutexW(None, false, PCWSTR(wide.as_ptr())) }
+            .map_err(|error| SessionStoreError::Io(format!("session write mutex: {error}")))?;
+        // SAFETY: the handle is a live mutex handle returned above.
+        let wait = unsafe { WaitForSingleObject(handle, 2_000) };
+        if wait != WAIT_OBJECT_0 && wait != WAIT_ABANDONED {
+            // SAFETY: the handle is owned here and not retained after failure.
+            let _ = unsafe { CloseHandle(handle) };
+            return Err(SessionStoreError::Io(
+                "session write mutex timeout".to_owned(),
+            ));
+        }
+        Ok(Self(handle))
+    }
+}
+
+#[cfg(not(windows))]
+impl SessionWriteMutex {
+    fn acquire() -> Result<Self, SessionStoreError> {
+        Ok(Self(()))
+    }
+}
+
+#[cfg(windows)]
+#[allow(
+    unsafe_code,
+    reason = "releasing the named session-write mutex requires the owning handle APIs"
+)]
+impl Drop for SessionWriteMutex {
+    fn drop(&mut self) {
+        // SAFETY: the guard owns a live mutex handle acquired by this process.
+        unsafe {
+            let _ = windows::Win32::System::Threading::ReleaseMutex(self.0);
+            let _ = windows::Win32::Foundation::CloseHandle(self.0);
+        }
+    }
+}
+
+/// Wraps a session store so every process upserts only its own window into the on-disk set.
+#[derive(Clone, Debug)]
+pub struct MergingSessionStore {
+    inner: WindowsSessionStore,
+}
+
+impl MergingSessionStore {
+    /// Builds a merge adapter around the production filesystem store.
+    pub fn new(inner: WindowsSessionStore) -> Self {
+        Self { inner }
+    }
+}
+
+impl SessionStore for MergingSessionStore {
+    fn load(&self) -> Result<SessionLoadOutcome, SessionStoreError> {
+        self.inner.load()
+    }
+
+    fn save(&self, envelope: &PersistedSessionEnvelope) -> Result<(), SessionStoreError> {
+        let _guard = SessionWriteMutex::acquire()?;
+        let base = self.inner.load().ok().and_then(|outcome| outcome.envelope);
+        let Some(base) = base else {
+            return self.inner.save(envelope);
+        };
+        let merged = base
+            .merge_window_set(envelope, self.inner.limits)
+            .map_err(|error| SessionStoreError::InvalidSnapshot(error.to_string()))?;
+        self.inner.save(&merged)
+    }
+
+    fn reset(&self, scope: SessionResetScope) -> Result<(), SessionStoreError> {
+        let _guard = SessionWriteMutex::acquire()?;
+        self.inner.reset(scope)
     }
 }
 
@@ -376,7 +496,8 @@ pub(crate) fn replace_with_backup(
 mod tests {
     use explorer_model::{
         ExplorerWindowState, HistoryEntry, LocationDescriptor, PersistedQuickAccessPin,
-        PersistedRect, PersistedWindowPlacement, SessionProvenance, SyntheticRoot,
+        PersistedRect, PersistedWindowId, PersistedWindowPlacement, SessionProvenance,
+        SyntheticRoot,
     };
     use tempfile::TempDir;
 
@@ -421,6 +542,46 @@ mod tests {
             RoadmapLimits::default(),
         )
         .expect("valid fixture")
+    }
+
+    fn snapshot_with_id(window_id: u64, generation: u64) -> PersistedSessionEnvelope {
+        let window = ExplorerWindowState::new(HistoryEntry::new(
+            LocationDescriptor::synthetic(SyntheticRoot::Home),
+            "Home",
+        ));
+        PersistedSessionEnvelope::project_window(
+            PersistedWindowId::new(window_id),
+            &window,
+            PersistedWindowPlacement {
+                normal_bounds: PersistedRect {
+                    left: 10,
+                    top: 10,
+                    width: 1000,
+                    height: 700,
+                },
+                source_work_area: PersistedRect {
+                    left: 0,
+                    top: 0,
+                    width: 1920,
+                    height: 1080,
+                },
+                source_dpi: 96,
+                maximized: false,
+            },
+            &[],
+            &explorer_model::Bookmarks::default(),
+            true,
+            None,
+            None,
+            generation,
+            SessionProvenance {
+                app_version: "test".to_owned(),
+                app_revision: "fixture".to_owned(),
+                windows_build: "test".to_owned(),
+            },
+            RoadmapLimits::default(),
+        )
+        .expect("valid window fixture")
     }
 
     #[test]
@@ -542,6 +703,87 @@ mod tests {
             b"independent bookmarks"
         );
         assert!(unrelated.exists());
+    }
+
+    #[test]
+    fn merging_store_upserts_only_the_writers_window() {
+        let limits = RoadmapLimits::default();
+        let directory = TempDir::new().expect("temporary directory");
+        let store = MergingSessionStore::new(WindowsSessionStore::at_root(
+            directory.path().join("state"),
+            limits,
+        ));
+        store
+            .save(&snapshot_with_id(10, 1))
+            .expect("save first window");
+        store
+            .save(&snapshot_with_id(20, 2))
+            .expect("save second window");
+        let loaded = store.load().expect("load").envelope.expect("envelope");
+        assert_eq!(loaded.payload.windows.len(), 2);
+        assert_eq!(loaded.payload.windows[0].window_id.get(), 10);
+        assert_eq!(loaded.payload.windows[1].window_id.get(), 20);
+
+        store
+            .save(&snapshot_with_id(10, 3))
+            .expect("update first window");
+        let reloaded = store.load().expect("reload").envelope.expect("envelope");
+        assert_eq!(reloaded.payload.windows.len(), 2);
+        assert_eq!(
+            reloaded
+                .payload
+                .windows
+                .last()
+                .expect("last")
+                .window_id
+                .get(),
+            10
+        );
+    }
+
+    #[test]
+    fn invalid_window_is_dropped_without_discarding_siblings() {
+        let directory = TempDir::new().expect("temporary directory");
+        let store = MergingSessionStore::new(WindowsSessionStore::at_root(
+            directory.path().join("state"),
+            RoadmapLimits::default(),
+        ));
+        store.save(&snapshot_with_id(10, 1)).expect("save a");
+        store.save(&snapshot_with_id(20, 2)).expect("save b");
+
+        let current = directory.path().join("state").join("session.json");
+        let bytes = fs::read(&current).expect("read current");
+        let mut value: serde_json::Value = serde_json::from_slice(&bytes).expect("value");
+        value["payload"]["windows"][0]["unexpected"] = serde_json::json!(true);
+        fs::write(&current, serde_json::to_vec(&value).expect("tampered bytes"))
+            .expect("write tampered current");
+
+        let outcome = store.load().expect("recover");
+        assert_eq!(outcome.source, SessionLoadSource::Current);
+        let loaded = outcome.envelope.expect("recovered envelope");
+        assert_eq!(loaded.payload.windows.len(), 1);
+        assert_eq!(loaded.payload.windows[0].window_id.get(), 20);
+    }
+
+    #[test]
+    fn checksum_mismatch_is_not_salvaged_by_window_recovery() {
+        let directory = TempDir::new().expect("temporary directory");
+        let store =
+            WindowsSessionStore::at_root(directory.path().join("state"), RoadmapLimits::default());
+        store.save(&snapshot(1)).expect("baseline");
+        store.save(&snapshot(2)).expect("current");
+        let bytes = fs::read(store.current_path()).expect("read current");
+        let mut value: serde_json::Value = serde_json::from_slice(&bytes).expect("value");
+        value["write_generation"] = serde_json::json!(999);
+        fs::write(
+            store.current_path(),
+            serde_json::to_vec(&value).expect("tampered bytes"),
+        )
+        .expect("write tampered current");
+
+        let loaded = store.load().expect("fall back to backup");
+        assert_eq!(loaded.source, SessionLoadSource::LastKnownGood);
+        assert_eq!(loaded.rejected_artifacts, 1);
     }
 
     #[test]

@@ -4365,12 +4365,12 @@ impl ApplicationLifecycle {
         reason = "application startup keeps platform, lifecycle, window, fixture, and auto-close ownership visible in one audited path"
     )]
     pub fn run_gpui(&self) -> Result<(), Error> {
-        self.run_gpui_with_launch(None, None, false)
+        self.run_gpui_with_launch(None, None, false, None)
     }
 
     /// Runs GPUI with an explicit initial filesystem path overriding restored tabs.
     pub fn run_gpui_with_initial_path(&self, initial_path: Option<PathBuf>) -> Result<(), Error> {
-        self.run_gpui_with_launch(initial_path, None, false)
+        self.run_gpui_with_launch(initial_path, None, false, None)
     }
 
     /// Runs GPUI with an optional imported File Explorer window and This PC start.
@@ -4379,6 +4379,7 @@ impl ApplicationLifecycle {
         initial_path: Option<PathBuf>,
         imported_window: Option<explorer_model::ExplorerWindowState>,
         this_pc: bool,
+        restore_window_id: Option<explorer_model::PersistedWindowId>,
     ) -> Result<(), Error> {
         let activate_on_open = this_pc || imported_window.is_some();
         let launch_error = Arc::new(Mutex::new(None::<String>));
@@ -4503,15 +4504,56 @@ impl ApplicationLifecycle {
         } else {
             configured_initial_location(initial_path)?
         };
-        let (restored_tabs, restored_placement) = if imported_window.is_some() {
-            let (_, placement) = if visual_fixture.is_none() {
-                load_session_restore(&diagnostics, None)
+        let fallback_location = initial_location.clone().unwrap_or_else(|| {
+            explorer_model::HistoryEntry::new(
+                explorer_model::LocationDescriptor::file_system(r"C:\"),
+                "This PC",
+            )
+        });
+        let mut session_window_id = explorer_model::PersistedWindowId::generate();
+        let (restored_tabs, restored_placement) = if let Some(window_id) = restore_window_id {
+            if visual_fixture.is_none() {
+                match load_session_window(&diagnostics, window_id, fallback_location) {
+                    Some(planned) => {
+                        session_window_id = planned.window_id;
+                        (Some(planned.window), Some(planned.placement))
+                    }
+                    None => (None, None),
+                }
             } else {
                 (None, None)
+            }
+        } else if let Some(imported) = imported_window {
+            let restore = if visual_fixture.is_none() {
+                load_session_restore(&diagnostics, None)
+            } else {
+                SessionRestore::default()
             };
-            (imported_window, placement)
+            for planned in &restore.windows {
+                if let Err(error) = crate::explorer_import::spawn_restored_window(planned.window_id)
+                {
+                    tracing::warn!(%error, "restored session window spawn failed");
+                }
+            }
+            (Some(imported), restore.placement)
         } else if visual_fixture.is_none() {
-            load_session_restore(&diagnostics, initial_location.clone())
+            let restore = load_session_restore(&diagnostics, initial_location.clone());
+            let placement = restore.placement;
+            let mut windows = restore.windows.into_iter();
+            let self_window = windows.next();
+            for planned in windows {
+                if let Err(error) = crate::explorer_import::spawn_restored_window(planned.window_id)
+                {
+                    tracing::warn!(%error, "restored session window spawn failed");
+                }
+            }
+            match self_window {
+                Some(planned) => {
+                    session_window_id = planned.window_id;
+                    (Some(planned.window), Some(planned.placement))
+                }
+                None => (None, placement),
+            }
         } else {
             (None, None)
         };
@@ -4525,7 +4567,7 @@ impl ApplicationLifecycle {
             session_locale,
             session_theme,
         ) = if visual_fixture.is_none() {
-            create_session_persistence(restored_placement)
+            create_session_persistence(session_window_id)
         } else {
             (
                 None,
@@ -4834,6 +4876,13 @@ impl ApplicationLifecycle {
                         let gdrive_runtime = Arc::clone(&sftp_login_runtime);
                         root.attach_gdrive_address_login_observer(Arc::new(move |input| {
                             gdrive_runtime.login_gdrive_address(input)
+                        }));
+                        root.attach_network_login_observer(Arc::new(|input| {
+                            crate::remote_service::prompt_network_login(
+                                &input.host,
+                                &input.remote,
+                                &input.message,
+                            )
                         }));
                         let symlink_runtime = Arc::clone(&remote_runtime_for_window);
                         let metadata_runtime = Arc::clone(&remote_runtime_for_window);
@@ -5873,12 +5922,13 @@ fn create_explorer_root(
     };
     root.configure_restore_previous_session(restore_preference);
     root.configure_locale(resolved_locale, session_locale, windows_negotiated_locale);
-    if let Some(theme) = session_theme
-        .as_deref()
-        .and_then(explorer_ui::theme::ColorTheme::from_id)
-    {
-        root.configure_color_theme(theme);
-    }
+    root.configure_color_theme(
+        session_theme
+            .as_deref()
+            .and_then(explorer_ui::theme::ColorTheme::from_id)
+            .unwrap_or(explorer_ui::theme::ColorTheme::FollowWindows),
+    );
+    root.sync_windows_appearance(window);
     root.configure_quick_access(quick_access);
     root.configure_bookmarks(bookmarks);
     root.configure_extension_desired_states(&extension_desired_states);
@@ -6155,21 +6205,33 @@ fn explorer_root(
     root
 }
 
-fn load_session_restore(
+struct PlannedSessionWindow {
+    window_id: explorer_model::PersistedWindowId,
+    placement: explorer_model::PersistedWindowPlacement,
+    window: explorer_model::ExplorerWindowState,
+}
+
+#[derive(Default)]
+struct SessionRestore {
+    windows: Vec<PlannedSessionWindow>,
+    placement: Option<explorer_model::PersistedWindowPlacement>,
+}
+
+fn load_session_envelope(
     diagnostics: &DiagnosticsSession,
-    configured: Option<explorer_model::HistoryEntry>,
-) -> (
-    Option<explorer_model::ExplorerWindowState>,
-    Option<explorer_model::PersistedWindowPlacement>,
-) {
+) -> Option<(
+    explorer_model::PersistedSessionEnvelope,
+    explorer_model::SessionLoadSource,
+    bool,
+)> {
     let limits = RoadmapLimits::default();
     let Ok(store) = crate::session_store::WindowsSessionStore::from_environment(limits) else {
         let _ = diagnostics.record_event("session_restore_unavailable", &[]);
-        return (None, None);
+        return None;
     };
     let Ok(outcome) = store.load() else {
         let _ = diagnostics.record_event("session_restore_failed", &[]);
-        return (None, None);
+        return None;
     };
     let Some(envelope) = outcome
         .envelope
@@ -6182,21 +6244,49 @@ fn load_session_restore(
                 &outcome.rejected_artifacts.to_string(),
             )],
         );
-        return (None, None);
+        return None;
+    };
+    Some((envelope, outcome.source, outcome.migration_performed))
+}
+
+fn plan_session_window(
+    persisted: &explorer_model::PersistedWindow,
+    fallback: explorer_model::HistoryEntry,
+) -> Option<PlannedSessionWindow> {
+    let window = persisted.resolve(fallback, resolve_saved_location).ok()?;
+    Some(PlannedSessionWindow {
+        window_id: persisted.window_id,
+        placement: persisted.placement,
+        window,
+    })
+}
+
+fn load_session_restore(
+    diagnostics: &DiagnosticsSession,
+    configured: Option<explorer_model::HistoryEntry>,
+) -> SessionRestore {
+    let limits = RoadmapLimits::default();
+    let Some((envelope, source, migration)) = load_session_envelope(diagnostics) else {
+        return SessionRestore::default();
     };
     let Ok(plan) = envelope.restore_plan(limits) else {
         let _ = diagnostics.record_event("session_restore_plan_rejected", &[]);
-        return (None, None);
+        return SessionRestore::default();
     };
-    let placement = crate::session_lifecycle::primary_monitor_work_area().map(|monitor| {
-        crate::session_lifecycle::fit_window_placement(plan.window, &[monitor], 640, 480)
+    let placement = plan.windows.first().and_then(|window| {
+        crate::session_lifecycle::primary_monitor_work_area().map(|monitor| {
+            crate::session_lifecycle::fit_window_placement(window.placement, &[monitor], 640, 480)
+        })
     });
     if !should_restore_saved_tabs(configured.as_ref()) {
         let _ = diagnostics.record_event(
             "session_restore_location_overridden",
-            &[("tabs", &plan.tabs.len().to_string())],
+            &[("windows", &plan.windows.len().to_string())],
         );
-        return (None, placement);
+        return SessionRestore {
+            windows: Vec::new(),
+            placement,
+        };
     }
     let fallback = configured.unwrap_or_else(|| {
         explorer_model::HistoryEntry::new(
@@ -6204,17 +6294,35 @@ fn load_session_restore(
             "This PC",
         )
     });
-    let restored = plan.resolve_window(fallback, resolve_saved_location).ok();
-    let source = format!("{:?}", outcome.source);
+    let windows = plan
+        .windows
+        .iter()
+        .filter_map(|persisted| plan_session_window(persisted, fallback.clone()))
+        .collect::<Vec<_>>();
     let _ = diagnostics.record_event(
         "session_restore_ready",
         &[
-            ("source", &source),
-            ("tabs", &plan.tabs.len().to_string()),
-            ("migration", &outcome.migration_performed.to_string()),
+            ("source", &format!("{source:?}")),
+            ("windows", &plan.windows.len().to_string()),
+            ("migration", &migration.to_string()),
         ],
     );
-    (restored, placement)
+    SessionRestore { windows, placement }
+}
+
+fn load_session_window(
+    diagnostics: &DiagnosticsSession,
+    window_id: explorer_model::PersistedWindowId,
+    fallback: explorer_model::HistoryEntry,
+) -> Option<PlannedSessionWindow> {
+    let limits = RoadmapLimits::default();
+    let (envelope, _source, _migration) = load_session_envelope(diagnostics)?;
+    let plan = envelope.restore_plan(limits).ok()?;
+    let persisted = plan
+        .windows
+        .iter()
+        .find(|window| window.window_id == window_id)?;
+    plan_session_window(persisted, fallback)
 }
 
 const fn should_restore_saved_tabs(configured: Option<&explorer_model::HistoryEntry>) -> bool {
@@ -6242,7 +6350,7 @@ fn resolve_saved_location(
 }
 
 fn create_session_persistence(
-    _restored_placement: Option<explorer_model::PersistedWindowPlacement>,
+    session_window_id: explorer_model::PersistedWindowId,
 ) -> (
     Option<crate::session_lifecycle::PersistenceCoordinator>,
     Option<explorer_ui::DurableStateObserver>,
@@ -6302,7 +6410,9 @@ fn create_session_persistence(
             envelope.payload.bookmarks.clone()
         });
     let session_locale = loaded.as_ref().and_then(|envelope| envelope.payload.locale);
-    let session_theme = loaded.as_ref().and_then(|envelope| envelope.payload.theme.clone());
+    let session_theme = loaded
+        .as_ref()
+        .and_then(|envelope| envelope.payload.theme.clone());
     let bookmark_store = crate::bookmark_store::WindowsBookmarkStore::from_environment(limits).ok();
     let bookmarks = bookmark_store.as_ref().map_or_else(
         || legacy_bookmarks.clone(),
@@ -6317,7 +6427,8 @@ fn create_session_persistence(
     let restore_enabled = loaded
         .as_ref()
         .is_none_or(|envelope| envelope.payload.restore_enabled);
-    let store: Arc<dyn explorer_model::SessionStore> = Arc::new(store);
+    let store: Arc<dyn explorer_model::SessionStore> =
+        Arc::new(crate::session_store::MergingSessionStore::new(store));
     let bookmark_store = bookmark_store
         .map(|store| Arc::new(store) as Arc<dyn crate::bookmark_store::BookmarkStore>);
     let coordinator = crate::session_lifecycle::PersistenceCoordinator::start_with_bookmarks(
@@ -6339,6 +6450,7 @@ fn create_session_persistence(
                 crate::session_lifecycle::DurableTransition::ViewSettingsChanged,
                 crate::session_lifecycle::RuntimeSessionSnapshot {
                     window,
+                    window_id: session_window_id,
                     placement,
                     quick_access,
                     bookmarks,

@@ -4,8 +4,8 @@ use anyhow::{Context as _, Result, bail};
 use explorer_common::RoadmapLimits;
 use explorer_model::{
     LocationDescriptor, PersistedHistoryEntry, PersistedRect, PersistedSessionEnvelope,
-    PersistedSessionPayload, PersistedTab, PersistedViewSettings, PersistedWindowPlacement,
-    SessionProvenance, TabId,
+    PersistedSessionPayload, PersistedTab, PersistedViewSettings, PersistedWindow,
+    PersistedWindowId, PersistedWindowPlacement, SessionProvenance, TabId,
 };
 
 fn history(location: LocationDescriptor, title: impl Into<String>) -> PersistedHistoryEntry {
@@ -42,39 +42,42 @@ fn main() -> Result<()> {
         restore_enabled: true,
         locale: None,
         theme: None,
-        window: PersistedWindowPlacement {
-            normal_bounds: PersistedRect {
-                left: 96,
-                top: 72,
-                width: 1426,
-                height: 873,
+        windows: vec![PersistedWindow {
+            window_id: PersistedWindowId::new(1),
+            placement: PersistedWindowPlacement {
+                normal_bounds: PersistedRect {
+                    left: 96,
+                    top: 72,
+                    width: 1426,
+                    height: 873,
+                },
+                source_work_area: PersistedRect {
+                    left: 0,
+                    top: 0,
+                    width: 2194,
+                    height: 1234,
+                },
+                source_dpi: 168,
+                maximized: false,
             },
-            source_work_area: PersistedRect {
-                left: 0,
-                top: 0,
-                width: 2194,
-                height: 1234,
-            },
-            source_dpi: 168,
-            maximized: false,
-        },
-        tabs: vec![
-            PersistedTab {
-                tab_id: first_id,
-                current: history(LocationDescriptor::file_system(&other), "fixture"),
-                back: Vec::new(),
-                forward: Vec::new(),
-                view_settings: view_settings.clone(),
-            },
-            PersistedTab {
-                tab_id: active_id,
-                current: history(LocationDescriptor::file_system(&drive), "mapped drive"),
-                back: vec![history(LocationDescriptor::file_system(other), "fixture")],
-                forward: Vec::new(),
-                view_settings,
-            },
-        ],
-        active_tab_id: active_id,
+            tabs: vec![
+                PersistedTab {
+                    tab_id: first_id,
+                    current: history(LocationDescriptor::file_system(&other), "fixture"),
+                    back: Vec::new(),
+                    forward: Vec::new(),
+                    view_settings: view_settings.clone(),
+                },
+                PersistedTab {
+                    tab_id: active_id,
+                    current: history(LocationDescriptor::file_system(&drive), "mapped drive"),
+                    back: vec![history(LocationDescriptor::file_system(other), "fixture")],
+                    forward: Vec::new(),
+                    view_settings,
+                },
+            ],
+            active_tab_id: active_id,
+        }],
         quick_access: Vec::new(),
         bookmarks: explorer_model::Bookmarks::default(),
     };

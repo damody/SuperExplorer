@@ -142,7 +142,13 @@ fn run(
     } else {
         repeated_launch.then(|| std::path::PathBuf::from(r"C:\"))
     };
-    lifecycle.run_gpui_with_launch(initial_path, import.this_window, import.this_pc)?;
+    let restore_window_id = explorer_import::parse_restore_window_id();
+    lifecycle.run_gpui_with_launch(
+        initial_path,
+        import.this_window,
+        import.this_pc,
+        restore_window_id,
+    )?;
     explorer_handoff::stop_handoff_server();
     win_e_hotkey::stop_win_e_hotkey();
     lifecycle.shutdown()?;
