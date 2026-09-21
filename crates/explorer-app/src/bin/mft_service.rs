@@ -1345,8 +1345,8 @@ fn run_event_driven_service() {
     if std::fs::create_dir_all(&cache).is_err() {
         return;
     }
-    if initialize_protected_focus_image().is_err() {
-        return;
+    if let Err(error) = initialize_protected_focus_image() {
+        eprintln!("MFT focus image init skipped: {error}");
     }
     let live_volumes = Arc::new(Mutex::new(HashMap::<
         char,

@@ -44,10 +44,12 @@ function Require-UninstallOrder {
 $query = 'nsExec::ExecToStack ''"$SYSDIR\sc.exe" query SuperExplorerMft'''
 $stop = 'nsExec::ExecToStack ''"$SYSDIR\sc.exe" stop SuperExplorerMft'''
 $serviceFile = 'File /oname=superexplorer-mft-service.exe "${MFT_SERVICE_EXE}"'
+$quotedBinPath = 'binPath= "\$\"$INSTDIR\superexplorer-mft-service.exe\$\""'
 $start = '!insertmacro ExecServiceChecked ''"$SYSDIR\sc.exe" start SuperExplorerMft'''
 
 Require-Text $query 'SCM query before upgrading the service binary'
 Require-Text $stop 'checked SCM stop request'
+Require-Text $quotedBinPath 'nested ImagePath quotes so Program Files first-install can start'
 Require-Text '${StrStr} $3 $1 "1060"' 'first-install service-not-found handling'
 Require-Text '${StrStr} $3 $1 "1061"' 'concurrent service-transition race handling'
 Require-Text '${StrStr} $3 $1 "1062"' 'already-stopped race handling'

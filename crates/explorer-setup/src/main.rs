@@ -427,6 +427,8 @@ fn configure_service(install_dir: &Path) -> Result<()> {
         let (create_code, create_text) = sc(&[
             "create",
             SERVICE_NAME,
+            "type=",
+            "own",
             "binPath=",
             &quoted,
             "start=",
@@ -443,6 +445,8 @@ fn configure_service(install_dir: &Path) -> Result<()> {
         let (config_code, config_text) = sc(&[
             "config",
             SERVICE_NAME,
+            "type=",
+            "own",
             "binPath=",
             &quoted,
             "start=",

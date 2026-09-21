@@ -245,13 +245,15 @@ service_ready_for_files:
     !endif
 
     SetOutPath "$INSTDIR"
+    ; sc.exe strips one quote layer. Nested quotes keep ImagePath quoted so
+    ; SCM can start the binary from "C:\Program Files\...".
     nsExec::ExecToStack '"$SYSDIR\sc.exe" query SuperExplorerMft'
     Pop $0
     Pop $1
     ${If} $0 != 0
-        !insertmacro ExecServiceChecked '"$SYSDIR\sc.exe" create SuperExplorerMft binPath= $\"$INSTDIR\superexplorer-mft-service.exe$\" start= auto obj= LocalSystem DisplayName= "SuperExplorer MFT Service"' "無法建立 SuperExplorer MFT Windows Service"
+        !insertmacro ExecServiceChecked '"$SYSDIR\sc.exe" create SuperExplorerMft type= own start= auto obj= LocalSystem binPath= "\$\"$INSTDIR\superexplorer-mft-service.exe\$\"" DisplayName= "SuperExplorer MFT Service"' "無法建立 SuperExplorer MFT Windows Service"
     ${Else}
-        !insertmacro ExecServiceChecked '"$SYSDIR\sc.exe" config SuperExplorerMft binPath= $\"$INSTDIR\superexplorer-mft-service.exe$\" start= auto obj= LocalSystem DisplayName= "SuperExplorer MFT Service"' "無法設定 SuperExplorer MFT Windows Service"
+        !insertmacro ExecServiceChecked '"$SYSDIR\sc.exe" config SuperExplorerMft type= own start= auto obj= LocalSystem binPath= "\$\"$INSTDIR\superexplorer-mft-service.exe\$\"" DisplayName= "SuperExplorer MFT Service"' "無法設定 SuperExplorer MFT Windows Service"
     ${EndIf}
     !insertmacro ExecServiceChecked '"$SYSDIR\sc.exe" description SuperExplorerMft "Read-only NTFS metadata index for SuperExplorer folder snapshots"' "無法設定 SuperExplorer MFT Windows Service 描述"
     !insertmacro ExecServiceChecked '"$SYSDIR\sc.exe" start SuperExplorerMft' "無法啟動 SuperExplorer MFT Windows Service"
