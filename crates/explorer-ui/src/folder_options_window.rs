@@ -17,7 +17,7 @@ use gpui::{
 
 use crate::{
     ExplorerRoot, UiTokens,
-    actions::{ActionSource, ExplorerAction, FolderOptionsPage},
+    actions::{ActionSource, ExplorerAction, FolderOptionSliderId, FolderOptionsPage},
     chrome::{self, ActionCallback},
     state::{ExtensionOptionV1, FolderOptionsDraft},
 };
@@ -446,6 +446,17 @@ struct ScrollbarDragV1 {
     grab_offset_y: f32,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct NumericSliderDragV1 {
+    slider: FolderOptionSliderId,
+    min: u16,
+    max: u16,
+    step: u16,
+    left: f32,
+    width: f32,
+    last_value: u16,
+}
+
 fn keyboard_scroll_target(current: f32, viewport: f32, maximum: f32, key: &str) -> Option<f32> {
     if !current.is_finite() || !viewport.is_finite() || !maximum.is_finite() || viewport <= 0.0 {
         return None;
@@ -499,6 +510,7 @@ pub struct FolderOptionsWindow {
     theme_scroll: ScrollHandle,
     extensions_scroll: ScrollHandle,
     scrollbar_drag: Option<ScrollbarDragV1>,
+    slider_drag: Option<NumericSliderDragV1>,
     snapshot: FolderOptionsWindowSnapshotV1,
     cache_budget_inputs: Vec<gpui::Entity<EditableTextState>>,
     cache_budget_input_baseline: explorer_model::CacheBudgetSettingsV1,
@@ -613,6 +625,7 @@ impl FolderOptionsWindow {
             theme_scroll: ScrollHandle::new(),
             extensions_scroll: ScrollHandle::new(),
             scrollbar_drag: None,
+            slider_drag: None,
             snapshot,
             cache_budget_inputs,
             cache_budget_input_baseline,
@@ -667,6 +680,82 @@ impl FolderOptionsWindow {
         let offset = handle.offset();
         handle.set_offset(point(offset.x, px(-target)));
         true
+    }
+
+    fn begin_slider_drag(
+        &mut self,
+        slider: FolderOptionSliderId,
+        min: u16,
+        max: u16,
+        step: u16,
+        left: f32,
+        width: f32,
+        pointer_x: f32,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let value = chrome::folder_option_slider_value(pointer_x, left, width, min, max, step);
+        self.slider_drag = Some(NumericSliderDragV1 {
+            slider,
+            min,
+            max,
+            step,
+            left,
+            width,
+            last_value: value,
+        });
+        self.apply_owner_action(slider.action(value), window, cx);
+    }
+
+    fn update_slider_drag(
+        &mut self,
+        pointer_x: f32,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let Some(drag) = self.slider_drag else {
+            return false;
+        };
+        let value = chrome::folder_option_slider_value(
+            pointer_x,
+            drag.left,
+            drag.width,
+            drag.min,
+            drag.max,
+            drag.step,
+        );
+        if value == drag.last_value {
+            return true;
+        }
+        if let Some(session) = self.slider_drag.as_mut() {
+            session.last_value = value;
+        }
+        self.apply_owner_action(drag.slider.action(value), window, cx);
+        true
+    }
+
+    fn apply_owner_action(
+        &mut self,
+        action: ExplorerAction,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let owner = self.owner;
+        let cache_usage = self.snapshot.cache_usage;
+        if let Ok(Some(snapshot)) = owner.update(cx, |root, owner_window, cx| {
+            root.dispatch_folder_options_action(action, ActionSource::Mouse, owner_window, cx);
+            root.state
+                .folder_options()
+                .map(|draft| FolderOptionsWindowSnapshotV1 {
+                    draft,
+                    extensions: root.state.extensions().to_vec(),
+                    cache_usage: root.cache_usage_snapshot(cache_usage),
+                    locale: root.state.locale(),
+                    windows_negotiated_locale: root.state.windows_negotiated_locale(),
+                })
+        }) {
+            self.snapshot = snapshot;
+        }
     }
 
     fn keyboard_scroll(&self, page: FolderOptionsPage, key: &str) -> bool {
@@ -930,6 +1019,27 @@ impl Render for FolderOptionsWindow {
         let owner = self.owner;
         let on_action: ActionCallback = Rc::new(cx.listener(
             move |this, action: &ExplorerAction, window, cx| {
+                if let ExplorerAction::BeginFolderOptionSliderDrag {
+                    slider,
+                    min,
+                    max,
+                    step,
+                    left,
+                    width,
+                    pointer_x,
+                } = action
+                {
+                    this.begin_slider_drag(
+                        *slider, *min, *max, *step, *left, *width, *pointer_x, window, cx,
+                    );
+                    cx.notify();
+                    window.refresh();
+                    return;
+                }
+                if matches!(action, ExplorerAction::EndFolderOptionSliderDrag) {
+                    this.slider_drag = None;
+                    return;
+                }
                 if matches!(action, ExplorerAction::ToggleFolderOptionsLanguagePicker) {
                     this.language_picker_open = !this.language_picker_open;
                     this.language_menu_drag = None;
@@ -1066,7 +1176,11 @@ impl Render for FolderOptionsWindow {
             .relative()
             .track_focus(&self.focus_handle)
             .on_mouse_move(cx.listener(|this, event: &MouseMoveEvent, window, cx| {
-                if this.update_drag(event.position.y) {
+                if this.update_slider_drag(f32::from(event.position.x), window, cx) {
+                    cx.stop_propagation();
+                    cx.notify();
+                    window.refresh();
+                } else if this.update_drag(event.position.y) {
                     cx.stop_propagation();
                     cx.notify();
                     window.refresh();
@@ -1077,6 +1191,7 @@ impl Render for FolderOptionsWindow {
                 cx.listener(|this, _, _, cx| {
                     if this.scrollbar_drag.take().is_some()
                         || this.language_menu_drag.take().is_some()
+                        || this.slider_drag.take().is_some()
                     {
                         cx.stop_propagation();
                         cx.notify();
@@ -1088,6 +1203,7 @@ impl Render for FolderOptionsWindow {
                 cx.listener(|this, _, _, cx| {
                     if this.scrollbar_drag.take().is_some()
                         || this.language_menu_drag.take().is_some()
+                        || this.slider_drag.take().is_some()
                     {
                         cx.stop_propagation();
                         cx.notify();

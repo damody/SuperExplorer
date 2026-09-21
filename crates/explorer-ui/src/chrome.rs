@@ -1,7 +1,7 @@
 //! Stateless Explorer chrome components for the M1 visual checkpoint.
 
 use std::{
-    cell::{Cell, RefCell},
+    cell::RefCell,
     collections::{HashMap, HashSet},
     hash::{Hash, Hasher},
     rc::Rc,
@@ -519,10 +519,13 @@ fn tab_strip_chrome_metrics(
         };
     }
     let max_rows = explorer_model::normalized_tab_row_count(settings.tab_row_count);
+    let measured = handle
+        .map(|handle| f32::from(handle.bounds().size.width))
+        .filter(|width| *width > 1.0);
     let needed = tab_strip_wrap_rows(
         state.tabs().tabs().len(),
         tab_min_width_px(state),
-        tab_strip_wrap_available_width(window_width, tokens, false),
+        measured.unwrap_or_else(|| tab_strip_wrap_available_width(window_width, tokens, false)),
         tokens,
     );
     let vertical_overflow = needed > usize::from(max_rows);
@@ -530,7 +533,11 @@ fn tab_strip_chrome_metrics(
         tab_strip_wrap_rows(
             state.tabs().tabs().len(),
             tab_min_width_px(state),
-            tab_strip_wrap_available_width(window_width, tokens, true),
+            measured
+                .map(|width| {
+                    (width - tokens.layout.content_spacing.value() * 1.5).max(0.0)
+                })
+                .unwrap_or_else(|| tab_strip_wrap_available_width(window_width, tokens, true)),
             tokens,
         )
     } else {
@@ -574,9 +581,25 @@ fn tab_strip_wrap_rows(
     let gap = tokens.layout.content_spacing.value();
     let padding = tokens.layout.control_padding_horizontal.value() * 2.0;
     let inner = (available_width - padding).max(0.0);
-    let cell = tab_min_width.max(1.0) + gap;
+    let tab_width = tab_min_width.max(1.0);
+    let cell = tab_width + gap;
     let columns = ((inner + gap) / cell).floor().max(1.0) as usize;
-    tab_count.saturating_add(1).div_ceil(columns).max(1)
+    if tab_count == 0 {
+        return 1;
+    }
+    let tab_rows = tab_count.div_ceil(columns).max(1);
+    let last_row_tabs = match tab_count % columns {
+        0 => columns,
+        rem => rem,
+    };
+    let used = last_row_tabs as f32 * cell - gap;
+    let leftover = (inner - used).max(0.0);
+    let plus = tokens.layout.minimum_hit_target.value() + gap;
+    if leftover >= plus {
+        tab_rows
+    } else {
+        tab_rows.saturating_add(1)
+    }
 }
 
 pub(crate) fn explorer_file_origin_y_with_tab_overflow(
@@ -7185,6 +7208,7 @@ fn folder_option_tab_max_width(
         explorer_model::MAX_TAB_MAX_WIDTH,
         explorer_model::TAB_MIN_WIDTH_STEP,
         catalog.t("settings-px"),
+        crate::actions::FolderOptionSliderId::TabMaxWidth,
         ExplorerAction::SetFolderOptionTabMaxWidth,
         tokens,
         on_action,
@@ -7206,6 +7230,7 @@ fn folder_option_tab_row_count(
         explorer_model::MAX_TAB_ROW_COUNT,
         1,
         catalog.t("settings-rows"),
+        crate::actions::FolderOptionSliderId::TabRowCount,
         ExplorerAction::SetFolderOptionTabRowCount,
         tokens,
         on_action,
@@ -7227,13 +7252,14 @@ fn folder_option_tab_min_width(
         explorer_model::MAX_TAB_MIN_WIDTH,
         explorer_model::TAB_MIN_WIDTH_STEP,
         catalog.t("settings-px"),
+        crate::actions::FolderOptionSliderId::TabMinWidth,
         ExplorerAction::SetFolderOptionTabMinWidth,
         tokens,
         on_action,
     )
 }
 
-fn folder_option_slider_value(
+pub(crate) fn folder_option_slider_value(
     pointer_x: f32,
     left: f32,
     width: f32,
@@ -7263,6 +7289,7 @@ fn folder_option_numeric_slider(
     max: u16,
     step: u16,
     unit: impl Into<SharedString>,
+    slider: crate::actions::FolderOptionSliderId,
     make_action: fn(u16) -> ExplorerAction,
     tokens: UiTokens,
     on_action: Option<ActionCallback>,
@@ -7278,7 +7305,6 @@ fn folder_option_numeric_slider(
         1.0
     };
     let track_bounds = Rc::new(RefCell::new(None::<Bounds<gpui::Pixels>>));
-    let dragging = Rc::new(Cell::new(false));
     div()
         .id(id)
         .role(Role::Group)
@@ -7302,9 +7328,8 @@ fn folder_option_numeric_slider(
                     min,
                     max,
                     step,
-                    make_action,
+                    slider,
                     track_bounds,
-                    dragging,
                     tokens,
                     on_action.clone(),
                 ))
@@ -7340,33 +7365,13 @@ fn folder_option_slider_track(
     min: u16,
     max: u16,
     step: u16,
-    make_action: fn(u16) -> ExplorerAction,
+    slider: crate::actions::FolderOptionSliderId,
     track_bounds: Rc<RefCell<Option<Bounds<gpui::Pixels>>>>,
-    dragging: Rc<Cell<bool>>,
     tokens: UiTokens,
     on_action: Option<ActionCallback>,
 ) -> impl IntoElement {
     let colors = tokens.theme.colors;
     let bounds_for_paint = track_bounds.clone();
-    let apply = on_action.map(|callback| {
-        let bounds = track_bounds.clone();
-        Rc::new(move |pointer_x: f32, window: &mut Window, cx: &mut App| {
-            let Some(track) = *bounds.borrow() else {
-                return;
-            };
-            let next = folder_option_slider_value(
-                pointer_x,
-                f32::from(track.origin.x),
-                f32::from(track.size.width),
-                min,
-                max,
-                step,
-            );
-            if next != value {
-                callback(&make_action(next), window, cx);
-            }
-        })
-    });
     div()
         .id(id)
         .role(Role::Slider)
@@ -7375,7 +7380,7 @@ fn folder_option_slider_track(
         .aria_max_numeric_value(f64::from(max))
         .relative()
         .w(px(220.0))
-        .h(px(18.0))
+        .h(px(tokens.layout.minimum_hit_target.value()))
         .flex()
         .items_center()
         .rounded(px(9.0))
@@ -7395,27 +7400,28 @@ fn folder_option_slider_track(
         )
         .child(div().h_full().w(relative(fill)).bg(colors.accent.to_gpui()))
         .child(div().flex_1().h_full().bg(colors.control_fill.to_gpui()))
-        .when_some(apply, |track, apply| {
-            let drag_start = dragging.clone();
-            let drag_move = dragging.clone();
-            let drag_end = dragging;
-            let move_apply = apply.clone();
-            track
-                .on_mouse_down(MouseButton::Left, move |event, window, cx| {
-                    drag_start.set(true);
-                    apply(f32::from(event.position.x), window, cx);
-                    cx.stop_propagation();
-                })
-                .on_mouse_move(move |event, window, cx| {
-                    if drag_move.get() && event.dragging() {
-                        move_apply(f32::from(event.position.x), window, cx);
-                        cx.stop_propagation();
-                    }
-                })
-                .on_mouse_up(MouseButton::Left, move |_, _, cx| {
-                    drag_end.set(false);
-                    cx.stop_propagation();
-                })
+        .when_some(on_action, |track, callback| {
+            let bounds = track_bounds;
+            track.on_mouse_down(MouseButton::Left, move |event, window, cx| {
+                let track = bounds.borrow().unwrap_or_else(|| Bounds {
+                    origin: event.position,
+                    size: gpui::size(px(220.0), px(18.0)),
+                });
+                callback(
+                    &ExplorerAction::BeginFolderOptionSliderDrag {
+                        slider,
+                        min,
+                        max,
+                        step,
+                        left: f32::from(track.origin.x),
+                        width: f32::from(track.size.width).max(1.0),
+                        pointer_x: f32::from(event.position.x),
+                    },
+                    window,
+                    cx,
+                );
+                cx.stop_propagation();
+            })
         })
 }
 
@@ -17913,6 +17919,12 @@ impl RenderOnce for WindowChrome {
         let catalog = self.state.catalog();
         let tab_min_width = tab_min_width_px(&self.state);
         let tab_max_width = tab_max_width_px(&self.state);
+        let tab_metrics = tab_strip_chrome_metrics(
+            self.tab_scroll.as_ref(),
+            self.tokens,
+            &self.state,
+            f32::from(window.viewport_size().width),
+        );
         let tabs: Vec<_> = self
             .state
             .tabs()
@@ -17942,16 +17954,11 @@ impl RenderOnce for WindowChrome {
                     tab.id == active_tab_id,
                     tab_min_width,
                     tab_max_width,
+                    tab_metrics.multi_row,
                     self.on_action.clone(),
                 )
             })
             .collect();
-        let tab_metrics = tab_strip_chrome_metrics(
-            self.tab_scroll.as_ref(),
-            self.tokens,
-            &self.state,
-            f32::from(window.viewport_size().width),
-        );
         if tab_metrics.multi_row
             && let Some(handle) = self.tab_scroll.as_ref()
         {
@@ -18070,8 +18077,14 @@ impl RenderOnce for WindowChrome {
                             .debug_selector(|| WINDOW_DRAG_REGION_ID.to_owned())
                             .relative()
                             .window_control_area(WindowControlArea::Drag)
-                            .h_full()
-                            .flex_1()
+                            .when(tab_metrics.multi_row, |element| {
+                                element
+                                    .flex_none()
+                                    .h(px(layout.title_tab_height.value()))
+                            })
+                            .when(!tab_metrics.multi_row, |element| {
+                                element.h_full().flex_1()
+                            })
                             .min_w(px(crate::layout::tabs::CAPTION_DRAG_RESERVE.value()))
                             .overflow_hidden()
                             .on_mouse_down(MouseButton::Left, |event, window, _| {
@@ -18225,6 +18238,7 @@ fn explorer_tab(
     active: bool,
     tab_min_width: f32,
     tab_max_width: f32,
+    wrap: bool,
     on_action: Option<ActionCallback>,
 ) -> impl IntoElement {
     let layout = tokens.layout;
@@ -18263,7 +18277,13 @@ fn explorer_tab(
         .aria_label(title.clone())
         .aria_selected(active)
         .h(px(layout.minimum_hit_target.value()))
-        .flex_1()
+        .when(wrap, |element| {
+            element
+                .flex_none()
+                .flex_grow()
+                .flex_basis(px(tab_min_width))
+        })
+        .when(!wrap, |element| element.flex_1())
         .flex_shrink_0()
         .min_w(px(tab_min_width))
         .max_w(px(tab_max_width.max(tab_min_width)))
@@ -21094,6 +21114,11 @@ mod tests {
             "crowded tabs wrap onto more than the default 3 rows"
         );
         assert_eq!(super::tab_strip_wrap_rows(1, 150.0, 1_200.0, tokens), 1);
+        assert_eq!(
+            super::tab_strip_wrap_rows(14, 150.0, 1_200.0, tokens),
+            2,
+            "a full last row must keep the compact + button instead of growing an empty row"
+        );
     }
 
     #[test]

@@ -99,6 +99,23 @@ pub enum FolderOptionsPage {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum FolderOptionSliderId {
+    TabMinWidth,
+    TabMaxWidth,
+    TabRowCount,
+}
+
+impl FolderOptionSliderId {
+    pub fn action(self, value: u16) -> ExplorerAction {
+        match self {
+            Self::TabMinWidth => ExplorerAction::SetFolderOptionTabMinWidth(value),
+            Self::TabMaxWidth => ExplorerAction::SetFolderOptionTabMaxWidth(value),
+            Self::TabRowCount => ExplorerAction::SetFolderOptionTabRowCount(value),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum NavigationHistoryDirection {
     Back,
     Forward,
@@ -449,6 +466,16 @@ pub enum ExplorerAction {
     SetFolderOptionTabMaxWidth(u16),
     ToggleFolderOptionMultiRowTabs,
     SetFolderOptionTabRowCount(u16),
+    BeginFolderOptionSliderDrag {
+        slider: FolderOptionSliderId,
+        min: u16,
+        max: u16,
+        step: u16,
+        left: f32,
+        width: f32,
+        pointer_x: f32,
+    },
+    EndFolderOptionSliderDrag,
     ClearThumbnailCache,
     ToggleFolderOptionDetailsPane,
     ToggleFolderOptionPreviewPane,
@@ -842,6 +869,8 @@ impl ExplorerAction {
             Self::SetFolderOptionTabMaxWidth(_) => "SetFolderOptionTabMaxWidth",
             Self::ToggleFolderOptionMultiRowTabs => "ToggleFolderOptionMultiRowTabs",
             Self::SetFolderOptionTabRowCount(_) => "SetFolderOptionTabRowCount",
+            Self::BeginFolderOptionSliderDrag { .. } => "BeginFolderOptionSliderDrag",
+            Self::EndFolderOptionSliderDrag => "EndFolderOptionSliderDrag",
             Self::ClearThumbnailCache => "ClearThumbnailCache",
             Self::ToggleFolderOptionDetailsPane => "ToggleFolderOptionDetailsPane",
             Self::ToggleFolderOptionPreviewPane => "ToggleFolderOptionPreviewPane",
@@ -1672,6 +1701,8 @@ fn action_available(state: &AppViewState, action: &ExplorerAction) -> bool {
         | ExplorerAction::SetFolderOptionTabMaxWidth(_)
         | ExplorerAction::ToggleFolderOptionMultiRowTabs
         | ExplorerAction::SetFolderOptionTabRowCount(_)
+        | ExplorerAction::BeginFolderOptionSliderDrag { .. }
+        | ExplorerAction::EndFolderOptionSliderDrag
         | ExplorerAction::ClearThumbnailCache
         | ExplorerAction::ToggleFolderOptionDetailsPane
         | ExplorerAction::ToggleFolderOptionPreviewPane
@@ -2407,6 +2438,8 @@ fn apply_action(state: &mut AppViewState, action: ExplorerAction) -> FocusSurfac
             });
             FocusSurface::CommandBar
         }
+        ExplorerAction::BeginFolderOptionSliderDrag { .. }
+        | ExplorerAction::EndFolderOptionSliderDrag => FocusSurface::CommandBar,
         ExplorerAction::SetFolderOptionCacheBudgets(budgets) => {
             state.update_folder_options(|settings| {
                 settings.cache_budgets = budgets.normalized();
