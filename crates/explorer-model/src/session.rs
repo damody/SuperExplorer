@@ -2793,7 +2793,11 @@ mod tests {
 
         let mut settings = ViewSettings::default();
         settings.mft_enabled = false;
-        assert!(!PersistedViewSettings::from(settings).to_runtime().mft_enabled);
+        assert!(
+            !PersistedViewSettings::from(settings)
+                .to_runtime()
+                .mft_enabled
+        );
     }
 
     #[test]

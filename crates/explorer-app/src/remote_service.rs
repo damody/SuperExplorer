@@ -21,6 +21,17 @@ use explorer_remote::{
     TransferEngine, TransferMode, TransferResult,
 };
 
+fn log_remote_clipboard_failure(detail: &str) {
+    tracing::error!(detail, "remote clipboard staging failed");
+    explorer_common::record_process_error_message(
+        explorer_common::ErrorSeverity::Error,
+        "remote",
+        "clipboard_stage",
+        detail,
+        Some(file!()),
+    );
+}
+
 fn remote_type_display(name: &str, kind: RemoteEntryKind) -> String {
     match kind {
         RemoteEntryKind::File => explorer_model::classify_remote_file_name(name).type_label,
@@ -2141,19 +2152,39 @@ impl RemoteExplorerService {
                 .tempdir()
             {
                 Ok(root) => root,
-                Err(_) => return,
+                Err(error) => {
+                    log_remote_clipboard_failure(&format!(
+                        "reason=staging_directory_failed error={error}"
+                    ));
+                    return;
+                }
             };
             let mut native_items = Vec::with_capacity(items.len());
             for item in items {
                 if let LocationDescriptor::Virtual(remote) = &item.location {
                     let Some(name) = remote.components.last() else {
+                        log_remote_clipboard_failure(&format!(
+                            "reason=remote_item_has_no_name provider={}",
+                            remote.provider_id
+                        ));
                         return;
                     };
                     let target = root.path().join(name);
-                    let Ok(provider) = providers.resolve(&item.location) else {
-                        return;
+                    let provider = match providers.resolve(&item.location) {
+                        Ok(provider) => provider,
+                        Err(error) => {
+                            log_remote_clipboard_failure(&format!(
+                                "reason=provider_unavailable provider={} error={error}",
+                                remote.provider_id
+                            ));
+                            return;
+                        }
                     };
-                    if provider.download(remote, &target, &cancellation).is_err() {
+                    if let Err(error) = provider.download(remote, &target, &cancellation) {
+                        log_remote_clipboard_failure(&format!(
+                            "reason=download_failed provider={} name={name} error={error}",
+                            remote.provider_id
+                        ));
                         return;
                     }
                     native_items.push(ItemDescriptor {
@@ -2166,16 +2197,16 @@ impl RemoteExplorerService {
             }
             // External consumers receive a copy. A remote cut remains a move only when pasted
             // back through SuperExplorer, where completion can be observed before deletion.
-            if explorer_shell_win::publish_native_file_clipboard_with_token(
+            if let Err(error) = explorer_shell_win::publish_native_file_clipboard_with_token(
                 native_items,
                 ClipboardMode::Copy,
                 Some(token),
-            )
-            .is_ok()
-            {
-                if let Ok(mut roots) = staging.lock() {
-                    *roots = Some(root);
-                }
+            ) {
+                log_remote_clipboard_failure(&format!(
+                    "reason=native_clipboard_publish_failed error={error}"
+                ));
+            } else if let Ok(mut roots) = staging.lock() {
+                *roots = Some(root);
             }
         });
         Ok(())

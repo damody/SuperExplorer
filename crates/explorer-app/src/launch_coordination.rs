@@ -5,7 +5,7 @@ use std::{ffi::OsStr, os::windows::ffi::OsStrExt};
 use windows::{
     Win32::{
         Foundation::{CloseHandle, ERROR_ALREADY_EXISTS, GetLastError, HANDLE},
-        System::Threading::CreateMutexW,
+        System::Threading::{CreateMutexW, OpenMutexW, SYNCHRONIZATION_ACCESS_RIGHTS},
     },
     core::PCWSTR,
 };
@@ -76,6 +76,76 @@ impl LaunchSession {
     pub const fn is_repeated(&self) -> bool {
         self.repeated
     }
+}
+
+/// Holds the per-window presence marker until this process exits.
+pub struct WindowPresence {
+    handle: HANDLE,
+}
+
+impl WindowPresence {
+    /// Marks one persisted window as running in this process.
+    ///
+    /// # Errors
+    ///
+    /// Returns the Windows error when the named mutex cannot be created.
+    pub fn acquire(window_id: u64) -> windows::core::Result<Self> {
+        let name = window_presence_name(window_id);
+        // SAFETY: `name` is a live, NUL-terminated UTF-16 buffer. The mutex is
+        // not initially owned; the handle itself is the presence marker.
+        #[expect(
+            unsafe_code,
+            reason = "marking a live Explorer window requires Win32 CreateMutexW"
+        )]
+        let handle = unsafe { CreateMutexW(None, false, PCWSTR(name.as_ptr()))? };
+        Ok(Self { handle })
+    }
+}
+
+impl Drop for WindowPresence {
+    fn drop(&mut self) {
+        // SAFETY: `handle` is the valid handle returned by CreateMutexW and is
+        // closed exactly once by this guard.
+        #[expect(
+            unsafe_code,
+            reason = "releasing the Win32 window presence handle requires CloseHandle"
+        )]
+        let _ = unsafe { CloseHandle(self.handle) };
+    }
+}
+
+/// Returns whether another live process currently holds this window's presence marker.
+pub fn window_presence_held(window_id: u64) -> bool {
+    let name = window_presence_name(window_id);
+    // SAFETY: `name` is a live, NUL-terminated UTF-16 buffer. A successful open
+    // only proves the mutex exists; the handle is closed immediately.
+    #[expect(
+        unsafe_code,
+        reason = "checking a live Explorer window requires Win32 OpenMutexW"
+    )]
+    let Ok(handle) = (unsafe {
+        OpenMutexW(
+            SYNCHRONIZATION_ACCESS_RIGHTS(0x0010_0000),
+            false,
+            PCWSTR(name.as_ptr()),
+        )
+    }) else {
+        return false;
+    };
+    // SAFETY: `handle` was just opened and is closed exactly once here.
+    #[expect(
+        unsafe_code,
+        reason = "releasing the probed window presence handle requires CloseHandle"
+    )]
+    let _ = unsafe { CloseHandle(handle) };
+    true
+}
+
+fn window_presence_name(window_id: u64) -> Vec<u16> {
+    OsStr::new(&format!(r"Local\SuperExplorer.Window.{window_id}"))
+        .encode_wide()
+        .chain(Some(0))
+        .collect()
 }
 
 impl Drop for LaunchSession {

@@ -1573,7 +1573,7 @@ fn publish_mft_folder_result_v1(
                 request.item_id,
                 started.elapsed().as_millis(),
             );
-            eprintln!("{diagnostic}");
+            explorer_common::write_stderr_lossy(&diagnostic);
             explorer_common::record_process_error_message(
                 ErrorSeverity::Error,
                 "folder_size",
@@ -1655,7 +1655,8 @@ impl ApplicationVisualColumnRuntimeV1 {
                                 state.retry_not_before = None;
                                 break;
                             }
-                            if let Some(not_before) = state.retry_not_before.filter(|time| *time > now)
+                            if let Some(not_before) =
+                                state.retry_not_before.filter(|time| *time > now)
                             {
                                 let wait = not_before.saturating_duration_since(now);
                                 let (next, _) = ready
@@ -4430,7 +4431,7 @@ impl ApplicationLifecycle {
         imported_window: Option<explorer_model::ExplorerWindowState>,
         this_pc: bool,
         restore_window_id: Option<explorer_model::PersistedWindowId>,
-        imported_window_count: usize,
+        _imported_window_count: usize,
         restore_session_windows: bool,
     ) -> Result<(), Error> {
         let activate_on_open = this_pc || imported_window.is_some();
@@ -4566,7 +4567,8 @@ impl ApplicationLifecycle {
         let (restored_tabs, restored_placement) = if let Some(window_id) = restore_window_id {
             if visual_fixture.is_none() {
                 match load_session_window(&diagnostics, window_id, fallback_location) {
-                    Some(planned) => {
+                    Some(mut planned) => {
+                        activate_restored_tab(&mut planned.window);
                         session_window_id = planned.window_id;
                         (Some(planned.window), Some(planned.placement))
                     }
@@ -4581,26 +4583,14 @@ impl ApplicationLifecycle {
             } else {
                 SessionRestore::default()
             };
-            let budget = crate::explorer_import::session_restore_budget(imported_window_count);
-            spawn_restored_session_windows(
-                restore
-                    .windows
-                    .iter()
-                    .take(budget)
-                    .map(|planned| planned.window_id),
-            );
+            // Saved SuperExplorer windows stay closed. History restores them one at a time.
             (Some(imported), restore.placement)
         } else if visual_fixture.is_none() && restore_session_windows {
             let restore = load_session_restore(&diagnostics, initial_location.clone());
             let placement = restore.placement;
-            let budget = crate::explorer_import::session_restore_budget(0);
-            let mut windows = restore.windows.into_iter();
-            let self_window = windows.next();
-            spawn_restored_session_windows(
-                windows
-                    .take(budget.saturating_sub(1))
-                    .map(|planned| planned.window_id),
-            );
+            // Cold start opens only the most recently saved window. Older windows remain
+            // in the session and are restored from History → Recently closed windows.
+            let self_window = restore.windows.into_iter().next_back();
             match self_window {
                 Some(planned) => {
                     session_window_id = planned.window_id;
@@ -4611,6 +4601,14 @@ impl ApplicationLifecycle {
         } else {
             (None, None)
         };
+        let session_window_id_for_menu = session_window_id.get();
+        if let Ok(presence) =
+            crate::launch_coordination::WindowPresence::acquire(session_window_id_for_menu)
+        {
+            // Process exit releases the marker. Dropping it when this function returns is
+            // too early because GPUI keeps running on this stack until quit.
+            std::mem::forget(presence);
+        }
         let (
             mut persistence,
             durable_observer,
@@ -4786,6 +4784,7 @@ impl ApplicationLifecycle {
                     },
                     |fixture| window_options_with_size(cx, fixture.width, fixture.height),
                 );
+                let session_window_id_for_menu = session_window_id_for_menu;
                 let fixture_for_window = visual_fixture.clone();
                 let initial_location_for_window = initial_location.clone();
                 let restored_tabs_for_window = restored_tabs.clone();
@@ -4845,7 +4844,7 @@ impl ApplicationLifecycle {
                             extension_job_ui_bridge.take().and_then(|(inbox, ingress)| {
                                 ApplicationExtensionUiPumpV1::new(inbox, ingress)
                             });
-                        create_focused_explorer_root(
+                        let mut root = create_focused_explorer_root(
                             tokens,
                             shell_service,
                             drag_threshold,
@@ -4877,7 +4876,19 @@ impl ApplicationLifecycle {
                             }),
                             window,
                             cx,
-                        )
+                        );
+                        root.attach_closed_window_bridge(
+                            session_window_id_for_menu,
+                            Arc::new(|id, tab_index| {
+                                crate::explorer_import::spawn_restored_window(
+                                    explorer_model::PersistedWindowId::new(id),
+                                    tab_index,
+                                )
+                                .is_ok()
+                            }),
+                            Arc::new(move || load_closed_windows(session_window_id_for_menu)),
+                        );
+                        root
                     });
                     let controller = Rc::clone(&folder_options_controller_for_window);
                     let transfer_controller =
@@ -5992,7 +6003,9 @@ fn create_explorer_root(
             .map_err(|error| format!("Unable to open Command Prompt: {error}"))
     }));
     root.attach_bookmark_file_launcher(Arc::new(|location| {
-        explorer_shell_win::open_default(&location).map_err(|error| error.to_string())
+        // Do not ShellExecute on the GPUI thread. A .sln association can throw
+        // from an in-process handler and abort while GPUI drops jump-list paths.
+        explorer_shell_win::open_default_detached(location).map_err(|error| error.to_string())
     }));
     root.attach_live_window_publisher(Arc::new(|tabs, active| {
         crate::explorer_handoff::publish_live_window(tabs, active);
@@ -6303,14 +6316,187 @@ fn load_session_envelope(
     Some((envelope, outcome.source, outcome.migration_performed))
 }
 
-fn spawn_restored_session_windows(
-    windows: impl IntoIterator<Item = explorer_model::PersistedWindowId>,
-) {
-    for window_id in windows {
-        if let Err(error) = crate::explorer_import::spawn_restored_window(window_id) {
-            tracing::warn!(%error, "restored session window spawn failed");
+fn load_closed_windows(current_id: u64) -> Vec<explorer_ui::state::ClosedWindowRecord> {
+    let limits = RoadmapLimits::default();
+    let Ok(store) = crate::session_store::WindowsSessionStore::from_environment(limits) else {
+        return Vec::new();
+    };
+    let Ok(outcome) = store.load() else {
+        return Vec::new();
+    };
+    let Some(envelope) = outcome.envelope else {
+        return Vec::new();
+    };
+    let mut records = Vec::new();
+    let mut seen_windows = HashSet::new();
+    for window in envelope.payload.windows.iter().rev() {
+        if window.window_id.get() == current_id
+            || crate::launch_coordination::window_presence_held(window.window_id.get())
+        {
+            continue;
+        }
+        let Some(record) = closed_window_record(window) else {
+            continue;
+        };
+        if !seen_windows.insert(closed_window_signature(window)) {
+            continue;
+        }
+        records.push(record);
+        if records.len() == 20 {
+            break;
         }
     }
+    records
+}
+
+fn remember_saved_tab_locations(envelope: &explorer_model::PersistedSessionEnvelope) {
+    let windows = &envelope.payload.windows;
+    let mut entries = Vec::new();
+    if let Some(last) = windows.last() {
+        entries.extend(last.tabs.iter().map(|tab| {
+            (
+                tab.current.location.clone(),
+                tab.current.display_title.clone(),
+            )
+        }));
+    }
+    // The installer used to replace a multi-tab window with one imported shell
+    // page. Keep that earlier window's tabs at the front of history so they can
+    // be reopened after the bad launch.
+    if windows.last().is_some_and(|window| window.tabs.len() <= 1)
+        && let Some(multi) = windows.iter().rev().find(|window| window.tabs.len() > 1)
+    {
+        entries.extend(multi.tabs.iter().map(|tab| {
+            (
+                tab.current.location.clone(),
+                tab.current.display_title.clone(),
+            )
+        }));
+    }
+    explorer_ui::state::promote_locations(entries);
+}
+
+fn remember_changed_tab_locations(
+    recorded: &Mutex<HashMap<explorer_model::TabId, String>>,
+    window: &explorer_model::ExplorerWindowState,
+) {
+    let Ok(mut recorded) = recorded.lock() else {
+        return;
+    };
+    let mut fresh = Vec::new();
+    for tab in window.tabs() {
+        let Some(current) = tab.history.current() else {
+            continue;
+        };
+        let signature = format!(
+            "{}\u{1f}{}",
+            current.location.editable_text(),
+            current.display_title
+        );
+        if recorded.get(&tab.id).is_some_and(|previous| previous == &signature) {
+            continue;
+        }
+        recorded.insert(tab.id, signature);
+        fresh.push((current.location.clone(), current.display_title.clone()));
+    }
+    drop(recorded);
+    if !fresh.is_empty() {
+        explorer_ui::state::promote_locations(fresh);
+    }
+}
+
+fn persisted_tab_title(tab: &explorer_model::PersistedTab) -> String {
+    let title = tab.current.display_title.trim();
+    if !title.is_empty() {
+        return title.to_owned();
+    }
+    tab.current
+        .location
+        .path()
+        .map(|path| path.display().to_string())
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| "Tab".to_owned())
+}
+
+fn closed_location_key(location: &explorer_model::LocationDescriptor) -> String {
+    if let Some(path) = location.path() {
+        let mut text = path.to_string_lossy().replace('/', "\\");
+        let drive_root = text.len() == 3 && text.as_bytes().get(1) == Some(&b':');
+        if !drive_root {
+            text = text.trim_end_matches('\\').to_owned();
+        }
+        return text.to_ascii_lowercase();
+    }
+    location.editable_text().trim().to_ascii_lowercase()
+}
+
+fn closed_tab_key(tab: &explorer_model::PersistedTab) -> String {
+    let key = closed_location_key(&tab.current.location);
+    if key.is_empty() {
+        persisted_tab_title(tab).to_ascii_lowercase()
+    } else {
+        key
+    }
+}
+
+fn closed_window_signature(window: &explorer_model::PersistedWindow) -> String {
+    let mut keys = window.tabs.iter().map(closed_tab_key).collect::<Vec<_>>();
+    keys.sort();
+    keys.dedup();
+    keys.join("\u{1f}")
+}
+
+fn closed_window_record(
+    window: &explorer_model::PersistedWindow,
+) -> Option<explorer_ui::state::ClosedWindowRecord> {
+    if window.tabs.is_empty() {
+        return None;
+    }
+    let active = window
+        .tabs
+        .iter()
+        .find(|tab| tab.tab_id == window.active_tab_id)
+        .or_else(|| window.tabs.first())?;
+    let title = persisted_tab_title(active);
+    if title.is_empty() {
+        return None;
+    }
+    let mut seen_tabs: HashMap<String, usize> = HashMap::new();
+    let mut tabs: Vec<explorer_ui::state::ClosedWindowTab> = Vec::new();
+    for (index, tab) in window.tabs.iter().enumerate() {
+        let key = closed_tab_key(tab);
+        if let Some(&existing) = seen_tabs.get(&key) {
+            if tab.tab_id == window.active_tab_id {
+                tabs[existing].active = true;
+            }
+            continue;
+        }
+        seen_tabs.insert(key, tabs.len());
+        tabs.push(explorer_ui::state::ClosedWindowTab {
+            title: persisted_tab_title(tab),
+            active: tab.tab_id == window.active_tab_id,
+            tab_index: u16::try_from(index).unwrap_or(u16::MAX),
+        });
+    }
+    if tabs.is_empty() {
+        return None;
+    }
+    Some(explorer_ui::state::ClosedWindowRecord {
+        id: window.window_id.get(),
+        title,
+        tabs,
+    })
+}
+
+fn activate_restored_tab(window: &mut explorer_model::ExplorerWindowState) {
+    let Some(index) = crate::explorer_import::parse_restore_tab_index() else {
+        return;
+    };
+    let Some(tab) = window.tabs().get(usize::from(index)) else {
+        return;
+    };
+    let tab_id = tab.id;
+    window.activate(tab_id);
 }
 
 fn plan_session_window(
@@ -6488,6 +6674,9 @@ fn create_session_persistence(
             resolution.bookmarks
         },
     );
+    if let Some(envelope) = loaded.as_ref() {
+        remember_saved_tab_locations(envelope);
+    }
     let restore_enabled = loaded
         .as_ref()
         .is_none_or(|envelope| envelope.payload.restore_enabled);
@@ -6506,8 +6695,10 @@ fn create_session_persistence(
     let reset_handle = handle.clone();
     let reset_observer: explorer_ui::SessionResetObserver =
         Arc::new(move |scope| reset_handle.request_reset(scope));
+    let recorded_tabs = Arc::new(Mutex::new(HashMap::<explorer_model::TabId, String>::new()));
     let observer: explorer_ui::DurableStateObserver = Arc::new(
         move |window, restore_enabled, quick_access, bookmarks, placement, locale, theme| {
+            remember_changed_tab_locations(&recorded_tabs, &window);
             crate::locale::publish_session_locale(locale);
             let write_generation = generation.fetch_add(1, Ordering::AcqRel);
             handle.accepted_runtime(
@@ -6869,6 +7060,28 @@ mod tests {
         JobTerminalV1, LockOwnerApplicationTypeV1, LockOwnerQueryStatusV1, LockOwnerRecordV1,
         PluginItemResultV1, PluginValueV1, SinkSubmitStatusV1,
     };
+
+    #[test]
+    fn closed_location_keys_treat_drive_roots_and_trailing_slashes_as_the_same_place() {
+        assert_eq!(
+            super::closed_location_key(&explorer_model::LocationDescriptor::file_system(r"C:\")),
+            super::closed_location_key(&explorer_model::LocationDescriptor::file_system("c:/"))
+        );
+        assert_eq!(
+            super::closed_location_key(&explorer_model::LocationDescriptor::file_system(
+                r"D:\AI_Pic\output\"
+            )),
+            super::closed_location_key(&explorer_model::LocationDescriptor::file_system(
+                r"D:\AI_Pic\output"
+            ))
+        );
+        assert_ne!(
+            super::closed_location_key(&explorer_model::LocationDescriptor::file_system(r"C:\")),
+            super::closed_location_key(&explorer_model::LocationDescriptor::file_system(
+                r"C:\portable"
+            ))
+        );
+    }
 
     #[test]
     fn bookmark_child_windows_drop_closing_handles_instead_of_reusing_them() {

@@ -339,9 +339,16 @@ fn run_adb_in_pty(
 }
 
 fn invoke_adb_output_callback(output_callback: &(dyn Fn(&[u8]) + Send + Sync), chunk: &[u8]) {
-    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+    if let Err(payload) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         output_callback(chunk);
-    }));
+    })) {
+        explorer_common::log_isolated_panic(
+            "remote",
+            "adb_output_callback",
+            payload.as_ref(),
+            Some(file!()),
+        );
+    }
 }
 
 fn bounded_reader(mut reader: impl std::io::Read + Send + 'static) -> mpsc::Receiver<Vec<u8>> {

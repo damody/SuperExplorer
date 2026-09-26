@@ -1,6 +1,7 @@
 //! Dedicated, modeless Folder Options window.
 
 use std::{
+    collections::HashMap,
     rc::Rc,
     sync::{
         Arc, Mutex,
@@ -69,6 +70,7 @@ pub struct FolderOptionsWindowSnapshotV1 {
     pub cache_usage: CacheUsageSnapshotV1,
     pub locale: explorer_model::AppLocale,
     pub windows_negotiated_locale: explorer_model::AppLocale,
+    pub cache_inspector: Option<Arc<crate::cache_inspector::CacheInspectorModel>>,
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -518,6 +520,9 @@ pub struct FolderOptionsWindow {
     language_picker_open: bool,
     language_menu_scroll: ScrollHandle,
     language_menu_drag: Option<f32>,
+    cache_inspector_scroll: ScrollHandle,
+    cache_inspector_decoded: HashMap<usize, Arc<gpui::RenderImage>>,
+    cache_inspector_decoded_source: Option<crate::cache_inspector::CacheInspectorSource>,
     _keystroke_subscription: Subscription,
 }
 
@@ -544,12 +549,19 @@ impl FolderOptionsWindow {
             }
             let page = this.snapshot.draft.page;
             if event.keystroke.key == "escape" {
-                this.close_with_action(
-                    ExplorerAction::CloseFolderOptions,
-                    ActionSource::Keyboard,
-                    window,
-                    cx,
-                );
+                if this.snapshot.cache_inspector.is_some() {
+                    this.apply_owner_action(ExplorerAction::CloseCacheInspector, window, cx);
+                    this.cache_inspector_decoded.clear();
+                    cx.notify();
+                    window.refresh();
+                } else {
+                    this.close_with_action(
+                        ExplorerAction::CloseFolderOptions,
+                        ActionSource::Keyboard,
+                        window,
+                        cx,
+                    );
+                }
             } else if event.keystroke.key == "tab" {
                 if event.keystroke.modifiers.shift {
                     window.focus_prev(cx);
@@ -632,6 +644,9 @@ impl FolderOptionsWindow {
             cache_usage_sampler,
             language_picker_open: false,
             language_menu_scroll: ScrollHandle::new(),
+            cache_inspector_scroll: ScrollHandle::new(),
+            cache_inspector_decoded: HashMap::new(),
+            cache_inspector_decoded_source: None,
             language_menu_drag: None,
             _keystroke_subscription: keystroke_subscription,
         }
@@ -717,12 +732,7 @@ impl FolderOptionsWindow {
             return false;
         };
         let value = chrome::folder_option_slider_value(
-            pointer_x,
-            drag.left,
-            drag.width,
-            drag.min,
-            drag.max,
-            drag.step,
+            pointer_x, drag.left, drag.width, drag.min, drag.max, drag.step,
         );
         if value == drag.last_value {
             return true;
@@ -752,6 +762,7 @@ impl FolderOptionsWindow {
                     cache_usage: root.cache_usage_snapshot(cache_usage),
                     locale: root.state.locale(),
                     windows_negotiated_locale: root.state.windows_negotiated_locale(),
+                    cache_inspector: root.cache_inspector.clone(),
                 })
         }) {
             self.snapshot = snapshot;
@@ -1113,6 +1124,7 @@ impl Render for FolderOptionsWindow {
                                 cache_usage: root.cache_usage_snapshot(this.snapshot.cache_usage),
                                 locale: root.state.locale(),
                                 windows_negotiated_locale: root.state.windows_negotiated_locale(),
+                                cache_inspector: root.cache_inspector.clone(),
                             }),
                     )
                 }) {
@@ -1213,12 +1225,19 @@ impl Render for FolderOptionsWindow {
             .capture_key_down(cx.listener(move |this, event: &KeyDownEvent, window, cx| {
                 if event.keystroke.key == "escape" {
                     cx.stop_propagation();
-                    this.close_with_action(
-                        ExplorerAction::CloseFolderOptions,
-                        ActionSource::Keyboard,
-                        window,
-                        cx,
-                    );
+                    if this.snapshot.cache_inspector.is_some() {
+                        this.apply_owner_action(ExplorerAction::CloseCacheInspector, window, cx);
+                        this.cache_inspector_decoded.clear();
+                        cx.notify();
+                        window.refresh();
+                    } else {
+                        this.close_with_action(
+                            ExplorerAction::CloseFolderOptions,
+                            ActionSource::Keyboard,
+                            window,
+                            cx,
+                        );
+                    }
                 } else if event.keystroke.key == "tab" {
                     cx.stop_propagation();
                     if event.keystroke.modifiers.shift {
@@ -1250,7 +1269,7 @@ impl Render for FolderOptionsWindow {
                 extensions,
                 scroll,
                 scrollbar,
-                Some(on_action),
+                Some(on_action.clone()),
                 self.cache_budget_inputs
                     .iter()
                     .map(gpui::Entity::downgrade)
@@ -1262,6 +1281,26 @@ impl Render for FolderOptionsWindow {
                 self.language_menu_scroll.clone(),
                 self.language_menu_scrollbar(cx).into_any_element(),
             ))
+            .children(self.snapshot.cache_inspector.clone().map(|inspector| {
+                if self.cache_inspector_decoded_source != Some(inspector.source) {
+                    self.cache_inspector_decoded.clear();
+                    self.cache_inspector_decoded_source = Some(inspector.source);
+                    let offset = self.cache_inspector_scroll.offset();
+                    self.cache_inspector_scroll
+                        .set_offset(point(offset.x, px(0.0)));
+                }
+                let bounds = window.bounds().size;
+                crate::cache_inspector::cache_inspector_overlay(
+                    &self.tokens,
+                    catalog,
+                    &inspector,
+                    &self.cache_inspector_scroll,
+                    f32::from(bounds.width),
+                    f32::from(bounds.height),
+                    &mut self.cache_inspector_decoded,
+                    &Some(on_action),
+                )
+            }))
     }
 }
 

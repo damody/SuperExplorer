@@ -3841,10 +3841,7 @@ mod tests {
         assert_eq!(normalized_tab_max_width(250, 150), 250);
         assert_eq!(normalized_tab_max_width(u16::MAX, 150), MAX_TAB_MAX_WIDTH);
         assert!(!ViewSettings::default().multi_row_tabs);
-        assert_eq!(
-            ViewSettings::default().tab_row_count,
-            DEFAULT_TAB_ROW_COUNT
-        );
+        assert_eq!(ViewSettings::default().tab_row_count, DEFAULT_TAB_ROW_COUNT);
         assert_eq!(normalized_tab_row_count(0), MIN_TAB_ROW_COUNT);
         assert_eq!(normalized_tab_row_count(3), 3);
         assert_eq!(normalized_tab_row_count(u16::MAX), MAX_TAB_ROW_COUNT);

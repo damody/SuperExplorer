@@ -593,6 +593,11 @@ impl BookmarkManagerWindow {
         cx.observe(&detail_input, |_, _, cx| cx.notify()).detach();
         cx.observe(&detail_location_input, |_, _, cx| cx.notify())
             .detach();
+        let open_history = snapshot.state.open_bookmark_manager_on_history();
+        let mut ui = BookmarkManagerUiState::default();
+        if open_history {
+            ui.navigate(BookmarkManagerLocation::History);
+        }
         Self {
             tokens,
             owner,
@@ -600,7 +605,7 @@ impl BookmarkManagerWindow {
             search_input,
             detail_input,
             detail_location_input,
-            ui: BookmarkManagerUiState::default(),
+            ui,
             focus_handle: cx.focus_handle(),
             was_active: false,
         }
@@ -811,6 +816,10 @@ impl Render for BookmarkManagerWindow {
                     }
                 } else if modifiers.control && key == "z" {
                     cx.stop_propagation();
+                    crate::interaction_log::record_ui_interaction(
+                        "key_shortcut",
+                        "chord=ctrl+z focus=bookmark_manager outcome=UndoBookmarkChange",
+                    );
                     this.dispatch(
                         ExplorerAction::UndoBookmarkChange,
                         ActionSource::Keyboard,
@@ -819,6 +828,10 @@ impl Render for BookmarkManagerWindow {
                     );
                 } else if modifiers.control && key == "y" {
                     cx.stop_propagation();
+                    crate::interaction_log::record_ui_interaction(
+                        "key_shortcut",
+                        "chord=ctrl+y focus=bookmark_manager outcome=RedoBookmarkChange",
+                    );
                     this.dispatch(
                         ExplorerAction::RedoBookmarkChange,
                         ActionSource::Keyboard,
@@ -827,6 +840,10 @@ impl Render for BookmarkManagerWindow {
                     );
                 } else if modifiers.control && key == "w" {
                     cx.stop_propagation();
+                    crate::interaction_log::record_ui_interaction(
+                        "key_shortcut",
+                        "chord=ctrl+w focus=bookmark_manager outcome=close_window",
+                    );
                     window.remove_window();
                 } else if modifiers.control && key == "a" {
                     cx.stop_propagation();
@@ -843,6 +860,10 @@ impl Render for BookmarkManagerWindow {
                     window.refresh();
                 } else if modifiers.control && key == "x" {
                     cx.stop_propagation();
+                    crate::interaction_log::record_ui_interaction(
+                        "key_shortcut",
+                        "chord=ctrl+x focus=bookmark_manager outcome=CutSelection",
+                    );
                     this.apply_clipboard_action(BookmarkManagerUiAction::CutSelection, window, cx);
                 } else if modifiers.control && key == "c" {
                     cx.stop_propagation();
@@ -873,17 +894,25 @@ impl Render for BookmarkManagerWindow {
                     }
                 }
             }))
-            .child(chrome::bookmark_manager(
-                self.tokens,
-                &self.snapshot.state,
-                &self.ui,
-                Some(gpui::Entity::downgrade(&self.search_input)),
-                Some(gpui::Entity::downgrade(&self.detail_input)),
-                Some(gpui::Entity::downgrade(&self.detail_location_input)),
-                &search_query,
-                Some(on_action),
-                Some(on_ui_action),
-            ))
+            .child({
+                let (shell_icons, shell_icon_dpi) = self
+                    .owner
+                    .update(cx, |root, _, _| root.bookmark_shell_icon_snapshot())
+                    .unwrap_or_else(|_| (std::collections::HashMap::new(), 96));
+                chrome::bookmark_manager(
+                    self.tokens,
+                    &self.snapshot.state,
+                    &self.ui,
+                    Some(gpui::Entity::downgrade(&self.search_input)),
+                    Some(gpui::Entity::downgrade(&self.detail_input)),
+                    Some(gpui::Entity::downgrade(&self.detail_location_input)),
+                    &search_query,
+                    Some(on_action),
+                    Some(on_ui_action),
+                    &shell_icons,
+                    shell_icon_dpi,
+                )
+            })
     }
 }
 

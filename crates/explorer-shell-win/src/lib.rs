@@ -45,6 +45,8 @@ pub use icon_disk_cache::{
     thumbnail_disk_cache_stats,
 };
 mod namespace;
+mod native_crash;
+pub use native_crash::install_native_crash_log;
 mod native;
 mod navigation;
 mod preview;
@@ -83,7 +85,9 @@ pub use explorer_tabs::{
 pub use extension::tortoise_git_is_installed;
 pub use namespace::inspect_namespace_item;
 pub use native::NativeResourceSnapshot;
-pub use navigation::{DIRECTORY_BATCH_BYTE_CAP, DIRECTORY_BATCH_ITEM_CAP, open_default};
+pub use navigation::{
+    DIRECTORY_BATCH_BYTE_CAP, DIRECTORY_BATCH_ITEM_CAP, open_default, open_default_detached,
+};
 pub use preview::{
     AttachedPreviewSession, PreviewHandlerHost, PreviewLookup, render_preview_in_worker,
 };

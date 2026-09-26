@@ -229,10 +229,11 @@ pub enum ExplorerIcon {
     Maximize,
     Restore,
     Pin,
+    Menu,
 }
 
 impl ExplorerIcon {
-    pub const ALL: [Self; 24] = [
+    pub const ALL: [Self; 25] = [
         Self::Back,
         Self::Forward,
         Self::Up,
@@ -257,6 +258,7 @@ impl ExplorerIcon {
         Self::Maximize,
         Self::Restore,
         Self::Pin,
+        Self::Menu,
     ];
 
     pub const fn stable_name(self) -> &'static str {
@@ -285,6 +287,7 @@ impl ExplorerIcon {
             Self::Maximize => "maximize",
             Self::Restore => "restore",
             Self::Pin => "pin",
+            Self::Menu => "menu",
         }
     }
 

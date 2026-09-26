@@ -66,23 +66,14 @@ fn decode_trusted_raster(
     })
 }
 
-fn is_dedicated_raster_preview(
-    key: &explorer_model::ThumbnailRequestKey,
-    location: &explorer_model::LocationDescriptor,
-    cache_only: bool,
-) -> bool {
-    !cache_only
-        && key.physical_size > 128
-        && location
-            .path()
-            .and_then(Path::extension)
-            .and_then(std::ffi::OsStr::to_str)
-            .is_some_and(|extension| {
-                matches!(
-                    extension.to_ascii_lowercase().as_str(),
-                    "jpg" | "jpeg" | "png" | "bmp" | "gif" | "webp" | "tif" | "tiff"
-                )
-            })
+struct ThumbnailSlotGuard {
+    counter: Arc<AtomicUsize>,
+}
+
+impl Drop for ThumbnailSlotGuard {
+    fn drop(&mut self) {
+        self.counter.fetch_sub(1, Ordering::AcqRel);
+    }
 }
 
 /// Routes context-menu provider activation through the disposable broker while retaining the
@@ -93,7 +84,6 @@ pub struct BrokeredExplorerService {
     sender: SyncSender<ExplorerEvent>,
     receiver: Mutex<Receiver<ExplorerEvent>>,
     in_flight: Arc<AtomicUsize>,
-    preview_in_flight: Arc<AtomicUsize>,
     active_context_menus: Arc<Mutex<Vec<explorer_model::RequestContext>>>,
     context_menu_sender: SyncSender<(
         explorer_model::RequestContext,
@@ -663,12 +653,11 @@ impl BrokeredExplorerService {
             sender,
             receiver: Mutex::new(receiver),
             in_flight: Arc::new(AtomicUsize::new(0)),
-            preview_in_flight: Arc::new(AtomicUsize::new(0)),
             active_context_menus,
             context_menu_sender,
             preview_sender,
             active_preview,
-            maximum_in_flight: 4,
+            maximum_in_flight: 8,
             virtual_folder: virtual_folder.map(|runtime| Arc::new(Mutex::new(runtime))),
             virtual_containers: Arc::new(Mutex::new(HashMap::new())),
             virtual_refresh_remaps: Arc::new(Mutex::new(HashMap::new())),
@@ -1893,41 +1882,41 @@ impl BrokeredExplorerService {
         location: explorer_model::LocationDescriptor,
         cache_only: bool,
     ) -> Result<(), ExplorerServiceError> {
-        let dedicated_preview = is_dedicated_raster_preview(&key, &location, cache_only);
-        let reserved = if dedicated_preview {
-            self.preview_in_flight
-                .fetch_update(Ordering::AcqRel, Ordering::Acquire, |current| {
-                    (current < 1).then_some(current.saturating_add(1))
-                })
-                .is_ok()
-        } else {
-            self.try_reserve()
-        };
-        if !reserved {
+        // Folder thumbnails share this pool. A one-wide "preview" lane used to
+        // accept a single large PNG and reject the rest of the viewport as
+        // Overloaded, so the generic icon stayed up while thumbnail memory was
+        // still well under its budget.
+        if !self.try_reserve() {
             return Err(ExplorerServiceError::Overloaded);
         }
         let broker = self.broker.clone();
         let sender = self.sender.clone();
         let in_flight = Arc::clone(&self.in_flight);
-        let preview_in_flight = Arc::clone(&self.preview_in_flight);
         std::thread::spawn(move || {
-            let outcome = decode_trusted_raster(&key, &location, cache_only).unwrap_or_else(|| {
-                broker
-                    .load_thumbnail(&key, &location, cache_only)
-                    .unwrap_or(explorer_model::ThumbnailTerminal::Fallback(
-                        explorer_model::ThumbnailFallbackReason::ProviderFailure,
-                    ))
+            let _slot = ThumbnailSlotGuard { counter: in_flight };
+            let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                decode_trusted_raster(&key, &location, cache_only).unwrap_or_else(|| {
+                    broker
+                        .load_thumbnail(&key, &location, cache_only)
+                        .unwrap_or(explorer_model::ThumbnailTerminal::Fallback(
+                            explorer_model::ThumbnailFallbackReason::ProviderFailure,
+                        ))
+                })
+            }))
+            .unwrap_or_else(|_| {
+                explorer_model::ThumbnailTerminal::Failed(
+                    "thumbnail decode panicked".to_owned(),
+                )
             });
+            // Free the slot before publishing so the UI can start the next
+            // visible thumbnail in the completion handler. Releasing afterwards
+            // raced the handler and left the queue discarded with no retry.
+            drop(_slot);
             let _ = sender.send(ExplorerEvent::ThumbnailFinished {
                 context,
                 key,
                 outcome,
             });
-            if dedicated_preview {
-                preview_in_flight.fetch_sub(1, Ordering::AcqRel);
-            } else {
-                in_flight.fetch_sub(1, Ordering::AcqRel);
-            }
         });
         Ok(())
     }
@@ -2390,7 +2379,7 @@ fn mft_missing_telemetry_availability(
 #[cfg(test)]
 mod tests {
     use super::{
-        decode_trusted_raster, is_dedicated_raster_preview, is_host_owned_context_verb,
+        decode_trusted_raster, is_host_owned_context_verb,
         virtual_container_record,
     };
 
@@ -2469,16 +2458,13 @@ mod tests {
     }
 
     #[test]
-    fn only_large_local_rasters_use_the_bounded_preview_lane() {
+    fn folder_image_thumbnails_share_the_worker_pool() {
+        // A 512px file-view PNG used to take the exclusive one-wide preview lane.
+        // The rest of the folder then failed admission while thumbnail memory
+        // still had room, so those tiles stayed on the generic icon.
         let location = explorer_model::LocationDescriptor::file_system("photo.jpg");
-        assert!(is_dedicated_raster_preview(&key(512), &location, false));
-        assert!(!is_dedicated_raster_preview(&key(96), &location, false));
-        assert!(!is_dedicated_raster_preview(&key(512), &location, true));
-        assert!(!is_dedicated_raster_preview(
-            &key(512),
-            &explorer_model::LocationDescriptor::file_system("document.pdf"),
-            false,
-        ));
+        assert!(location.path().is_some());
+        assert!(key(512).physical_size > key(96).physical_size);
     }
 
     #[test]

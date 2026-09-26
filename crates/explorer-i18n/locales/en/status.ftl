@@ -94,6 +94,7 @@ status-preview-loading = Loading preview…
 status-preview-item-failed = Could not load the preview item
 status-preview-select-single = Select a single item to preview
 status-no-transfers = No file operations during this session
+status-thumbnail-quota-full = Thumbnail quota full ({ $used } / { $limit })
 status-thumbnail-cleared = Thumbnail cache cleared
 status-thumbnail-clear-partial = Could not fully clear the thumbnail cache; you can retry, and browsing still works
 status-invalid-folder-name = Invalid folder name. Correct it and try again.

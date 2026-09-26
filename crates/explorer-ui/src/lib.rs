@@ -22,6 +22,7 @@ pub mod bookmark_editor_window;
 pub mod bookmark_folder_delete_window;
 pub mod bookmark_folder_editor_window;
 pub mod bookmark_manager_window;
+pub mod cache_inspector;
 pub mod chrome;
 pub mod code_lines_column;
 pub mod diagnostics;
@@ -40,6 +41,7 @@ pub mod geometry;
 pub mod harness;
 pub mod icons;
 pub mod interaction;
+mod interaction_log;
 pub mod layout;
 pub mod navigation_pane;
 pub mod performance;
@@ -63,12 +65,13 @@ const SHELL_TEXTURE_CACHE_BYTE_BUDGET: usize =
     explorer_model::DEFAULT_ICON_CACHE_MEMORY_MB as usize * 1024 * 1024;
 const BASE_ICON_CACHE_CAPACITY: usize = 256;
 const FILE_VIEWPORT_ICON_REQUEST_CAP: usize = 64;
+const THUMBNAIL_SCHEDULER_QUEUE_CAPACITY: usize = 512;
 const BASE_ICON_CACHE_SHARE_DIVISOR: usize = 4;
 const FILE_PRELAYOUT_ICON_PRIME_CAP: usize = 16;
-// Keep UI admission aligned with explorer-shell-win's bounded thumbnail worker domain.
-// Admitting more here turns the excess requests into terminal Availability failures, leaving
-// their Shell-icon fallback visible until the directory is revisited.
-const THUMBNAIL_CONCURRENCY_LIMIT: usize = 2;
+// File-view rasters are decoded in-process. This is the number started per pump,
+// not a hard stop for the folder. A one-wide preview lane used to leave the rest
+// of a screenshot folder on the generic icon while thumbnail memory was not full.
+const THUMBNAIL_CONCURRENCY_LIMIT: usize = 4;
 const FOREGROUND_SERVICE_EVENT_CAPACITY: usize = 512;
 const ENRICHMENT_SERVICE_EVENT_CAPACITY: usize = 512;
 
@@ -159,6 +162,63 @@ fn thumbnail_pixel_cache_byte_budget(settings: &explorer_model::ViewSettings) ->
     usize::try_from(settings.cache_budgets.thumbnail_memory_mb)
         .unwrap_or_default()
         .saturating_mul(1024 * 1024)
+}
+
+fn default_thumbnail_byte_budget() -> usize {
+    usize::from(explorer_model::DEFAULT_THUMBNAIL_CACHE_MEMORY_MB) * 1024 * 1024
+}
+
+fn thumbnail_decoded_byte_estimate(physical_size: u16) -> usize {
+    usize::from(physical_size)
+        .saturating_mul(usize::from(physical_size))
+        .saturating_mul(4)
+        .max(1)
+}
+
+/// Slots that fit in `thumbnail_memory_mb`. A fixed 64-item cap stopped loading
+/// near 64–67 MiB even when the setting was 128 MiB.
+fn thumbnail_admission_cap(byte_budget: usize, physical_size: u16) -> usize {
+    let slots = byte_budget / thumbnail_decoded_byte_estimate(physical_size);
+    slots.clamp(1, THUMBNAIL_SCHEDULER_QUEUE_CAPACITY)
+}
+
+fn new_thumbnail_scheduler() -> explorer_jobs::ThumbnailScheduler {
+    explorer_jobs::ThumbnailScheduler::new(
+        THUMBNAIL_SCHEDULER_QUEUE_CAPACITY,
+        THUMBNAIL_CONCURRENCY_LIMIT,
+        default_thumbnail_byte_budget(),
+    )
+}
+
+fn cache_location_label(location: &explorer_model::LocationDescriptor) -> String {
+    location
+        .path()
+        .and_then(|path| path.file_name())
+        .map(|name| name.to_string_lossy().into_owned())
+        .or_else(|| location.path().map(|path| path.display().to_string()))
+        .filter(|label| !label.is_empty())
+        .unwrap_or_else(|| "icon".to_owned())
+}
+
+fn thumbnail_item_label(item_id: &explorer_model::ShellItemId) -> String {
+    let hex = item_id
+        .provider_bytes()
+        .iter()
+        .take(6)
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    if hex.is_empty() {
+        "thumbnail".to_owned()
+    } else {
+        hex
+    }
+}
+
+fn thumbnail_quota_notice(catalog: explorer_i18n::Catalog, used: u64, limit: u64) -> String {
+    let mut args = explorer_i18n::FluentArgs::new();
+    args.set("used", format_file_size(used, catalog.locale()));
+    args.set("limit", format_file_size(limit, catalog.locale()));
+    catalog.t_args("status-thumbnail-quota-full", &args)
 }
 
 fn prelayout_icon_range(
@@ -292,6 +352,19 @@ fn dpi_from_scale(scale_factor: f32) -> u16 {
     (scale_factor * 96.0)
         .round()
         .clamp(96.0, f32::from(u16::MAX)) as u16
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct ThumbnailContentStamp {
+    size_bytes: Option<u64>,
+    modified_sort_key: Option<u64>,
+}
+
+fn thumbnail_content_stamp(entry: &explorer_model::FileEntry) -> ThumbnailContentStamp {
+    ThumbnailContentStamp {
+        size_bytes: entry.metadata.size_bytes,
+        modified_sort_key: entry.metadata.modified_sort_key,
+    }
 }
 
 fn thumbnail_physical_size(logical_size: u16, dpi: u16) -> u16 {
@@ -702,6 +775,92 @@ impl VisibleItemIconCache {
                 .cloned()?
         };
         self.get(&key).map(|texture| (key, texture))
+    }
+
+    fn peek_compatible_navigation_icon(
+        &self,
+        location: &explorer_model::LocationDescriptor,
+        theme: explorer_model::ShellIconTheme,
+        dpi: u16,
+    ) -> Option<(explorer_model::ShellIconKey, Arc<RenderImage>)> {
+        let exact = navigation_pane::shell_icon_key(location, theme, dpi);
+        let key = if self.entries.contains_key(&exact) {
+            exact
+        } else {
+            self.entries
+                .keys()
+                .filter(|key| key.location == *location && key.theme == theme && key.dpi == dpi)
+                .max_by_key(|key| {
+                    (
+                        key.association_generation,
+                        key.overlay_generation,
+                        key.item_id.is_some(),
+                        key.size_bucket == exact.size_bucket,
+                    )
+                })
+                .cloned()?
+        };
+        self.entries
+            .get(&key)
+            .cloned()
+            .map(|texture| (key, texture))
+    }
+
+    fn peek_generic_folder(
+        &self,
+        theme: explorer_model::ShellIconTheme,
+        dpi: u16,
+    ) -> Option<(explorer_model::ShellIconKey, Arc<RenderImage>)> {
+        self.entries
+            .iter()
+            .filter(|(key, _)| {
+                navigation_pane::is_generic_breadcrumb_folder_icon_key(key)
+                    && key.theme == theme
+                    && key.dpi == dpi
+            })
+            .max_by_key(|(key, _)| key.association_generation)
+            .map(|(key, texture)| (key.clone(), Arc::clone(texture)))
+    }
+
+    fn has_item_thumbnail(&self, item_id: &explorer_model::ShellItemId) -> bool {
+        self.thumbnail_entries
+            .iter()
+            .any(|key| key.item_id.as_ref() == Some(item_id))
+    }
+
+    fn has_thumbnail_presentation(&self, key: &explorer_model::ShellIconKey) -> bool {
+        self.thumbnail_entries.contains(key) && self.entries.contains_key(key)
+    }
+
+    fn remove_item_thumbnails(&mut self, item_id: &explorer_model::ShellItemId) {
+        let remove = self
+            .thumbnail_entries
+            .iter()
+            .filter(|key| key.item_id.as_ref() == Some(item_id))
+            .cloned()
+            .collect::<Vec<_>>();
+        if remove.is_empty() {
+            return;
+        }
+        for key in remove {
+            self.entries.remove(&key);
+            self.costs.remove(&key);
+            self.thumbnail_entries.remove(&key);
+            self.order.retain(|candidate| candidate != &key);
+        }
+        self.recalculate_bytes();
+    }
+
+    fn gallery_textures(&self) -> Vec<(explorer_model::ShellIconKey, Arc<RenderImage>)> {
+        self.order
+            .iter()
+            .rev()
+            .filter_map(|key| {
+                self.entries
+                    .get(key)
+                    .map(|texture| (key.clone(), Arc::clone(texture)))
+            })
+            .collect()
     }
 
     fn touch(&mut self, key: &explorer_model::ShellIconKey) {
@@ -1148,6 +1307,8 @@ pub struct ExplorerRoot {
     pending_icon_contexts: HashMap<explorer_model::ShellIconKey, explorer_model::RequestContext>,
     pending_thumbnail_keys: HashSet<explorer_model::ThumbnailRequestKey>,
     thumbnail_scheduler: explorer_jobs::ThumbnailScheduler,
+    cache_inspector: Option<Arc<cache_inspector::CacheInspectorModel>>,
+    thumbnail_content_stamps: HashMap<explorer_model::ShellItemId, ThumbnailContentStamp>,
     thumbnail_memory_cache: explorer_jobs::ThumbnailMemoryCache,
     thumbnail_requests: HashMap<
         explorer_model::ThumbnailRequestKey,
@@ -1194,6 +1355,9 @@ pub struct ExplorerRoot {
     bookmark_file_launcher: Option<BookmarkFileLauncher>,
     live_window_publisher: Option<LiveWindowPublisher>,
     handoff_to_file_explorer: Option<HandoffToFileExplorer>,
+    closed_window_id: u64,
+    restore_closed_window: Option<ClosedWindowRestore>,
+    list_closed_windows: Option<ClosedWindowList>,
     sftp_address_login: Option<SftpAddressLoginState>,
     ftp_address_login: Option<SftpAddressLoginState>,
     gdrive_address_login: Option<SftpAddressLoginState>,
@@ -1291,6 +1455,8 @@ pub type HandoffToFileExplorer = Arc<
         + Send
         + Sync,
 >;
+pub type ClosedWindowRestore = Arc<dyn Fn(u64, Option<u16>) -> bool + Send + Sync>;
+pub type ClosedWindowList = Arc<dyn Fn() -> Vec<state::ClosedWindowRecord> + Send + Sync>;
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum DetailsColumnPopupActivation {
@@ -1646,6 +1812,69 @@ fn should_cancel_inline_rename(action: &ExplorerAction) -> bool {
     )
 }
 
+fn clipboard_shortcut_ignore_reason(
+    root: &ExplorerRoot,
+    event: &gpui::KeyDownEvent,
+) -> &'static str {
+    let key = event.keystroke.key.as_str();
+    if root.state.rename_editor().is_some() {
+        return "inline_rename_active";
+    }
+    if root.state.focused_surface() != focus::FocusSurface::FileView
+        && matches!(key, "c" | "v" | "x")
+    {
+        return "focus_not_file_view";
+    }
+    match key {
+        "z" => "undo_not_bound",
+        "y" => "redo_not_bound",
+        "w" => "close_tab_not_handled",
+        "c" | "x" if root.state.tabs().active_tab().selection.is_empty() => "no_selection",
+        "v" if matches!(
+            root.state.clipboard(),
+            explorer_model::ClipboardState::None { .. }
+                | explorer_model::ClipboardState::Unsupported { .. }
+        ) =>
+        {
+            "clipboard_empty"
+        }
+        "v" if !root.state.active_presentation().can_write => "not_writable",
+        _ => "not_dispatched",
+    }
+}
+
+fn location_kind(location: &explorer_model::LocationDescriptor) -> String {
+    match location {
+        explorer_model::LocationDescriptor::FileSystem(_) => "filesystem".to_owned(),
+        explorer_model::LocationDescriptor::Virtual(remote) => {
+            format!("virtual:{}", remote.provider_id)
+        }
+        _ => "other".to_owned(),
+    }
+}
+
+fn clipboard_kind(state: &explorer_model::ClipboardState) -> &'static str {
+    match state {
+        explorer_model::ClipboardState::None { .. } => "none",
+        explorer_model::ClipboardState::Unsupported { .. } => "unsupported",
+        explorer_model::ClipboardState::Owned { .. } => "owned",
+        explorer_model::ClipboardState::External { .. } => "external",
+    }
+}
+
+fn drag_command_label(command: &explorer_model::ExplorerCommand) -> &'static str {
+    match command {
+        explorer_model::ExplorerCommand::DataTransfer { request, .. } => match request {
+            explorer_model::DataTransferRequest::BeginDrag { .. } => "begin_drag",
+            explorer_model::DataTransferRequest::DropExternal { .. } => "drop_external",
+            explorer_model::DataTransferRequest::Copy { .. } => "copy",
+            explorer_model::DataTransferRequest::Cut { .. } => "cut",
+            explorer_model::DataTransferRequest::Paste { .. } => "paste",
+        },
+        _ => "other",
+    }
+}
+
 fn file_view_global_command_action(event: &gpui::KeyDownEvent) -> Option<ExplorerAction> {
     if event.keystroke.modifiers.control {
         match event.keystroke.key.as_str() {
@@ -1658,7 +1887,15 @@ fn file_view_global_command_action(event: &gpui::KeyDownEvent) -> Option<Explore
         }
     }
     match event.keystroke.key.as_str() {
-        "backspace" => Some(ExplorerAction::Back),
+        // Parent folder. History back is Alt+Left, owned by the window NavigateBack binding.
+        "backspace"
+            if !event.keystroke.modifiers.control
+                && !event.keystroke.modifiers.alt
+                && !event.keystroke.modifiers.shift
+                && !event.keystroke.modifiers.platform =>
+        {
+            Some(ExplorerAction::Up)
+        }
         "f3" => Some(ExplorerAction::FocusSearch),
         _ => None,
     }
@@ -1765,11 +2002,9 @@ impl ExplorerRoot {
             pending_icon_keys: HashSet::new(),
             pending_icon_contexts: HashMap::new(),
             pending_thumbnail_keys: HashSet::new(),
-            thumbnail_scheduler: explorer_jobs::ThumbnailScheduler::new(
-                512,
-                THUMBNAIL_CONCURRENCY_LIMIT,
-                64 * 1024 * 1024,
-            ),
+            thumbnail_scheduler: new_thumbnail_scheduler(),
+            cache_inspector: None,
+            thumbnail_content_stamps: HashMap::new(),
             thumbnail_memory_cache: explorer_jobs::ThumbnailMemoryCache::new(
                 usize::from(explorer_model::DEFAULT_THUMBNAIL_CACHE_MEMORY_MB) * 1024 * 1024,
                 2_048,
@@ -1807,6 +2042,9 @@ impl ExplorerRoot {
             bookmark_file_launcher: None,
             live_window_publisher: None,
             handoff_to_file_explorer: None,
+            closed_window_id: 0,
+            restore_closed_window: None,
+            list_closed_windows: None,
             sftp_address_login: None,
             ftp_address_login: None,
             gdrive_address_login: None,
@@ -2743,6 +2981,7 @@ impl ExplorerRoot {
         let draft = self.state.bookmark_editor().cloned();
         if let Some(mutation) = self.state.commit_bookmark_editor() {
             if self.notify_durable_state() {
+                self.submit_bookmark_icon_loads(true);
                 self.state
                     .set_bookmark_notice(self.catalog().t("status-bookmark-renamed"));
             } else {
@@ -4129,11 +4368,9 @@ impl ExplorerRoot {
             pending_icon_keys: HashSet::new(),
             pending_icon_contexts: HashMap::new(),
             pending_thumbnail_keys: HashSet::new(),
-            thumbnail_scheduler: explorer_jobs::ThumbnailScheduler::new(
-                512,
-                THUMBNAIL_CONCURRENCY_LIMIT,
-                64 * 1024 * 1024,
-            ),
+            thumbnail_scheduler: new_thumbnail_scheduler(),
+            cache_inspector: None,
+            thumbnail_content_stamps: HashMap::new(),
             thumbnail_memory_cache: explorer_jobs::ThumbnailMemoryCache::new(
                 usize::from(explorer_model::DEFAULT_THUMBNAIL_CACHE_MEMORY_MB) * 1024 * 1024,
                 2_048,
@@ -4171,6 +4408,9 @@ impl ExplorerRoot {
             bookmark_file_launcher: None,
             live_window_publisher: None,
             handoff_to_file_explorer: None,
+            closed_window_id: 0,
+            restore_closed_window: None,
+            list_closed_windows: None,
             sftp_address_login: None,
             ftp_address_login: None,
             gdrive_address_login: None,
@@ -4250,11 +4490,9 @@ impl ExplorerRoot {
             pending_icon_keys: HashSet::new(),
             pending_icon_contexts: HashMap::new(),
             pending_thumbnail_keys: HashSet::new(),
-            thumbnail_scheduler: explorer_jobs::ThumbnailScheduler::new(
-                512,
-                THUMBNAIL_CONCURRENCY_LIMIT,
-                64 * 1024 * 1024,
-            ),
+            thumbnail_scheduler: new_thumbnail_scheduler(),
+            cache_inspector: None,
+            thumbnail_content_stamps: HashMap::new(),
             thumbnail_memory_cache: explorer_jobs::ThumbnailMemoryCache::new(
                 usize::from(explorer_model::DEFAULT_THUMBNAIL_CACHE_MEMORY_MB) * 1024 * 1024,
                 2_048,
@@ -4292,6 +4530,9 @@ impl ExplorerRoot {
             bookmark_file_launcher: None,
             live_window_publisher: None,
             handoff_to_file_explorer: None,
+            closed_window_id: 0,
+            restore_closed_window: None,
+            list_closed_windows: None,
             sftp_address_login: None,
             ftp_address_login: None,
             gdrive_address_login: None,
@@ -4424,6 +4665,7 @@ impl ExplorerRoot {
 
     pub fn configure_bookmarks(&mut self, bookmarks: explorer_model::Bookmarks) {
         self.state.configure_bookmarks(bookmarks);
+        self.submit_bookmark_icon_loads(true);
     }
 
     pub fn attach_bookmark_file_launcher(&mut self, launcher: BookmarkFileLauncher) {
@@ -4437,6 +4679,25 @@ impl ExplorerRoot {
 
     pub fn attach_handoff_to_file_explorer(&mut self, handoff: HandoffToFileExplorer) {
         self.handoff_to_file_explorer = Some(handoff);
+    }
+
+    pub fn attach_closed_window_bridge(
+        &mut self,
+        current_id: u64,
+        restore: ClosedWindowRestore,
+        list: ClosedWindowList,
+    ) {
+        self.closed_window_id = current_id;
+        self.restore_closed_window = Some(restore);
+        self.list_closed_windows = Some(list);
+        self.refresh_closed_windows();
+    }
+
+    fn refresh_closed_windows(&mut self) {
+        let Some(list) = self.list_closed_windows.clone() else {
+            return;
+        };
+        self.state.set_closed_windows(list());
     }
 
     pub fn publish_live_window(&self) {
@@ -4773,7 +5034,11 @@ impl ExplorerRoot {
                                     this.failed_base_icons.insert(base_key);
                                 }
                                 this.pending_visible_bases.remove(key);
-                                if key.item_id.is_some() {
+                                if key.item_id.is_some()
+                                    || this.state.bookmark_shell_locations().iter().any(
+                                        |location| location == &key.location,
+                                    )
+                                {
                                     this.remember_negative_icon(key.clone());
                                 }
                             }
@@ -4924,6 +5189,9 @@ impl ExplorerRoot {
                                 explorer_model::ExplorerEvent::OperationFinished { .. }
                             );
                             let outcome = this.state.apply_service_event(event);
+                            if let Some(row_index) = this.state.take_leave_selection_reveal() {
+                                this.pending_file_row_reveal = Some(row_index);
+                            }
                             if outcome == explorer_model::WindowEventOutcome::Applied
                                 && extension_operation_finished
                             {
@@ -5314,6 +5582,67 @@ impl ExplorerRoot {
                 self.request_enrichment_retry();
             }
         }
+        self.submit_bookmark_icon_loads(true);
+    }
+
+    fn submit_bookmark_icon_loads(&mut self, retry_failures: bool) {
+        let tab = self.state.tabs().active_tab();
+        let context = explorer_model::RequestContext::new(tab.id, tab.generation);
+        let theme = match self.tokens.theme.mode {
+            ThemeMode::Light => explorer_model::ShellIconTheme::Light,
+            ThemeMode::Dark => explorer_model::ShellIconTheme::Dark,
+        };
+        let locations = self.state.bookmark_shell_locations();
+        if retry_failures {
+            self.negative_icon_keys.retain(|key| {
+                key.item_id.is_some()
+                    || !locations
+                        .iter()
+                        .any(|location| location == &key.location)
+            });
+            self.negative_icon_order
+                .retain(|key| self.negative_icon_keys.contains(key));
+        }
+        let eligible = locations
+            .iter()
+            .filter(|location| {
+                retry_failures
+                    || !self.negative_icon_keys.contains(&navigation_pane::shell_icon_key(
+                        location,
+                        theme,
+                        self.shell_icon_dpi,
+                    ))
+            })
+            .collect::<Vec<_>>();
+        self.submit_location_icon_loads(&context, eligible);
+    }
+
+    pub(crate) fn bookmark_shell_icon_snapshot(
+        &self,
+    ) -> (
+        HashMap<explorer_model::ShellIconKey, Arc<RenderImage>>,
+        u16,
+    ) {
+        let theme = match self.tokens.theme.mode {
+            ThemeMode::Light => explorer_model::ShellIconTheme::Light,
+            ThemeMode::Dark => explorer_model::ShellIconTheme::Dark,
+        };
+        let mut textures = HashMap::new();
+        for location in self.state.bookmark_shell_locations() {
+            if let Some((key, texture)) =
+                self.shell_icons
+                    .peek_compatible_navigation_icon(&location, theme, self.shell_icon_dpi)
+            {
+                textures.insert(key, texture);
+            }
+        }
+        if let Some((key, texture)) = self
+            .shell_icons
+            .peek_generic_folder(theme, self.shell_icon_dpi)
+        {
+            textures.insert(key, texture);
+        }
+        (textures, self.shell_icon_dpi)
     }
 
     fn submit_file_icon_loads(
@@ -5341,8 +5670,11 @@ impl ExplorerRoot {
         let (visible_icon_budget, base_icon_budget) = icon_cache_byte_budgets(&view_settings);
         self.shell_icons.set_byte_budget(visible_icon_budget);
         self.base_icons.set_byte_budget(base_icon_budget);
+        let thumbnail_byte_budget = thumbnail_pixel_cache_byte_budget(&view_settings);
         self.thumbnail_memory_cache
-            .set_byte_budget(thumbnail_pixel_cache_byte_budget(&view_settings));
+            .set_byte_budget(thumbnail_byte_budget);
+        self.thumbnail_scheduler
+            .set_decoded_byte_limit(thumbnail_byte_budget);
         gpui::set_compressed_gpu_cache_limits(
             u64::from(view_settings.cache_budgets.icon_gpu_mb) * 1024 * 1024,
             u64::from(view_settings.cache_budgets.thumbnail_gpu_mb) * 1024 * 1024,
@@ -5570,18 +5902,31 @@ impl ExplorerRoot {
             }
         }
         if thumbnail_mode == explorer_model::ThumbnailMode::Thumbnail && !always_show_icons {
+            let admission_cap =
+                thumbnail_admission_cap(thumbnail_byte_budget, thumbnail_physical_size);
+            self.admit_visible_thumbnails_ahead_of_overscan(
+                directory_context,
+                entries,
+                &desired_thumbnail_keys,
+                admission_cap,
+            );
             let pending_visible_thumbnails = self
                 .pending_thumbnail_keys
                 .iter()
                 .filter(|key| desired_thumbnail_keys.contains(*key))
                 .count();
-            let remaining_thumbnails =
-                FILE_VIEWPORT_ICON_REQUEST_CAP.saturating_sub(pending_visible_thumbnails);
+            let remaining_thumbnails = admission_cap.saturating_sub(pending_visible_thumbnails);
+            let mut admitted = 0;
+            let mut withheld = false;
             for entry in entries
                 .iter()
                 .filter(|entry| namespace_thumbnail_supported(entry))
-                .take(remaining_thumbnails)
             {
+                let overlay_generation = self
+                    .item_overlay_epochs
+                    .get(&entry.id)
+                    .copied()
+                    .unwrap_or_else(|| self.icon_epochs.overlay());
                 let key = explorer_model::ThumbnailRequestKey {
                     item_id: entry.id.clone(),
                     physical_size: thumbnail_physical_size,
@@ -5590,28 +5935,47 @@ impl ExplorerRoot {
                     source_generation: generation,
                     theme,
                     association_generation: association_epoch,
-                    overlay_generation: self
-                        .item_overlay_epochs
-                        .get(&entry.id)
-                        .copied()
-                        .unwrap_or_else(|| self.icon_epochs.overlay()),
+                    overlay_generation,
                 };
-                if !self.pending_thumbnail_keys.insert(key.clone()) {
-                    continue;
-                }
-                let presentation = file_icon_cache_key(
+                let mut presentation = file_icon_cache_key(
                     entry,
                     theme,
                     self.shell_icon_dpi,
                     logical_size,
                     association_epoch,
                 );
-                let mut presentation = presentation;
-                presentation.overlay_generation = self
-                    .item_overlay_epochs
+                presentation.overlay_generation = overlay_generation;
+                let stamp = thumbnail_content_stamp(entry);
+                let content_changed = self
+                    .thumbnail_content_stamps
                     .get(&entry.id)
-                    .copied()
-                    .unwrap_or_else(|| self.icon_epochs.overlay());
+                    .is_some_and(|known| *known != stamp);
+                if content_changed {
+                    self.drop_item_thumbnail(&entry.id);
+                }
+                self.thumbnail_content_stamps.insert(entry.id.clone(), stamp);
+                if !content_changed
+                    && (self.shell_icons.has_thumbnail_presentation(&presentation)
+                        || self.thumbnail_memory_cache.contains(&key)
+                        || self.pending_thumbnail_keys.contains(&key))
+                {
+                    if self.thumbnail_memory_cache.contains(&key)
+                        && !self.shell_icons.has_thumbnail_presentation(&presentation)
+                        && let Some(pixels) = self.thumbnail_memory_cache.get(&key)
+                        && let Some(texture) = thumbnail_texture(&pixels)
+                    {
+                        self.shell_icons.insert_thumbnail(&presentation, texture);
+                    }
+                    continue;
+                }
+                if admitted == remaining_thumbnails {
+                    withheld = true;
+                    break;
+                }
+                if !self.pending_thumbnail_keys.insert(key.clone()) {
+                    continue;
+                }
+                admitted = admitted.saturating_add(1);
                 self.thumbnail_presentations
                     .insert(key.clone(), presentation);
                 let consumer = explorer_model::ThumbnailConsumer {
@@ -5628,7 +5992,8 @@ impl ExplorerRoot {
                     self.pending_thumbnail_keys.remove(&key);
                     self.thumbnail_presentations.remove(&key);
                     self.request_enrichment_retry();
-                    continue;
+                    withheld = true;
+                    break;
                 }
                 self.thumbnail_requests.entry(key).or_insert_with(|| {
                     (
@@ -5642,6 +6007,109 @@ impl ExplorerRoot {
                 });
             }
             self.pump_thumbnail_scheduler();
+            self.publish_thumbnail_quota_notice(
+                entries,
+                thumbnail_physical_size,
+                thumbnail_byte_budget,
+                withheld,
+            );
+        } else {
+            self.state.set_thumbnail_quota_notice(None);
+        }
+    }
+
+    fn drop_item_thumbnail(&mut self, item_id: &explorer_model::ShellItemId) {
+        self.shell_icons.remove_item_thumbnails(item_id);
+        self.thumbnail_memory_cache.remove_item(item_id);
+        let stale = self
+            .thumbnail_requests
+            .iter()
+            .filter(|(key, _)| &key.item_id == item_id)
+            .map(|(key, (_, _, consumer))| (key.clone(), *consumer))
+            .collect::<Vec<_>>();
+        for (key, consumer) in stale {
+            let _ = self.thumbnail_scheduler.cancel_consumer(&key, consumer);
+            self.thumbnail_requests.remove(&key);
+            self.pending_thumbnail_keys.remove(&key);
+            self.thumbnail_presentations.remove(&key);
+        }
+        self.pending_thumbnail_keys
+            .retain(|key| &key.item_id != item_id);
+        self.thumbnail_presentations
+            .retain(|key, _| &key.item_id != item_id);
+    }
+
+    fn publish_thumbnail_quota_notice(
+        &mut self,
+        entries: &[explorer_model::FileEntry],
+        physical_size: u16,
+        byte_budget: usize,
+        withheld: bool,
+    ) {
+        let estimate = thumbnail_decoded_byte_estimate(physical_size);
+        let pending = self.pending_thumbnail_keys.len();
+        let accounted = self
+            .thumbnail_memory_cache
+            .stats()
+            .current_bytes
+            .saturating_add(pending.saturating_mul(estimate));
+        let memory_full = accounted.saturating_add(estimate) > byte_budget;
+        let still_waiting = entries.iter().any(|entry| {
+            namespace_thumbnail_supported(entry) && !self.shell_icons.has_item_thumbnail(&entry.id)
+        });
+        if withheld && memory_full && still_waiting {
+            let used = u64::try_from(accounted).unwrap_or(u64::MAX);
+            let limit = u64::try_from(byte_budget).unwrap_or(u64::MAX);
+            self.state
+                .set_thumbnail_quota_notice(Some(thumbnail_quota_notice(
+                    self.state.catalog(),
+                    used,
+                    limit,
+                )));
+        } else {
+            self.state.set_thumbnail_quota_notice(None);
+        }
+    }
+
+    fn admit_visible_thumbnails_ahead_of_overscan(
+        &mut self,
+        directory_context: &explorer_model::RequestContext,
+        entries: &[explorer_model::FileEntry],
+        desired: &HashSet<explorer_model::ThumbnailRequestKey>,
+        admission_cap: usize,
+    ) {
+        let priority_ids = entries
+            .iter()
+            .take(admission_cap)
+            .map(|entry| entry.id.clone())
+            .collect::<HashSet<_>>();
+        let needs_admission = entries.iter().take(admission_cap).any(|entry| {
+            namespace_thumbnail_supported(entry)
+                && !self
+                    .pending_thumbnail_keys
+                    .iter()
+                    .any(|key| key.item_id == entry.id)
+                && !self.shell_icons.has_item_thumbnail(&entry.id)
+        });
+        if !needs_admission {
+            return;
+        }
+        let evict = self
+            .thumbnail_requests
+            .iter()
+            .filter(|(key, (_, _, consumer))| {
+                consumer.tab_id == directory_context.tab_id
+                    && self.preview_thumbnail_key.as_ref() != Some(*key)
+                    && desired.contains(*key)
+                    && !priority_ids.contains(&key.item_id)
+            })
+            .map(|(key, (_, _, consumer))| (key.clone(), *consumer))
+            .collect::<Vec<_>>();
+        for (key, consumer) in evict {
+            let _ = self.thumbnail_scheduler.cancel_consumer(&key, consumer);
+            self.thumbnail_requests.remove(&key);
+            self.pending_thumbnail_keys.remove(&key);
+            self.thumbnail_presentations.remove(&key);
         }
     }
 
@@ -5992,11 +6460,12 @@ impl ExplorerRoot {
                 location,
                 cache_only: false,
             }) {
-                self.pending_thumbnail_keys.remove(&key);
-                self.thumbnail_presentations.remove(&key);
-                self.thumbnail_requests.remove(&key);
-                let _ = self.thumbnail_scheduler.complete(&key);
+                // Keep the request queued. Dropping it here used to empty the
+                // viewport after one Overloaded reply, and the completion race
+                // then had nothing left to start.
+                let _ = self.thumbnail_scheduler.defer_active(&key);
                 self.request_enrichment_retry();
+                break;
             }
         }
     }
@@ -6165,6 +6634,15 @@ impl ExplorerRoot {
                 if let Some(texture) = self.base_icons.get_compatible(&base_key) {
                     snapshot.textures.insert(presentation_key, texture);
                 }
+            }
+        }
+        for location in self.state.bookmark_shell_locations() {
+            if let Some((key, texture)) = self.shell_icons.get_compatible_navigation_icon(
+                &location,
+                theme,
+                self.shell_icon_dpi,
+            ) {
+                snapshot.textures.insert(key, texture);
             }
         }
         snapshot
@@ -6361,15 +6839,19 @@ impl ExplorerRoot {
         if let Err(error) = service.submit(command) {
             if matches!(error, ExplorerServiceError::Overloaded) {
                 self.service_qos.observations_mut().record_overload();
+                tracing::debug!(?context, ?error, "Explorer command submission was backpressured");
+            } else {
+                tracing::error!(?context, ?error, "Explorer command submission failed");
             }
-            tracing::error!(?context, ?error, "Explorer command submission failed");
-            explorer_common::record_process_error_message(
-                explorer_common::ErrorSeverity::Error,
-                "ui",
-                "submit_command",
-                &format!("context={context:?}; service endpoint: {error:?}"),
-                Some(file!()),
-            );
+            if !matches!(error, ExplorerServiceError::Overloaded) {
+                explorer_common::record_process_error_message(
+                    explorer_common::ErrorSeverity::Error,
+                    "ui",
+                    "submit_command",
+                    &format!("context={context:?}; service endpoint: {error:?}"),
+                    Some(file!()),
+                );
+            }
             if let Some(request_id) = cancel_request_id {
                 self.state.fail_operation_cancellation(
                     request_id,
@@ -6840,6 +7322,16 @@ impl ExplorerRoot {
             }
             return;
         }
+        if let ExplorerAction::SetAppMenuPage(actions::AppMenuPage::ClosedWindows) = action {
+            self.refresh_closed_windows();
+        }
+        if let ExplorerAction::RestoreClosedWindow { id, tab_index } = action {
+            if let Some(restore) = self.restore_closed_window.clone() {
+                let _ = restore(id, tab_index);
+            }
+            self.state.remove_closed_window(id);
+            cx.notify();
+        }
         if action == ExplorerAction::HandoffToFileExplorer {
             let (tabs, active) = current_tab_locations(&self.state);
             if let Some(handoff) = self.handoff_to_file_explorer.clone() {
@@ -7070,6 +7562,11 @@ impl ExplorerRoot {
                 self.pointer_capture.take();
             }
         }
+        let drag_before = matches!(
+            action,
+            ExplorerAction::BeginFileDrag { .. } | ExplorerAction::CancelFileDrag
+        )
+        .then(|| format!("{:?}", self.state.drag_session().state()));
         let focused_before = self.state.focused_surface();
         let seven_z_enabled_before = self.state.extension_enabled("rust-7z-virtual-folder");
         let mft_cache_memory_mb_before = self.state.view_settings().mft_folder_cache_memory_mb;
@@ -7079,6 +7576,20 @@ impl ExplorerRoot {
         let ((), measurement) = measure_callback(action.name(), || {
             dispatch_action(&mut self.state, action.clone(), source);
         });
+        if let Some(before) = drag_before {
+            interaction_log::record_ui_interaction(
+                if matches!(action, ExplorerAction::CancelFileDrag) {
+                    "pointer_drag_release"
+                } else {
+                    "pointer_drag_begin"
+                },
+                &format!(
+                    "action={} before={before} after={:?}",
+                    action.name(),
+                    self.state.drag_session().state()
+                ),
+            );
+        }
         if matches!(
             action,
             ExplorerAction::ToggleTransferPanel | ExplorerAction::CloseTransferPanel
@@ -7229,6 +7740,7 @@ impl ExplorerRoot {
                     self.state
                         .set_bookmark_notice(self.catalog().t("status-bookmark-save-failed"));
                 } else {
+                    self.submit_bookmark_icon_loads(true);
                 }
             } else {
                 self.state
@@ -7354,8 +7866,11 @@ impl ExplorerRoot {
                 cx.notify();
             }
         }
-        if action == ExplorerAction::ToggleBookmarkManager {
+        if action == ExplorerAction::ToggleBookmarkManager
+            || action == ExplorerAction::OpenBookmarkManagerHistory
+        {
             self.present_bookmark_manager_window(cx);
+            self.state.clear_open_bookmark_manager_on_history();
             cx.notify();
         }
         if let ExplorerAction::AddBookmarkSeparator { parent_id } = action {
@@ -7885,6 +8400,7 @@ impl ExplorerRoot {
                     ),
                     locale: self.state.locale(),
                     windows_negotiated_locale: self.state.windows_negotiated_locale(),
+                    cache_inspector: self.cache_inspector.clone(),
                 }
             });
             let _ = observer(true, snapshot, cx);
@@ -8016,6 +8532,14 @@ impl ExplorerRoot {
                 .as_ref()
                 .is_some_and(|observer| observer(scope));
             self.state.finish_session_reset_submission(scope, accepted);
+        }
+        if matches!(
+            action,
+            ExplorerAction::OpenCacheInspector
+                | ExplorerAction::SetCacheInspectorSource(_)
+                | ExplorerAction::CloseCacheInspector
+        ) {
+            self.apply_cache_inspector_action(&action);
         }
         if action == ExplorerAction::ClearThumbnailCache {
             self.thumbnail_scheduler.clear();
@@ -8349,6 +8873,9 @@ impl ExplorerRoot {
         if let Some(command) = navigation_command {
             self.submit_command(command);
         }
+        if let Some(row_index) = self.state.take_leave_selection_reveal() {
+            self.ensure_file_row_visible(row_index, window);
+        }
         if action == ExplorerAction::NewTab
             && let Some(command) = self.state.take_pending_new_tab_command()
         {
@@ -8534,17 +9061,76 @@ impl ExplorerRoot {
             ExplorerAction::CutSelected => Some(explorer_model::ClipboardMode::Cut),
             _ => None,
         };
-        if let Some(mode) = clipboard_mode
-            && let Some(command) = self.state.begin_clipboard_request(mode)
-        {
-            self.submit_command(command);
+        if let Some(mode) = clipboard_mode {
+            let selected = self.state.tabs().active_tab().selection.len();
+            if let Some(command) = self.state.begin_clipboard_request(mode) {
+                let source = self
+                    .state
+                    .tabs()
+                    .active_tab()
+                    .history
+                    .current()
+                    .map_or_else(
+                        || "unknown".to_owned(),
+                        |entry| location_kind(&entry.location),
+                    );
+                interaction_log::record_ui_interaction(
+                    "clipboard_copy",
+                    &format!("mode={mode:?} result=submitted selected={selected} source={source}"),
+                );
+                self.submit_command(command);
+            } else {
+                interaction_log::record_ui_interaction(
+                    "clipboard_copy",
+                    &format!(
+                        "mode={mode:?} result=ignored reason=no_selection selected={selected}"
+                    ),
+                );
+            }
         }
-        if action == ExplorerAction::Paste
-            && let Some(command) = self
+        if action == ExplorerAction::Paste {
+            let writable = self.state.active_presentation().can_write;
+            let clipboard = format!("{:?}", clipboard_kind(self.state.clipboard()));
+            let destination = self
+                .state
+                .tabs()
+                .active_tab()
+                .history
+                .current()
+                .map_or_else(
+                    || "unknown".to_owned(),
+                    |entry| location_kind(&entry.location),
+                );
+            if let Some(command) = self
                 .state
                 .begin_paste_request(explorer_model::ConflictDecision::Prompt)
-        {
-            self.submit_command(command);
+            {
+                interaction_log::record_ui_interaction(
+                    "clipboard_paste",
+                    &format!(
+                        "result=submitted writable={writable} clipboard={clipboard} destination={destination}"
+                    ),
+                );
+                self.submit_command(command);
+            } else {
+                let reason = if !writable {
+                    "not_writable"
+                } else if matches!(
+                    self.state.clipboard(),
+                    explorer_model::ClipboardState::None { .. }
+                        | explorer_model::ClipboardState::Unsupported { .. }
+                ) {
+                    "clipboard_empty"
+                } else {
+                    "no_destination"
+                };
+                interaction_log::record_ui_interaction(
+                    "clipboard_paste",
+                    &format!(
+                        "result=ignored reason={reason} writable={writable} clipboard={clipboard} destination={destination}"
+                    ),
+                );
+            }
         }
         if action == ExplorerAction::DownloadSelectedToDownloads
             && let Some(request) = self.state.download_selected_to_downloads_request()
@@ -8552,6 +9138,10 @@ impl ExplorerRoot {
             self.execute_file_operation(request);
         }
         if let Some(command) = self.state.take_pending_drag_command() {
+            interaction_log::record_ui_interaction(
+                "pointer_drag_release",
+                &format!("result=submitted command={}", drag_command_label(&command)),
+            );
             // OLE owns capture for the modal drag loop. Release the short GPUI gesture capture
             // before crossing into the Shell so right-drag and left-drag do not compete for it.
             self.pointer_capture.take();
@@ -8623,7 +9213,16 @@ impl ExplorerRoot {
                 _ => None,
             };
             if let Some(command) = command {
+                interaction_log::record_ui_interaction(
+                    "edit_command",
+                    &format!("action={} result=submitted", action.name()),
+                );
                 self.submit_command(command);
+            } else if matches!(action, ExplorerAction::UndoCurrentFolder) {
+                interaction_log::record_ui_interaction(
+                    "edit_command",
+                    "action=UndoCurrentFolder result=ignored reason=no_undo_target",
+                );
             }
         }
         if action == ExplorerAction::CopySelectedPaths
@@ -8706,6 +9305,66 @@ impl ExplorerRoot {
             window.remove_window();
         }
         cx.notify();
+    }
+
+    fn apply_cache_inspector_action(&mut self, action: &ExplorerAction) {
+        let source = match action {
+            ExplorerAction::CloseCacheInspector => {
+                self.cache_inspector = None;
+                return;
+            }
+            ExplorerAction::SetCacheInspectorSource(source) => *source,
+            ExplorerAction::OpenCacheInspector => self.cache_inspector.as_ref().map_or(
+                cache_inspector::CacheInspectorSource::IconMemory,
+                |inspector| inspector.source,
+            ),
+            _ => return,
+        };
+        let (items, truncated) = self.cache_inspector_items(source);
+        self.cache_inspector = Some(Arc::new(cache_inspector::CacheInspectorModel {
+            source,
+            items: Arc::new(items),
+            truncated,
+        }));
+    }
+
+    fn cache_inspector_items(
+        &self,
+        source: cache_inspector::CacheInspectorSource,
+    ) -> (Vec<cache_inspector::CacheGalleryItem>, bool) {
+        use cache_inspector::{CacheGalleryImage, CacheGalleryItem, CacheInspectorSource};
+        match source {
+            CacheInspectorSource::IconMemory => (
+                self.shell_icons
+                    .gallery_textures()
+                    .into_iter()
+                    .map(|(key, texture)| CacheGalleryItem {
+                        label: cache_location_label(&key.location),
+                        image: CacheGalleryImage::Texture(texture),
+                    })
+                    .collect(),
+                false,
+            ),
+            CacheInspectorSource::ThumbnailMemory => (
+                self.thumbnail_memory_cache
+                    .images()
+                    .into_iter()
+                    .rev()
+                    .map(|(key, pixels)| CacheGalleryItem {
+                        label: format!(
+                            "{} · {}px",
+                            thumbnail_item_label(&key.item_id),
+                            key.physical_size
+                        ),
+                        image: CacheGalleryImage::Pixels(pixels),
+                    })
+                    .collect(),
+                false,
+            ),
+            CacheInspectorSource::IconDisk | CacheInspectorSource::ThumbnailDisk => {
+                cache_inspector::list_disk_cache(source)
+            }
+        }
     }
 
     pub(crate) fn cache_usage_snapshot(
@@ -8912,6 +9571,84 @@ impl ExplorerRoot {
         }
     }
 
+    fn command_app_menu_key_action(&self, event: &gpui::KeyDownEvent) -> Option<ExplorerAction> {
+        if !self.state.app_menu_open() {
+            return None;
+        }
+        let key = event.keystroke.key.as_str();
+        let modified = event.keystroke.modifiers.control
+            || event.keystroke.modifiers.alt
+            || event.keystroke.modifiers.platform;
+        if self.state.app_menu_page() == actions::AppMenuPage::History
+            && self.state.app_menu_focused_slot().is_some_and(|slot| {
+                matches!(
+                    slot,
+                    state::AppMenuSlot::Action {
+                        id: "app-menu-search-history",
+                        ..
+                    }
+                )
+            })
+            && !modified
+        {
+            if key == "backspace" {
+                return Some(ExplorerAction::BackspaceAppMenuHistoryQuery);
+            }
+            if key == "space" {
+                return Some(ExplorerAction::AppendAppMenuHistoryQuery {
+                    text: " ".to_owned(),
+                });
+            }
+            if key.chars().count() == 1 {
+                return Some(ExplorerAction::AppendAppMenuHistoryQuery {
+                    text: key.to_owned(),
+                });
+            }
+        }
+        match key {
+            "up" => Some(ExplorerAction::MoveAppMenuFocus { direction: -1 }),
+            "down" => Some(ExplorerAction::MoveAppMenuFocus { direction: 1 }),
+            "home" => Some(ExplorerAction::MoveAppMenuFocus { direction: i8::MIN }),
+            "end" => Some(ExplorerAction::MoveAppMenuFocus { direction: i8::MAX }),
+            "escape" if self.state.app_menu_page() == actions::AppMenuPage::ClosedWindows => {
+                Some(ExplorerAction::SetAppMenuPage(actions::AppMenuPage::History))
+            }
+            "left" if self.state.app_menu_page() == actions::AppMenuPage::ClosedWindows => self
+                .state
+                .closed_window_tree_key(false)
+                .or_else(|| Some(ExplorerAction::SetAppMenuPage(actions::AppMenuPage::History))),
+            "right" if self.state.app_menu_page() == actions::AppMenuPage::ClosedWindows => {
+                self.state.closed_window_tree_key(true)
+            }
+            "escape" | "left" if self.state.app_menu_page() != actions::AppMenuPage::Main => {
+                Some(ExplorerAction::SetAppMenuPage(actions::AppMenuPage::Main))
+            }
+            "left"
+                if self
+                    .state
+                    .app_menu_focused_slot()
+                    .is_some_and(|slot| matches!(slot, state::AppMenuSlot::Zoom)) =>
+            {
+                Some(ExplorerAction::AppMenuZoom { direction: -1 })
+            }
+            "right"
+                if self
+                    .state
+                    .app_menu_focused_slot()
+                    .is_some_and(|slot| matches!(slot, state::AppMenuSlot::Zoom)) =>
+            {
+                Some(ExplorerAction::AppMenuZoom { direction: 1 })
+            }
+            "right" => self
+                .state
+                .app_menu_focused_slot()
+                .and_then(|slot| slot.submenu_action()),
+            "escape" => Some(ExplorerAction::CloseAppMenu),
+            "enter" | "space" => self.state.app_menu_activation(),
+            _ => None,
+        }
+    }
+
     fn command_more_key_action(&self, event: &gpui::KeyDownEvent) -> Option<ExplorerAction> {
         if self.state.focused_surface() != focus::FocusSurface::CommandBar
             || !self.state.more_menu_open()
@@ -9063,6 +9800,14 @@ impl ExplorerRoot {
     fn navigation_tree_key_action(&self, event: &gpui::KeyDownEvent) -> Option<ExplorerAction> {
         if self.state.focused_surface() != focus::FocusSurface::NavigationPane {
             return None;
+        }
+        if event.keystroke.key == "backspace"
+            && !event.keystroke.modifiers.control
+            && !event.keystroke.modifiers.alt
+            && !event.keystroke.modifiers.shift
+            && !event.keystroke.modifiers.platform
+        {
+            return Some(ExplorerAction::Up);
         }
         let location = self.state.focused_navigation_location()?.clone();
         match event.keystroke.key.as_str() {
@@ -9419,7 +10164,7 @@ fn shell_icon_texture(payload: &explorer_model::ShellIconPayload) -> Option<Arc<
     Some(Arc::new(RenderImage::new(smallvec::smallvec![frame])))
 }
 
-fn bc7_texture(raster: &explorer_model::Bc7RasterPayload) -> Option<Arc<RenderImage>> {
+pub(crate) fn bc7_texture(raster: &explorer_model::Bc7RasterPayload) -> Option<Arc<RenderImage>> {
     raster.validate(64 * 1024 * 1024).then(|| {
         RenderImage::new_bc7_srgb(gpui::CompressedRaster {
             kind: match raster.kind {
@@ -9439,7 +10184,9 @@ fn bc7_texture(raster: &explorer_model::Bc7RasterPayload) -> Option<Arc<RenderIm
     })?
 }
 
-fn thumbnail_texture(pixels: &explorer_model::ThumbnailPixels) -> Option<Arc<RenderImage>> {
+pub(crate) fn thumbnail_texture(
+    pixels: &explorer_model::ThumbnailPixels,
+) -> Option<Arc<RenderImage>> {
     let width = usize::try_from(pixels.width).ok()?;
     let height = usize::try_from(pixels.height).ok()?;
     let tight_stride = width.checked_mul(4)?;
@@ -9706,6 +10453,11 @@ impl Render for ExplorerRoot {
                 }
                 .max(metrics.cell_height);
                 let prime_cap = icon_prime_cap(&view_settings, self.shell_icon_dpi);
+                let header_height = if view_settings.mode == explorer_model::ViewMode::Details {
+                    self.tokens.layout.details_header_height.value()
+                } else {
+                    0.0
+                };
                 let range = if let Some(range) =
                     prelayout_icon_range(presentation.len(), layout_ready, prime_cap)
                 {
@@ -9722,11 +10474,6 @@ impl Render for ExplorerRoot {
                     )
                     .items
                 } else {
-                    let header_height = if view_settings.mode == explorer_model::ViewMode::Details {
-                        self.tokens.layout.details_header_height.value()
-                    } else {
-                        0.0
-                    };
                     file_view::fixed_virtual_range(
                         presentation.len(),
                         metrics.cell_height,
@@ -9736,17 +10483,45 @@ impl Render for ExplorerRoot {
                     )
                     .items
                 };
-                prime_top_icon_range(presentation.len(), scroll_offset, range, prime_cap)
-                    .filter_map(|ordinal| {
-                        presentation.entry(ordinal).map(|(_, entry)| entry.clone())
-                    })
-                    .collect::<Vec<_>>()
+                let visible = if !layout_ready {
+                    range.clone()
+                } else if metrics.wrapped {
+                    file_view::fixed_grid_virtual_range(
+                        presentation.len(),
+                        metrics.cell_width,
+                        metrics.cell_height,
+                        self.file_viewport_width.max(metrics.cell_width),
+                        viewport_height,
+                        scroll_offset,
+                        0,
+                    )
+                    .items
+                } else {
+                    file_view::fixed_virtual_range(
+                        presentation.len(),
+                        metrics.cell_height,
+                        (viewport_height - header_height).max(metrics.cell_height),
+                        (scroll_offset - header_height).max(0.0),
+                        0,
+                    )
+                    .items
+                };
+                file_view::visible_first_ordinals(
+                    prime_top_icon_range(presentation.len(), scroll_offset, range, prime_cap),
+                    visible,
+                )
+                .into_iter()
+                .filter_map(|ordinal| presentation.entry(ordinal).map(|(_, entry)| entry.clone()))
+                .collect::<Vec<_>>()
             })
             .unwrap_or_default();
         if !realized_entries.is_empty() {
             let tab = self.state.tabs().active_tab();
             let context = explorer_model::RequestContext::new(tab.id, tab.generation);
             self.submit_file_icon_loads(&context, &realized_entries);
+        }
+        if self.service.is_some() {
+            self.submit_bookmark_icon_loads(false);
         }
         let preview_entry = {
             let tab = self.state.tabs().active_tab();
@@ -9816,6 +10591,7 @@ impl Render for ExplorerRoot {
             )));
         div()
             .id("explorer-action-scope")
+            .child(interaction_log::interaction_event_layer())
             .size_full()
             .when_some(self.focus_handle.clone(), |element, focus_handle| {
                 element.track_focus(&focus_handle)
@@ -9827,6 +10603,10 @@ impl Render for ExplorerRoot {
             )
             .on_action(
                 cx.listener(|this, _: &actions::CloseExplorerTab, window, cx| {
+                    interaction_log::record_ui_interaction(
+                        "key_shortcut",
+                        "chord=ctrl+w phase=binding outcome=CloseActiveTab",
+                    );
                     this.handle_action(
                         ExplorerAction::CloseActiveTab,
                         ActionSource::Keyboard,
@@ -9851,6 +10631,10 @@ impl Render for ExplorerRoot {
                 }),
             )
             .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, window, cx| {
+                let mut shortcut = interaction_log::ShortcutTrace::begin(
+                    event,
+                    &format!("{:?}", this.state.focused_surface()),
+                );
                 if this.state.bookmark_folder_menu().is_some() && event.keystroke.key == "escape" {
                     cx.stop_propagation();
                     this.state.dismiss_bookmark_browse_menus();
@@ -9900,6 +10684,7 @@ impl Render for ExplorerRoot {
                     return;
                 }
                 if this.state.about_dialog().is_some() {
+                    shortcut.note("blocked_by_about_dialog");
                     cx.stop_propagation();
                     if event.keystroke.key == "escape" {
                         this.handle_action(
@@ -9916,6 +10701,7 @@ impl Render for ExplorerRoot {
                     .first()
                     .map(|offer| offer.presentation_token)
                 {
+                    shortcut.note("blocked_by_safe_mode");
                     cx.stop_propagation();
                     if matches!(event.keystroke.key.as_str(), "enter" | "space") {
                         this.confirm_safe_mode_offer(presentation_token);
@@ -9947,6 +10733,7 @@ impl Render for ExplorerRoot {
                     _ => None,
                 });
                 if this.state.lock_recovery().is_some() && lock_modal_action.is_none() {
+                    shortcut.note("blocked_by_lock_recovery");
                     cx.stop_propagation();
                     return;
                 }
@@ -9976,6 +10763,7 @@ impl Render for ExplorerRoot {
                 if this.state.permanent_delete_confirmation_count().is_some()
                     && modal_action.is_none()
                 {
+                    shortcut.note("blocked_by_delete_confirmation");
                     cx.stop_propagation();
                     return;
                 }
@@ -9986,15 +10774,20 @@ impl Render for ExplorerRoot {
                         .or_else(|| this.details_column_menu_key_action(event))
                         .or_else(|| this.command_new_key_action(event))
                         .or_else(|| this.command_sort_key_action(event))
+                        .or_else(|| this.command_app_menu_key_action(event))
                         .or_else(|| this.command_view_key_action(event))
                         .or_else(|| this.command_more_key_action(event))
                         .or_else(|| this.navigation_tree_key_action(event))
                         .or_else(|| this.file_view_key_action(event, window))
                 }) {
+                    shortcut.note(action.name());
                     cx.stop_propagation();
                     this.handle_action(action, ActionSource::Keyboard, window, cx);
                 } else if this.forward_preview_accelerator(event) {
+                    shortcut.note("preview_accelerator");
                     cx.stop_propagation();
+                } else {
+                    shortcut.note_if_pending(clipboard_shortcut_ignore_reason(this, event));
                 }
             }))
             .on_action(cx.listener(|this, _: &actions::NavigateBack, window, cx| {
@@ -10222,6 +11015,36 @@ impl Render for ExplorerRoot {
                 cx.listener(|this, _: &actions::CloseExplorerWindow, window, cx| {
                     this.handle_action(
                         ExplorerAction::CloseWindow,
+                        ActionSource::Keyboard,
+                        window,
+                        cx,
+                    );
+                }),
+            )
+            .on_action(
+                cx.listener(|this, _: &actions::ShowTransferPanel, window, cx| {
+                    this.handle_action(
+                        ExplorerAction::ToggleTransferPanel,
+                        ActionSource::Keyboard,
+                        window,
+                        cx,
+                    );
+                }),
+            )
+            .on_action(
+                cx.listener(|this, _: &actions::OpenHistoryLibrary, window, cx| {
+                    this.handle_action(
+                        ExplorerAction::OpenBookmarkManagerHistory,
+                        ActionSource::Keyboard,
+                        window,
+                        cx,
+                    );
+                }),
+            )
+            .on_action(
+                cx.listener(|this, _: &actions::ShowExtensionsMenu, window, cx| {
+                    this.handle_action(
+                        ExplorerAction::ToggleExtensionsMenu,
                         ActionSource::Keyboard,
                         window,
                         cx,
@@ -11859,7 +12682,7 @@ mod tests {
             root.thumbnail_scheduler.stats().concurrency_limit,
             super::THUMBNAIL_CONCURRENCY_LIMIT
         );
-        assert_eq!(super::THUMBNAIL_CONCURRENCY_LIMIT, 2);
+        assert_eq!(super::THUMBNAIL_CONCURRENCY_LIMIT, 4);
     }
 
     #[test]
@@ -12485,6 +13308,7 @@ mod tests {
                 x: 1.0,
                 y: 2.0,
                 button: explorer_model::DragButton::Left,
+                deferred_row: None,
             },
             ExplorerAction::BeginScrollbarDrag {
                 kind: crate::interaction::ScrollbarKind::FileView,
@@ -12546,7 +13370,7 @@ mod tests {
             ("c", true, ExplorerAction::CopySelected),
             ("x", true, ExplorerAction::CutSelected),
             ("v", true, ExplorerAction::Paste),
-            ("backspace", false, ExplorerAction::Back),
+            ("backspace", false, ExplorerAction::Up),
             ("f3", false, ExplorerAction::FocusSearch),
         ];
         for (key, control, expected) in global {
@@ -12555,6 +13379,16 @@ mod tests {
                 Some(expected)
             );
         }
+        assert_eq!(
+            file_view_global_command_action(&key_event("backspace", true, false, false)),
+            None,
+            "Ctrl+Backspace must not leave the folder"
+        );
+        assert_eq!(
+            file_view_global_command_action(&key_event("left", false, true, false)),
+            None,
+            "Alt+Left stays on the window history-back binding"
+        );
 
         let current = 7;
         assert_eq!(
@@ -13835,6 +14669,114 @@ mod tests {
             icon_keys[0].location,
             explorer_model::LocationDescriptor::file_system(r"C:\__super_explorer_base_file__.")
         );
+    }
+
+    #[test]
+    fn refresh_requests_a_new_thumbnail_when_the_file_size_changes() {
+        let mut entry = thumbnail_capable_entry(9, "png");
+        entry.metadata.size_bytes = Some(100);
+        entry.metadata.modified_sort_key = Some(1);
+        let mut root = ExplorerRoot::for_directory_fixture(
+            UiTokens::default(),
+            vec![entry.clone()],
+            explorer_model::ViewMode::LargeIcons,
+        );
+        root.service = Some(Arc::new(RecordingService::default()));
+        let tab = root.state.tabs().active_tab();
+        let context = explorer_model::RequestContext::new(tab.id, tab.generation);
+        let presentation = explorer_model::ShellIconKey {
+            item_id: Some(entry.id.clone()),
+            location: entry.location.clone(),
+            size_bucket: 96,
+            dpi: 96,
+            theme: explorer_model::ShellIconTheme::Light,
+            association_generation: 1,
+            overlay_generation: 1,
+        };
+        let texture = Arc::new(gpui::RenderImage::new(smallvec::SmallVec::<
+            [image::Frame; 1],
+        >::new()));
+        assert!(root.shell_icons.insert_thumbnail(&presentation, texture));
+        root.thumbnail_content_stamps.insert(
+            entry.id.clone(),
+            super::ThumbnailContentStamp {
+                size_bytes: Some(100),
+                modified_sort_key: Some(1),
+            },
+        );
+
+        entry.metadata.size_bytes = Some(240);
+        root.submit_file_icon_loads(&context, std::slice::from_ref(&entry));
+
+        assert!(
+            !root.shell_icons.has_item_thumbnail(&entry.id),
+            "stale thumbnail must leave the screen after the file size changes"
+        );
+        assert!(
+            root.pending_thumbnail_keys
+                .iter()
+                .any(|key| key.item_id == entry.id),
+            "the refreshed listing must request a replacement thumbnail"
+        );
+        assert_eq!(
+            root.thumbnail_content_stamps
+                .get(&entry.id)
+                .map(|stamp| stamp.size_bytes),
+            Some(Some(240))
+        );
+    }
+
+    #[test]
+    fn bottom_visible_thumbnails_replace_overscan_when_the_request_cap_is_full() {
+        let entries = (0_u8..80)
+            .map(|id| thumbnail_capable_entry(id, "png"))
+            .collect::<Vec<_>>();
+        let mut root = ExplorerRoot::for_directory_fixture(
+            UiTokens::default(),
+            entries.clone(),
+            explorer_model::ViewMode::LargeIcons,
+        );
+        root.service = Some(Arc::new(RecordingService::default()));
+        let tab = root.state.tabs().active_tab();
+        let context = explorer_model::RequestContext::new(tab.id, tab.generation);
+        root.submit_file_icon_loads(&context, &entries);
+        assert_eq!(root.pending_thumbnail_keys.len(), entries.len());
+        assert!(
+            root.thumbnail_scheduler.stats().decoded_byte_limit
+                >= usize::from(explorer_model::DEFAULT_THUMBNAIL_CACHE_MEMORY_MB) * 1024 * 1024
+        );
+        assert!(root.state.thumbnail_quota_notice().is_none());
+
+        root.state.open_folder_options();
+        root.state
+            .update_folder_options(|settings| settings.cache_budgets.thumbnail_memory_mb = 32);
+        root.state.apply_folder_options();
+        root.shell_icon_dpi = 512;
+        root.pending_thumbnail_keys.clear();
+        root.thumbnail_requests.clear();
+        root.thumbnail_presentations.clear();
+        root.thumbnail_scheduler.clear();
+        root.submit_file_icon_loads(&context, &entries);
+        let cap = root.pending_thumbnail_keys.len();
+        assert!(cap < entries.len());
+        assert!(cap >= 16);
+        assert_eq!(root.pending_thumbnail_keys.len(), cap);
+        assert!(root.state.thumbnail_quota_notice().is_some());
+
+        let mut visible_first = entries[64..].to_vec();
+        visible_first.extend(entries[..64].iter().cloned());
+        root.submit_file_icon_loads(&context, &visible_first);
+        let bottom_ids = entries[64..]
+            .iter()
+            .map(|entry| entry.id.clone())
+            .collect::<HashSet<_>>();
+        let bottom_pending = root
+            .pending_thumbnail_keys
+            .iter()
+            .filter(|key| bottom_ids.contains(&key.item_id))
+            .count();
+        assert_eq!(bottom_pending, entries.len() - 64);
+        assert!(root.pending_thumbnail_keys.len() <= cap);
     }
 
     #[test]

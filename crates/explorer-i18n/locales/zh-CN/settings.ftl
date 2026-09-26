@@ -51,6 +51,12 @@ settings-compact-spacing = 减少项目间的空白区域（紧凑视图）
 settings-always-icons = 始终显示图标，不显示缩略图
 
 settings-clear-thumbnail-cache = 清除缩略图缓存
+settings-view-cache = 查看缓存
+settings-cache-inspector = 缓存内容
+settings-cache-inspector-close = 关闭
+settings-cache-inspector-empty = 这个缓存是空的
+settings-cache-inspector-count = { $count } 张图片
+settings-cache-inspector-truncated = 只显示前 { $count } 张
 
 settings-show-details-pane = 显示详细信息窗格
 

@@ -433,10 +433,50 @@ fn format_error_chain(error: &(dyn StdError + 'static)) -> String {
 }
 
 fn fallback_error_report(line: &str, write_error: &io::Error) {
-    eprintln!(
+    write_stderr_lossy(&format!(
         "Explorer error-log failure ({write_error}): {}",
         line.trim_end()
+    ));
+}
+
+/// Writes to stderr without panicking when the pipe is closed.
+///
+/// `eprintln!` panics on a broken pipe (`管道正關閉中`, os error 232). That
+/// second panic aborts the process even when the original failure was caught.
+pub fn write_stderr_lossy(message: &str) {
+    let mut stderr = io::stderr();
+    let _ = stderr.write_all(message.as_bytes());
+    if !message.ends_with('\n') {
+        let _ = stderr.write_all(b"\n");
+    }
+    let _ = stderr.flush();
+}
+
+fn fallback_error_log_candidates() -> Vec<PathBuf> {
+    if let Some(directory) = std::env::var_os("EXPLORER_LOG_DIR") {
+        return vec![PathBuf::from(directory).join("error.log")];
+    }
+    let local_log_directory = std::env::var_os("LOCALAPPDATA").map_or_else(
+        || std::env::temp_dir().join("RustGpuiExplorer").join("logs"),
+        |root| PathBuf::from(root).join("RustGpuiExplorer").join("logs"),
     );
+    production_error_log_candidates(&local_log_directory)
+}
+
+fn append_fallback_error_line(line: &str) {
+    let mut sink = open_error_sink(&fallback_error_log_candidates());
+    let result = sink.file.as_mut().map_or_else(
+        || {
+            Err(io::Error::new(
+                io::ErrorKind::NotConnected,
+                "error log unavailable",
+            ))
+        },
+        |file| write_capped_error_line(file, line.as_bytes()),
+    );
+    if let Err(write_error) = result {
+        fallback_error_report(line, &write_error);
+    }
 }
 
 static PROCESS_DIAGNOSTICS: DiagnosticsRegistry = DiagnosticsRegistry::new();
@@ -453,8 +493,12 @@ pub fn record_process_error(
     if let Some(session) = PROCESS_DIAGNOSTICS.session.get() {
         session.record_error(severity, subsystem, operation, error, source_location);
     } else {
-        eprintln!(
-            "Explorer error before diagnostics initialization: subsystem={subsystem} operation={operation} error={error}"
+        record_uninitialized_error(
+            severity,
+            subsystem,
+            operation,
+            &error.to_string(),
+            source_location,
         );
     }
 }
@@ -470,10 +514,54 @@ pub fn record_process_error_message(
     if let Some(session) = PROCESS_DIAGNOSTICS.session.get() {
         session.record_error_message(severity, subsystem, operation, message, source_location);
     } else {
-        eprintln!(
-            "Explorer error before diagnostics initialization: subsystem={subsystem} operation={operation} error={message}"
-        );
+        record_uninitialized_error(severity, subsystem, operation, message, source_location);
     }
+}
+
+/// Records a panic that was caught so the process can continue.
+pub fn log_isolated_panic(
+    subsystem: &str,
+    operation: &str,
+    payload: &(dyn Any + Send),
+    source_location: Option<&str>,
+) {
+    record_process_error_message(
+        ErrorSeverity::Critical,
+        subsystem,
+        operation,
+        &panic_payload_message(payload),
+        source_location,
+    );
+}
+
+fn record_uninitialized_error(
+    severity: ErrorSeverity,
+    subsystem: &str,
+    operation: &str,
+    message: &str,
+    source_location: Option<&str>,
+) {
+    let timestamp_ms = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis();
+    let thread = std::thread::current();
+    let thread_name = thread.name().unwrap_or("unnamed");
+    let mut line = format!(
+        "timestamp_ms={timestamp_ms} severity={} subsystem={} operation={} error={} thread={} version=\"unknown\"",
+        severity.as_str(),
+        escape_value(subsystem),
+        escape_value(operation),
+        escape_value(message),
+        escape_value(thread_name),
+    );
+    if let Some(source) = source_location {
+        line.push_str(" source=");
+        line.push_str(&escape_value(source));
+    }
+    line.push('\n');
+    append_fallback_error_line(&line);
+    write_stderr_lossy(line.trim_end());
 }
 
 /// Converts a Rust panic payload into a stable diagnostic message.
@@ -546,12 +634,15 @@ fn record_bootstrap_failure(config: &DiagnosticsConfig, error: &DiagnosticsError
     }
 }
 
-/// Installs one process panic hook that writes a redacted report, then calls the previous hook.
+/// Installs one process panic hook that writes a redacted report and does not abort.
 pub fn install_panic_hook(session: DiagnosticsSession) {
     if PANIC_HOOK_INSTALLED.swap(true, Ordering::AcqRel) {
         return;
     }
-    let previous = std::panic::take_hook();
+    // Drop the default hook. It prints with `eprintln!`, which panics when
+    // stderr is a closed pipe and aborts the process — including panics that
+    // `catch_unwind` was about to contain.
+    let _previous = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
         let report = format_panic_report(info, &session.0.config);
         let _ = session.record_event("panic", &[("report", &report)]);
@@ -562,7 +653,10 @@ pub fn install_panic_hook(session: DiagnosticsSession) {
             &report,
             info.location().map(std::panic::Location::file),
         );
-        previous(info);
+        write_stderr_lossy(&format!(
+            "Explorer panic recorded in error.log: {}",
+            report.chars().take(512).collect::<String>()
+        ));
     }));
 }
 

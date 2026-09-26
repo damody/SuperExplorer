@@ -11,7 +11,7 @@ use std::{
     },
 };
 
-use explorer_common::{RequestDeadline, RequestId};
+use explorer_common::{RequestDeadline, RequestId, log_isolated_panic};
 use serde::{Deserialize, Deserializer, Serialize, de};
 use uuid::Uuid;
 
@@ -623,7 +623,15 @@ impl CancellationToken {
         let mut report = CancellationSignalReport::default();
         for callback in callbacks.into_values() {
             report.callbacks_invoked += 1;
-            if std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| callback())).is_err() {
+            if let Err(payload) =
+                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| callback()))
+            {
+                log_isolated_panic(
+                    "model",
+                    "cancellation_callback",
+                    payload.as_ref(),
+                    Some(file!()),
+                );
                 report.panicked_callbacks += 1;
             }
         }
@@ -651,7 +659,16 @@ impl CancellationToken {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         if self.0.cancelled.load(Ordering::Acquire) {
             drop(callbacks);
-            let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| callback()));
+            if let Err(payload) =
+                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| callback()))
+            {
+                log_isolated_panic(
+                    "model",
+                    "cancellation_callback",
+                    payload.as_ref(),
+                    Some(file!()),
+                );
+            }
             return CancellationRegistration::inert();
         }
         let id = Uuid::new_v4();

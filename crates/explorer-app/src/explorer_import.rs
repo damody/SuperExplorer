@@ -10,7 +10,9 @@ use std::{
     process::{Command, Stdio},
 };
 
-use explorer_model::{ExplorerWindowState, HistoryEntry, LocationDescriptor, TabState};
+use explorer_model::{
+    ExplorerWindowState, HistoryEntry, LocationDescriptor, SessionStore, TabState,
+};
 use explorer_shell_win::{ExplorerWindowSnapshot, snapshot_open_explorer_windows};
 use serde::{Deserialize, Serialize};
 
@@ -19,6 +21,7 @@ pub const INITIAL_TABS_FILE_ENV: &str = "SUPEREXPLORER_INITIAL_TABS_FILE";
 pub const WIN_E_ENV: &str = "SUPEREXPLORER_WIN_E";
 pub const IMPORT_PATH_PREFIX_ENV: &str = "SUPEREXPLORER_IMPORT_PATH_PREFIX";
 pub const RESTORE_WINDOW_ID_ENV: &str = "SUPEREXPLORER_RESTORE_WINDOW_ID";
+pub const RESTORE_TAB_INDEX_ENV: &str = "SUPEREXPLORER_RESTORE_TAB_INDEX";
 const ENV_PAYLOAD_SOFT_LIMIT: usize = 24 * 1024;
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -86,6 +89,32 @@ pub fn extra_file_explorer_import_count(
         .min(MAX_STARTUP_WINDOWS.saturating_sub(usize::from(this_window_imported)))
 }
 
+/// A saved session preempts incidental File Explorer import on an ordinary launch.
+pub fn explorer_import_preempted_by_saved_session(
+    first_ordinary_process: bool,
+    restore_enabled: bool,
+    saved_windows: usize,
+) -> bool {
+    first_ordinary_process && restore_enabled && saved_windows > 0
+}
+
+fn saved_session_has_windows() -> bool {
+    let limits = explorer_common::RoadmapLimits::default();
+    let Ok(store) = crate::session_store::WindowsSessionStore::from_environment(limits) else {
+        return false;
+    };
+    let Ok(outcome) = store.load() else {
+        return false;
+    };
+    outcome.envelope.is_some_and(|envelope| {
+        explorer_import_preempted_by_saved_session(
+            true,
+            envelope.payload.restore_enabled,
+            envelope.payload.windows.len(),
+        )
+    })
+}
+
 pub fn consume_launch_import(first_ordinary_process: bool) -> LaunchImport {
     if env::var_os(WIN_E_ENV).is_some() {
         return LaunchImport {
@@ -100,6 +129,12 @@ pub fn consume_launch_import(first_ordinary_process: bool) -> LaunchImport {
     }
     if !first_ordinary_process {
         return LaunchImport::child(None);
+    }
+    // A saved SuperExplorer window is the user's work. Importing whatever File
+    // Explorer happens to have open — including the Home window created when the
+    // installer starts us through explorer.exe — must not replace those tabs.
+    if saved_session_has_windows() {
+        return LaunchImport::ordinary(None, 0);
     }
     match snapshot_open_explorer_windows() {
         Ok(windows) => {
@@ -147,19 +182,34 @@ pub fn parse_restore_window_id() -> Option<explorer_model::PersistedWindowId> {
         .map(explorer_model::PersistedWindowId::new)
 }
 
+/// Tab index requested when restoring one saved window from History.
+pub fn parse_restore_tab_index() -> Option<u16> {
+    let raw = env::var(RESTORE_TAB_INDEX_ENV).ok()?;
+    raw.trim().parse::<u16>().ok()
+}
+
 /// Spawns one `SuperExplorer` window that restores an already-remembered window identity.
 ///
 /// # Errors
 ///
 /// Returns a spawn or process-launch error when the child cannot be started.
-pub fn spawn_restored_window(window_id: explorer_model::PersistedWindowId) -> Result<(), String> {
+pub fn spawn_restored_window(
+    window_id: explorer_model::PersistedWindowId,
+    tab_index: Option<u16>,
+) -> Result<(), String> {
     let exe = env::current_exe().map_err(|error| format!("current exe: {error}"))?;
     let mut command = Command::new(exe);
     command
         .env(RESTORE_WINDOW_ID_ENV, window_id.get().to_string())
         .env_remove(WIN_E_ENV)
         .env_remove(INITIAL_TABS_ENV)
-        .env_remove(INITIAL_TABS_FILE_ENV)
+        .env_remove(INITIAL_TABS_FILE_ENV);
+    if let Some(index) = tab_index {
+        command.env(RESTORE_TAB_INDEX_ENV, index.to_string());
+    } else {
+        command.env_remove(RESTORE_TAB_INDEX_ENV);
+    }
+    command
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null());
@@ -345,6 +395,14 @@ mod tests {
             1 + extra_file_explorer_import_count(10, true) + session_restore_budget(3),
             MAX_STARTUP_WINDOWS
         );
+    }
+
+    #[test]
+    fn saved_session_preempts_file_explorer_import_on_ordinary_launch() {
+        assert!(explorer_import_preempted_by_saved_session(true, true, 2));
+        assert!(!explorer_import_preempted_by_saved_session(true, true, 0));
+        assert!(!explorer_import_preempted_by_saved_session(true, false, 3));
+        assert!(!explorer_import_preempted_by_saved_session(false, true, 3));
     }
 
     #[test]

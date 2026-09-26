@@ -154,6 +154,26 @@ impl ThumbnailScheduler {
         None
     }
 
+    /// Returns an active request to the front of its lane after a transient admission miss.
+    pub fn defer_active(&mut self, key: &ThumbnailRequestKey) -> bool {
+        let Some(entry) = self.entries.get_mut(key) else {
+            return false;
+        };
+        if entry.state != ScheduledState::Active {
+            return false;
+        }
+        let reserved = entry.reserved_bytes;
+        let priority = entry.priority;
+        entry.state = ScheduledState::Queued;
+        entry.reserved_bytes = 0;
+        self.stats.active_unique = self.stats.active_unique.saturating_sub(1);
+        self.stats.queued_unique = self.stats.queued_unique.saturating_add(1);
+        self.stats.decoded_in_flight_bytes =
+            self.stats.decoded_in_flight_bytes.saturating_sub(reserved);
+        self.lanes[priority_index(priority)].push_front(key.clone());
+        true
+    }
+
     /// Completes shared work and returns all still-current consumers for terminal fan-out.
     pub fn complete(&mut self, key: &ThumbnailRequestKey) -> Vec<ThumbnailConsumer> {
         let Some(entry) = self.entries.remove(key) else {
@@ -193,6 +213,11 @@ impl ThumbnailScheduler {
             let _ = self.complete(key);
         }
         true
+    }
+
+    pub fn set_decoded_byte_limit(&mut self, decoded_byte_limit: usize) {
+        self.decoded_byte_limit = decoded_byte_limit.max(1);
+        self.stats.decoded_byte_limit = self.decoded_byte_limit;
     }
 
     pub const fn stats(&self) -> ThumbnailSchedulerStats {
@@ -253,6 +278,40 @@ impl ThumbnailMemoryCache {
                 ..ThumbnailCacheStats::default()
             },
         }
+    }
+
+    pub fn contains(&self, key: &ThumbnailRequestKey) -> bool {
+        self.entries.contains_key(key)
+    }
+
+    pub fn remove_item(&mut self, item_id: &explorer_model::ShellItemId) {
+        let keys = self
+            .entries
+            .keys()
+            .filter(|key| &key.item_id == item_id)
+            .cloned()
+            .collect::<Vec<_>>();
+        for key in keys {
+            if let Some(evicted) = self.entries.remove(&key) {
+                self.stats.current_bytes = self
+                    .stats
+                    .current_bytes
+                    .saturating_sub(evicted.byte_cost());
+            }
+            self.order.retain(|candidate| candidate != &key);
+        }
+        self.stats.entries = self.entries.len();
+    }
+
+    pub fn images(&self) -> Vec<(ThumbnailRequestKey, Arc<ThumbnailPixels>)> {
+        self.order
+            .iter()
+            .filter_map(|key| {
+                self.entries
+                    .get(key)
+                    .map(|pixels| (key.clone(), Arc::clone(pixels)))
+            })
+            .collect()
     }
 
     pub fn get(&mut self, key: &ThumbnailRequestKey) -> Option<Arc<ThumbnailPixels>> {

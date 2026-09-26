@@ -55,29 +55,46 @@ fn main() {
         match initialize_diagnostics(DiagnosticsConfig::from_environment(build.package_version)) {
             Ok(diagnostics) => diagnostics,
             Err(error) => {
-                eprintln!("Explorer diagnostics initialization failed: {error}");
+                explorer_common::write_stderr_lossy(&format!(
+                    "Explorer diagnostics initialization failed: {error}"
+                ));
                 return;
             }
         };
     if diagnostics_console {
-        eprintln!(
+        explorer_common::write_stderr_lossy(&format!(
             "SuperExplorer diagnostics console is active. Persistent error log: {}",
             diagnostics.error_log_path().map_or_else(
                 || "Unavailable".to_owned(),
                 |path| path.display().to_string()
             )
-        );
+        ));
     }
     install_panic_hook(diagnostics.clone());
-    if let Err(error) = run(build, &diagnostics, diagnostics_console) {
-        diagnostics.record_error(
-            ErrorSeverity::Critical,
-            "application",
-            "run",
-            error.as_ref(),
-            Some(file!()),
-        );
-        tracing::error!(%error, "Explorer stopped after a controlled application failure");
+    explorer_shell_win::install_native_crash_log();
+    let run_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        run(build, &diagnostics, diagnostics_console)
+    }));
+    match run_result {
+        Ok(Ok(())) => {}
+        Ok(Err(error)) => {
+            diagnostics.record_error(
+                ErrorSeverity::Critical,
+                "application",
+                "run",
+                error.as_ref(),
+                Some(file!()),
+            );
+            tracing::error!(%error, "Explorer stopped after a controlled application failure");
+        }
+        Err(payload) => {
+            explorer_common::log_isolated_panic(
+                "application",
+                "run",
+                payload.as_ref(),
+                Some(file!()),
+            );
+        }
     }
 }
 

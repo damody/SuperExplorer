@@ -121,6 +121,7 @@ status-preview-select-single = 选择单个项目以预览
 
 status-no-transfers = 本次运行期间尚无文件操作
 
+status-thumbnail-quota-full = 缩略图名额已满（{ $used } / { $limit }）
 status-thumbnail-cleared = 缩略图缓存已清除
 
 status-thumbnail-clear-partial = 无法完全清除缩略图缓存；可重试，文件浏览仍可使用

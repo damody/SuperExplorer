@@ -544,6 +544,22 @@ pub fn ensure_visible_scroll_offset(
         .then_some(target)
 }
 
+/// Puts the on-screen ordinals ahead of overscan so a bounded icon or thumbnail
+/// budget cannot be spent entirely on rows above the viewport.
+pub fn visible_first_ordinals(realized: Range<usize>, visible: Range<usize>) -> Vec<usize> {
+    let mut front = Vec::with_capacity(realized.len());
+    let mut back = Vec::new();
+    for ordinal in realized {
+        if visible.contains(&ordinal) {
+            front.push(ordinal);
+        } else {
+            back.push(ordinal);
+        }
+    }
+    front.extend(back);
+    front
+}
+
 /// Column and realized-range geometry for fixed-size wrapped views.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct VirtualGrid {
@@ -1104,6 +1120,18 @@ mod tests {
             ensure_visible_scroll_offset(80, 10_000, row_height, 1, header, viewport, offset)
                 .expect("row below viewport");
         assert!((below - (header + row_height * 81.0 - viewport)).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn visible_ordinals_are_admitted_ahead_of_overscan() {
+        let ordered = visible_first_ordinals(0..80, 64..77);
+        assert_eq!(&ordered[..13], &(64..77).collect::<Vec<_>>());
+        assert_eq!(ordered.len(), 80);
+        assert!(
+            ordered[13..]
+                .iter()
+                .all(|ordinal| !(64..77).contains(ordinal))
+        );
     }
 
     #[test]

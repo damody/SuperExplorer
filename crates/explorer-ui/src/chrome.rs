@@ -74,7 +74,7 @@ use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 
 use crate::{
     UiTokens,
-    actions::{BookmarkPathKind, ExplorerAction, NavigationHistoryDirection},
+    actions::{AppMenuPage, BookmarkPathKind, ExplorerAction, NavigationHistoryDirection},
     diagnostics::{TypographyObservation, region_probe, typography_probe},
     extension_commands::{ExifRenamePreset, ExtensionCommandPanel},
     focus::FocusSurface,
@@ -88,7 +88,8 @@ use crate::{
         windows_navigation_items_with_pins,
     },
     state::{
-        AppViewState, BookmarkDropCue, CommandKind, LockRecoveryPhase, LockRecoveryUiState,
+        AppMenuSlot, AppViewState, BookmarkDropCue, CommandKind, LockRecoveryPhase,
+        LockRecoveryUiState,
         RunRecord, resolve_bookmark_insert_edge,
     },
     typography::TypographyStyle,
@@ -174,15 +175,20 @@ fn bookmark_icon(target: &explorer_model::BookmarkTarget) -> &'static str {
     match target {
         BookmarkTarget::LuaScript { .. } => "⚡",
         BookmarkTarget::Separator => "─",
-        BookmarkTarget::Folder { location } | BookmarkTarget::File { location } => {
-            match location.file_system_kind() {
-                Some(FileSystemKind::Adb) => "📱",
-                Some(FileSystemKind::Sftp) => "🖥",
-                Some(FileSystemKind::Ftp) => "📡",
-                Some(FileSystemKind::Gdrive) => "☁",
-                Some(FileSystemKind::Local) | Some(FileSystemKind::Wsl) | None => "🔖",
-            }
-        }
+        BookmarkTarget::Folder { location } => match location.file_system_kind() {
+            Some(FileSystemKind::Adb) => "📱",
+            Some(FileSystemKind::Sftp) => "🖥",
+            Some(FileSystemKind::Ftp) => "📡",
+            Some(FileSystemKind::Gdrive) => "☁",
+            Some(FileSystemKind::Local) | Some(FileSystemKind::Wsl) | None => "📁",
+        },
+        BookmarkTarget::File { location } => match location.file_system_kind() {
+            Some(FileSystemKind::Adb) => "📱",
+            Some(FileSystemKind::Sftp) => "🖥",
+            Some(FileSystemKind::Ftp) => "📡",
+            Some(FileSystemKind::Gdrive) => "☁",
+            Some(FileSystemKind::Local) | Some(FileSystemKind::Wsl) | None => "🔖",
+        },
         BookmarkTarget::FolderPath { path } | BookmarkTarget::FilePath { path } => {
             let path = path.trim_start();
             if path
@@ -205,6 +211,8 @@ fn bookmark_icon(target: &explorer_model::BookmarkTarget) -> &'static str {
                 .is_some_and(|prefix| prefix.eq_ignore_ascii_case("gdrive://"))
             {
                 "☁"
+            } else if matches!(target, BookmarkTarget::FolderPath { .. }) {
+                "📁"
             } else {
                 "🔖"
             }
@@ -212,7 +220,115 @@ fn bookmark_icon(target: &explorer_model::BookmarkTarget) -> &'static str {
     }
 }
 
-fn bookmark_icon_element(target: &explorer_model::BookmarkTarget) -> gpui::AnyElement {
+fn bookmark_target_uses_folder_glyph(target: &explorer_model::BookmarkTarget) -> bool {
+    matches!(target, explorer_model::BookmarkTarget::Folder { .. } | explorer_model::BookmarkTarget::FolderPath { .. })
+        && bookmark_icon(target) == "📁"
+}
+
+#[derive(Clone, Copy)]
+struct BookmarkShellIcons<'a> {
+    icons: &'a HashMap<explorer_model::ShellIconKey, Arc<RenderImage>>,
+    theme: explorer_model::ShellIconTheme,
+    dpi: u16,
+}
+
+fn bookmark_shell_icons<'a>(
+    icons: &'a HashMap<explorer_model::ShellIconKey, Arc<RenderImage>>,
+    tokens: UiTokens,
+    dpi: u16,
+) -> BookmarkShellIcons<'a> {
+    BookmarkShellIcons {
+        icons,
+        theme: match tokens.theme.mode {
+            crate::theme::ThemeMode::Light => explorer_model::ShellIconTheme::Light,
+            crate::theme::ThemeMode::Dark => explorer_model::ShellIconTheme::Dark,
+        },
+        dpi,
+    }
+}
+
+impl BookmarkShellIcons<'_> {
+    fn texture_for_location(
+        self,
+        location: &explorer_model::LocationDescriptor,
+    ) -> Option<Arc<RenderImage>> {
+        navigation_shell_texture(self.icons, location, self.theme, self.dpi)
+    }
+
+    fn generic_folder(self) -> Option<Arc<RenderImage>> {
+        self.icons.iter().find_map(|(key, texture)| {
+            (is_generic_breadcrumb_folder_icon_key(key) && key.theme == self.theme && key.dpi == self.dpi)
+                .then(|| Arc::clone(texture))
+        })
+    }
+
+    fn for_target(self, target: &explorer_model::BookmarkTarget) -> Option<Arc<RenderImage>> {
+        let location = crate::state::bookmark_target_shell_location(target)?;
+        self.texture_for_location(&location).or_else(|| {
+            target
+                .is_folder()
+                .then(|| self.generic_folder())
+                .flatten()
+        })
+    }
+}
+
+fn bookmark_shell_image(texture: Arc<RenderImage>) -> impl IntoElement {
+    div()
+        .w(px(16.0))
+        .h(px(16.0))
+        .flex_none()
+        .flex()
+        .items_center()
+        .justify_center()
+        .overflow_hidden()
+        .child(img(texture).size_full().object_fit(ObjectFit::Contain))
+}
+
+fn bookmark_fluent_glyph(asset: &'static str, tokens: UiTokens) -> impl IntoElement {
+    svg()
+        .path(asset)
+        .size(px(16.0))
+        .flex_none()
+        .text_color(tokens.theme.colors.text_primary.to_gpui())
+}
+
+fn bookmark_collection_label(
+    name: impl Into<SharedString>,
+    chevron: bool,
+    tokens: UiTokens,
+    shell_icons: BookmarkShellIcons<'_>,
+) -> impl IntoElement {
+    let icon = shell_icons.generic_folder().map_or_else(
+        || bookmark_fluent_glyph("fluent/folder.svg", tokens).into_any_element(),
+        |texture| bookmark_shell_image(texture).into_any_element(),
+    );
+    div()
+        .flex()
+        .items_center()
+        .gap(px(6.0))
+        .min_w_0()
+        .child(icon)
+        .child(name.into())
+        .when(chevron, |row| row.child("▾"))
+}
+
+fn bookmark_icon_element(
+    target: &explorer_model::BookmarkTarget,
+    tokens: UiTokens,
+    shell_icons: BookmarkShellIcons<'_>,
+) -> gpui::AnyElement {
+    if let Some(texture) = shell_icons.for_target(target) {
+        return div()
+            .w(px(18.0))
+            .h(px(18.0))
+            .flex_none()
+            .flex()
+            .items_center()
+            .justify_center()
+            .child(bookmark_shell_image(texture))
+            .into_any_element();
+    }
     if matches!(target, explorer_model::BookmarkTarget::LuaScript { .. }) {
         div()
             .w(px(18.0))
@@ -223,6 +339,16 @@ fn bookmark_icon_element(target: &explorer_model::BookmarkTarget) -> gpui::AnyEl
                     .size_full()
                     .object_fit(ObjectFit::Contain),
             )
+            .into_any_element()
+    } else if bookmark_target_uses_folder_glyph(target) {
+        div()
+            .w(px(18.0))
+            .h(px(18.0))
+            .flex_none()
+            .flex()
+            .items_center()
+            .justify_center()
+            .child(bookmark_fluent_glyph("fluent/folder.svg", tokens))
             .into_any_element()
     } else {
         div()
@@ -236,6 +362,8 @@ fn bookmark_icon_element(target: &explorer_model::BookmarkTarget) -> gpui::AnyEl
 fn bookmark_label(
     target: &explorer_model::BookmarkTarget,
     label: impl Into<SharedString>,
+    tokens: UiTokens,
+    shell_icons: BookmarkShellIcons<'_>,
 ) -> gpui::AnyElement {
     div()
         .flex()
@@ -243,7 +371,7 @@ fn bookmark_label(
         .gap(px(6.0))
         .min_w(px(0.0))
         .overflow_hidden()
-        .child(bookmark_icon_element(target))
+        .child(bookmark_icon_element(target, tokens, shell_icons))
         .child(
             div()
                 .min_w(px(0.0))
@@ -534,9 +662,7 @@ fn tab_strip_chrome_metrics(
             state.tabs().tabs().len(),
             tab_min_width_px(state),
             measured
-                .map(|width| {
-                    (width - tokens.layout.content_spacing.value() * 1.5).max(0.0)
-                })
+                .map(|width| (width - tokens.layout.content_spacing.value() * 1.5).max(0.0))
                 .unwrap_or_else(|| tab_strip_wrap_available_width(window_width, tokens, true)),
             tokens,
         )
@@ -931,6 +1057,7 @@ impl RenderOnce for ExplorerWindow {
                 &self.state,
                 f32::from(window.bounds().size.width),
                 self.on_action.clone(),
+                bookmark_shell_icons(&self.shell_icons, self.tokens, self.shell_icon_dpi),
             ))
             .when_some(bookmark_folder_dismiss, |element, (id, callback)| {
                 let dismiss = ExplorerAction::ToggleBookmarkFolderMenu { id };
@@ -959,7 +1086,8 @@ impl RenderOnce for ExplorerWindow {
             .child(
                 CommandBar::new(self.tokens, self.state.clone(), self.on_action.clone())
                     .with_menu_focus(self.command_menu_focus)
-                    .with_extension_view(size_map_menu_view),
+                    .with_extension_view(size_map_menu_view)
+                    .with_shell_icons(self.shell_icons.clone(), self.shell_icon_dpi),
             )
             .child(
                 div()
@@ -1231,6 +1359,7 @@ fn bookmark_bar(
     state: &AppViewState,
     width: f32,
     callback: Option<ActionCallback>,
+    shell_icons: BookmarkShellIcons<'_>,
 ) -> impl IntoElement {
     let catalog = state.catalog();
     let entries = state
@@ -1396,7 +1525,7 @@ fn bookmark_bar(
                 .when(folder_drop_active, |element| {
                     element.bg(tokens.theme.colors.control_pressed.to_gpui())
                 })
-                .child(format!("📁 {} ▾", folder.name))
+                .child(bookmark_collection_label(folder.name.clone(), true, tokens, shell_icons))
                 .when_some(callback, move |element, callback| {
                     element.on_click(move |_, window, cx| callback(&action, window, cx))
                 })
@@ -1533,7 +1662,7 @@ fn bookmark_bar(
                             })
                         })
                 })
-                .child(bookmark_label(&bookmark.target, display_name))
+                .child(bookmark_label(&bookmark.target, display_name, tokens, shell_icons))
                 .when_some(caret_before, |element, before| {
                     element.child(bookmark_drop_caret(tokens, before))
                 })
@@ -1643,7 +1772,7 @@ fn bookmark_bar(
                                 .hover(|style| {
                                     style.bg(tokens.theme.colors.control_hover.to_gpui())
                                 })
-                                .child(bookmark_label(&bookmark.target, bookmark.name.clone()))
+                                .child(bookmark_label(&bookmark.target, bookmark.name.clone(), tokens, shell_icons))
                                 .when_some(callback, move |element, callback| {
                                     element.on_click(move |_, window, cx| {
                                         callback(&action, window, cx)
@@ -1755,7 +1884,7 @@ fn bookmark_bar(
                                     .when(nested_drop_active, |item| {
                                         item.bg(tokens.theme.colors.control_pressed.to_gpui())
                                     })
-                                    .child(format!("📁 {}", folder.name))
+                                    .child(bookmark_collection_label(folder.name.clone(), false, tokens, shell_icons))
                                     .child("›")
                                     .when_some(callback, move |item, cb| {
                                         item.on_click(move |_, window, cx| cb(&action, window, cx))
@@ -1859,7 +1988,7 @@ fn bookmark_bar(
                                             })
                                         },
                                     )
-                                    .child(bookmark_label(&bookmark.target, bookmark.name.clone()))
+                                    .child(bookmark_label(&bookmark.target, bookmark.name.clone(), tokens, shell_icons))
                                     .when_some(line_before, |item, before| {
                                         item.child(bookmark_drop_line(tokens, before))
                                     })
@@ -2009,7 +2138,10 @@ pub(crate) fn bookmark_manager(
     search_query: &str,
     callback: Option<ActionCallback>,
     ui_callback: Option<crate::bookmark_manager_window::BookmarkManagerUiCallback>,
-) -> impl IntoElement {
+    shell_icons: &HashMap<explorer_model::ShellIconKey, Arc<RenderImage>>,
+    shell_icon_dpi: u16,
+) -> impl IntoElement + use<> {
+    let shell_icons = bookmark_shell_icons(shell_icons, tokens, shell_icon_dpi);
     let search_query = search_query.trim().to_lowercase();
     let catalog = state.catalog();
     let manager_row_height = 32.0;
@@ -2072,7 +2204,12 @@ pub(crate) fn bookmark_manager(
                             })
                         }),
                 )
-                .child(format!("📁 {}", folder.name))
+                .child(bookmark_collection_label(
+                    folder.name.clone(),
+                    false,
+                    tokens,
+                    shell_icons,
+                ))
                 .when_some(select_cb, move |element, cb| {
                     element.on_mouse_down(MouseButton::Left, move |_, window, cx| {
                         cb(&select, window, cx)
@@ -2305,7 +2442,7 @@ pub(crate) fn bookmark_manager(
                                 .min_w(px(0.0))
                                 .overflow_hidden()
                                 .px(px(8.0))
-                                .child(bookmark_label(&bookmark.target, bookmark.name.clone())),
+                                .child(bookmark_label(&bookmark.target, bookmark.name.clone(), tokens, shell_icons)),
                         )
                     })
                     .when(ui.columns.tags, |row| {
@@ -6910,7 +7047,21 @@ fn cache_budget_controls(
         .flex()
         .flex_col()
         .gap(px(tokens.layout.control_padding_horizontal.value()))
-        .child(catalog.t("settings-cache-usage-limits"))
+        .child(
+            div()
+                .flex()
+                .items_center()
+                .justify_between()
+                .gap(px(tokens.layout.content_spacing.value()))
+                .child(catalog.t("settings-cache-usage-limits"))
+                .child(folder_option_button(
+                    "folder-options-view-cache",
+                    catalog.t("settings-view-cache"),
+                    ExplorerAction::OpenCacheInspector,
+                    tokens,
+                    on_action.clone(),
+                )),
+        )
         .child(
             div()
                 .id("folder-options-cache-budget-controls")
@@ -8001,6 +8152,8 @@ pub struct CommandBar {
     on_action: Option<ActionCallback>,
     menu_focus: Option<gpui::FocusHandle>,
     extension_view: Option<crate::size_map_view::SizeMapViewConfigV1>,
+    shell_icons: HashMap<explorer_model::ShellIconKey, Arc<RenderImage>>,
+    shell_icon_dpi: u16,
 }
 
 impl CommandBar {
@@ -8015,7 +8168,20 @@ impl CommandBar {
             on_action,
             menu_focus: None,
             extension_view: None,
+            shell_icons: HashMap::new(),
+            shell_icon_dpi: 96,
         }
+    }
+
+    #[must_use]
+    pub fn with_shell_icons(
+        mut self,
+        shell_icons: HashMap<explorer_model::ShellIconKey, Arc<RenderImage>>,
+        shell_icon_dpi: u16,
+    ) -> Self {
+        self.shell_icons = shell_icons;
+        self.shell_icon_dpi = shell_icon_dpi;
+        self
     }
 
     #[must_use]
@@ -8328,7 +8494,602 @@ impl RenderOnce for CommandBar {
                         )
                     }),
             )
+            .child(semantic_button_with_popup(
+                "command-app-menu",
+                catalog.t("menu-app"),
+                Some(ExplorerIcon::Menu),
+                None,
+                Some(ExplorerAction::ToggleAppMenu),
+                true,
+                self.tokens,
+                self.on_action.clone(),
+                self.state.app_menu_open().then(|| {
+                    app_menu_panel(
+                        self.tokens,
+                        catalog,
+                        &self.state,
+                        self.state.view_settings().icon_size,
+                        self.on_action.clone(),
+                        bookmark_shell_icons(&self.shell_icons, self.tokens, self.shell_icon_dpi),
+                    )
+                    .into_any_element()
+                }),
+            ))
     }
+}
+
+fn app_menu_panel(
+    tokens: UiTokens,
+    catalog: Catalog,
+    state: &AppViewState,
+    icon_size: u16,
+    on_action: Option<ActionCallback>,
+    shell_icons: BookmarkShellIcons<'_>,
+) -> impl IntoElement {
+    let colors = tokens.theme.colors;
+    let page = state.app_menu_page();
+    let focused = state.app_menu_index();
+    let query = state.app_menu_history_query().to_owned();
+    let outside = on_action.clone();
+    let mut focus_index = 0_usize;
+    let mut rows = Vec::new();
+    for slot in state.app_menu_slots() {
+        match slot {
+            AppMenuSlot::Separator => {
+                rows.push(
+                    div()
+                        .h(px(1.0))
+                        .my(px(4.0))
+                        .bg(colors.divider.to_gpui())
+                        .into_any_element(),
+                );
+            }
+            AppMenuSlot::Heading(key) => {
+                rows.push(
+                    div()
+                        .px(px(12.0))
+                        .pt(px(6.0))
+                        .pb(px(2.0))
+                        .text_size(px(12.0))
+                        .text_color(colors.text_secondary.to_gpui())
+                        .child(catalog.t(key))
+                        .into_any_element(),
+                );
+            }
+            AppMenuSlot::Empty(key) => {
+                rows.push(
+                    div()
+                        .px(px(12.0))
+                        .py(px(6.0))
+                        .text_color(colors.text_secondary.to_gpui())
+                        .child(catalog.t(key))
+                        .into_any_element(),
+                );
+            }
+            AppMenuSlot::Zoom => {
+                let index = focus_index;
+                focus_index = focus_index.saturating_add(1);
+                rows.push(
+                    app_menu_zoom_row(
+                        catalog,
+                        icon_size,
+                        focused == index,
+                        tokens,
+                        on_action.clone(),
+                    )
+                    .into_any_element(),
+                );
+            }
+            AppMenuSlot::Action {
+                id,
+                label_key,
+                shortcut_key,
+                submenu,
+                enabled,
+                action,
+            } => {
+                let index = focus_index;
+                focus_index = focus_index.saturating_add(1);
+                let label = if id == "app-menu-search-history" && !query.is_empty() {
+                    query.clone()
+                } else {
+                    catalog.t(label_key)
+                };
+                rows.push(
+                    app_menu_row(
+                        id,
+                        label,
+                        shortcut_key.map(|key| catalog.t(key)),
+                        submenu,
+                        enabled,
+                        focused == index,
+                        action,
+                        ExplorerAction::SetAppMenuFocus { index },
+                        tokens,
+                        on_action.clone(),
+                    )
+                    .into_any_element(),
+                );
+            }
+            AppMenuSlot::Recent { label, location } => {
+                let index = focus_index;
+                focus_index = focus_index.saturating_add(1);
+                let icon = if location.path().is_some_and(|path| path.is_file()) {
+                    "📄"
+                } else {
+                    "📁"
+                };
+                rows.push(
+                    app_menu_icon_row(
+                        format!("app-menu-recent-{index}"),
+                        icon,
+                        label,
+                        focused == index,
+                        ExplorerAction::ActivateNavigationItem { location },
+                        ExplorerAction::SetAppMenuFocus { index },
+                        tokens,
+                        on_action.clone(),
+                    )
+                    .into_any_element(),
+                );
+            }
+            AppMenuSlot::ClosedWindow {
+                id,
+                title,
+                expanded,
+                tab_count,
+            } => {
+                let index = focus_index;
+                focus_index = focus_index.saturating_add(1);
+                rows.push(
+                    app_menu_closed_tree_row(
+                        format!("app-menu-closed-window-{index}"),
+                        "fluent/window.svg",
+                        title,
+                        (tab_count > 1).then_some(tab_count),
+                        false,
+                        (tab_count > 1).then_some((
+                            expanded,
+                            ExplorerAction::ToggleClosedWindowExpanded { id },
+                        )),
+                        false,
+                        focused == index,
+                        ExplorerAction::RestoreClosedWindow {
+                            id,
+                            tab_index: None,
+                        },
+                        ExplorerAction::SetAppMenuFocus { index },
+                        tokens,
+                        catalog,
+                        on_action.clone(),
+                    )
+                    .into_any_element(),
+                );
+            }
+            AppMenuSlot::ClosedWindowTab {
+                window_id,
+                tab_index,
+                title,
+                active,
+            } => {
+                let index = focus_index;
+                focus_index = focus_index.saturating_add(1);
+                rows.push(
+                    app_menu_closed_tree_row(
+                        format!("app-menu-closed-tab-{window_id}-{tab_index}"),
+                        "fluent/folder.svg",
+                        title,
+                        None,
+                        true,
+                        None,
+                        active,
+                        focused == index,
+                        ExplorerAction::RestoreClosedWindow {
+                            id: window_id,
+                            tab_index: Some(tab_index),
+                        },
+                        ExplorerAction::SetAppMenuFocus { index },
+                        tokens,
+                        catalog,
+                        on_action.clone(),
+                    )
+                    .into_any_element(),
+                );
+            }
+            AppMenuSlot::Bookmark { id, name, target } => {
+                let index = focus_index;
+                focus_index = focus_index.saturating_add(1);
+                rows.push(
+                    app_menu_icon_row(
+                        format!("app-menu-bookmark-{index}"),
+                        bookmark_icon_element(&target, tokens, shell_icons),
+                        name,
+                        focused == index,
+                        ExplorerAction::ActivateBookmark { id },
+                        ExplorerAction::SetAppMenuFocus { index },
+                        tokens,
+                        on_action.clone(),
+                    )
+                    .into_any_element(),
+                );
+            }
+        }
+    }
+    let pin_footer = matches!(page, AppMenuPage::History | AppMenuPage::Bookmarks) && rows.len() >= 2;
+    let footer = pin_footer.then(|| {
+        let action = rows.pop().expect("pinned menu action");
+        let separator = rows.pop().expect("pinned menu separator");
+        (separator, action)
+    });
+    let menu = div()
+        .id("app-menu")
+        .debug_selector(|| "app-menu".to_owned())
+        .role(Role::Menu)
+        .occlude()
+        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+        .w(px(312.0))
+        .max_h(px(560.0))
+        .p(px(6.0))
+        .rounded(px(tokens.layout.corner_radius.value()))
+        .bg(colors.menu_fill.to_gpui())
+        .border(px(1.0))
+        .border_color(colors.divider.to_gpui())
+        .when_some(outside, |menu, callback| {
+            menu.on_mouse_up_out(MouseButton::Left, move |_, window, cx| {
+                callback(&ExplorerAction::CloseAppMenu, window, cx);
+            })
+        })
+        .when(page != AppMenuPage::Main, |menu| {
+            let title = match page {
+                AppMenuPage::History => catalog.t("menu-app-history"),
+                AppMenuPage::Bookmarks => catalog.t("menu-app-bookmarks"),
+                AppMenuPage::MoreTools => catalog.t("menu-more-tools"),
+                AppMenuPage::ClosedWindows => catalog.t("menu-closed-windows"),
+                AppMenuPage::Main => String::new(),
+            };
+            let back_page = if page == AppMenuPage::ClosedWindows {
+                AppMenuPage::History
+            } else {
+                AppMenuPage::Main
+            };
+            let back = on_action.clone();
+            menu.child(
+                div()
+                    .id("app-menu-page-header")
+                    .h(px(36.0))
+                    .flex()
+                    .items_center()
+                    .child(
+                        div()
+                            .id("app-menu-back")
+                            .role(Role::Button)
+                            .w(px(32.0))
+                            .h(px(32.0))
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .rounded(px(tokens.layout.corner_radius.value()))
+                            .hover(|style| style.bg(colors.control_hover.to_gpui()))
+                            .child(chrome_icon("app-menu-back", ExplorerIcon::Back, tokens))
+                            .when_some(back, |button, callback| {
+                                button.on_mouse_down(MouseButton::Left, move |_, window, cx| {
+                                    cx.stop_propagation();
+                                    callback(
+                                        &ExplorerAction::SetAppMenuPage(back_page),
+                                        window,
+                                        cx,
+                                    );
+                                })
+                            }),
+                    )
+                    .child(
+                        div()
+                            .flex_1()
+                            .text_center()
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .child(title),
+                    )
+                    .child(div().w(px(32.0))),
+            )
+        })
+        .child(
+            div()
+                .id("app-menu-body")
+                .when(pin_footer, |body| body.max_h(px(420.0)).overflow_y_scroll())
+                .when(page == AppMenuPage::ClosedWindows, |body| {
+                    body.max_h(px(360.0)).overflow_y_scroll()
+                })
+                .children(rows),
+        )
+        .when_some(footer, |menu, (separator, action)| {
+            menu.child(separator).child(action)
+        });
+    deferred(
+        div()
+            .absolute()
+            .top(px(tokens.layout.minimum_hit_target.value()))
+            .right_0()
+            .occlude()
+            .child(menu),
+    )
+    .with_priority(90)
+}
+
+fn app_menu_row(
+    id: &'static str,
+    label: String,
+    shortcut: Option<String>,
+    submenu: bool,
+    enabled: bool,
+    selected: bool,
+    action: ExplorerAction,
+    hover_action: ExplorerAction,
+    tokens: UiTokens,
+    on_action: Option<ActionCallback>,
+) -> impl IntoElement {
+    let colors = tokens.theme.colors;
+    div()
+        .id(id)
+        .role(Role::MenuItem)
+        .aria_label(label.clone())
+        .aria_selected(selected)
+        .h(px(32.0))
+        .px(px(12.0))
+        .flex()
+        .items_center()
+        .gap(px(8.0))
+        .rounded(px(4.0))
+        .text_color(if enabled {
+            colors.text_primary.to_gpui()
+        } else {
+            colors.text_secondary.to_gpui()
+        })
+        .when(selected, |row| row.bg(colors.selected_inactive.to_gpui()))
+        .when(enabled, |row| {
+            row.hover(move |style| style.bg(colors.control_hover.to_gpui()))
+                .when_some(on_action, move |row, callback| {
+                    let hover_callback = callback.clone();
+                    let click_callback = callback;
+                    row.on_mouse_move(move |_, window, cx| {
+                        hover_callback(&hover_action, window, cx);
+                    })
+                    .on_mouse_down(MouseButton::Left, move |_, window, cx| {
+                        // Mouse-down, not click: a scrolling menu body treats the
+                        // gesture as a drag and never emits click.
+                        cx.stop_propagation();
+                        click_callback(&action, window, cx);
+                    })
+                })
+        })
+        .child(
+            div()
+                .min_w_0()
+                .flex_1()
+                .overflow_hidden()
+                .whitespace_nowrap()
+                .text_ellipsis()
+                .child(label),
+        )
+        .when_some(shortcut, |row, shortcut| {
+            row.child(
+                div()
+                    .flex_none()
+                    .text_size(px(12.0))
+                    .text_color(colors.text_secondary.to_gpui())
+                    .child(shortcut),
+            )
+        })
+        .when(submenu, |row| {
+            row.child(chrome_icon(id, ExplorerIcon::Chevron, tokens))
+        })
+}
+
+fn app_menu_closed_tree_row(
+    id: String,
+    icon: &'static str,
+    label: String,
+    count: Option<usize>,
+    indent: bool,
+    chevron: Option<(bool, ExplorerAction)>,
+    active: bool,
+    selected: bool,
+    action: ExplorerAction,
+    hover_action: ExplorerAction,
+    tokens: UiTokens,
+    catalog: Catalog,
+    on_action: Option<ActionCallback>,
+) -> impl IntoElement {
+    let colors = tokens.theme.colors;
+    let expanded = chevron.as_ref().is_some_and(|(expanded, _)| *expanded);
+    div()
+        .id(SharedString::from(id.clone()))
+        .role(Role::MenuItem)
+        .aria_label(label.clone())
+        .aria_selected(selected)
+        .when(chevron.is_some(), |row| row.aria_expanded(expanded))
+        .h(px(32.0))
+        .pl(px(if indent { 44.0 } else { 4.0 }))
+        .pr(px(8.0))
+        .flex()
+        .items_center()
+        .gap(px(6.0))
+        .rounded(px(4.0))
+        .text_color(colors.text_primary.to_gpui())
+        .when(selected, |row| row.bg(colors.selected_inactive.to_gpui()))
+        .hover(move |style| style.bg(colors.control_hover.to_gpui()))
+        .when_some(on_action.clone(), move |row, callback| {
+            let hover_callback = callback.clone();
+            let click_callback = callback;
+            row.on_mouse_move(move |_, window, cx| {
+                hover_callback(&hover_action, window, cx);
+            })
+            .on_mouse_down(MouseButton::Left, move |_, window, cx| {
+                cx.stop_propagation();
+                click_callback(&action, window, cx);
+            })
+        })
+        .child(match chevron {
+            Some((expanded, toggle_action)) => {
+                let callback = on_action;
+                div()
+                    .id(SharedString::from(format!("{id}-toggle")))
+                    .w(px(16.0))
+                    .h(px(16.0))
+                    .flex_none()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .rounded(px(3.0))
+                    .hover(|style| style.bg(colors.control_hover.to_gpui()))
+                    .child(chrome_icon(
+                        format!("{id}-chevron"),
+                        if expanded {
+                            ExplorerIcon::ChevronDown
+                        } else {
+                            ExplorerIcon::Chevron
+                        },
+                        tokens,
+                    ))
+                    .when_some(callback, |button, callback| {
+                        button
+                            .role(Role::Button)
+                            .aria_label(if expanded {
+                                catalog.t("chrome-collapse")
+                            } else {
+                                catalog.t("chrome-expand")
+                            })
+                            .on_mouse_down(MouseButton::Left, move |_, window, cx| {
+                                cx.stop_propagation();
+                                callback(&toggle_action, window, cx);
+                            })
+                    })
+                    .into_any_element()
+            }
+            None if !indent => div().w(px(16.0)).flex_none().into_any_element(),
+            None => div().into_any_element(),
+        })
+        .child(bookmark_fluent_glyph(icon, tokens))
+        .child(
+            div()
+                .min_w_0()
+                .flex_1()
+                .overflow_hidden()
+                .whitespace_nowrap()
+                .text_ellipsis()
+                .when(active, |label| label.font_weight(FontWeight::SEMIBOLD))
+                .child(label),
+        )
+        .when_some(count, |row, count| {
+            row.child(
+                div()
+                    .flex_none()
+                    .text_size(px(12.0))
+                    .text_color(colors.text_secondary.to_gpui())
+                    .child(count.to_string()),
+            )
+        })
+}
+
+fn app_menu_icon_row(
+    id: String,
+    icon: impl IntoElement,
+    label: String,
+    selected: bool,
+    action: ExplorerAction,
+    hover_action: ExplorerAction,
+    tokens: UiTokens,
+    on_action: Option<ActionCallback>,
+) -> impl IntoElement {
+    let colors = tokens.theme.colors;
+    div()
+        .id(SharedString::from(id))
+        .role(Role::MenuItem)
+        .aria_label(label.clone())
+        .aria_selected(selected)
+        .h(px(32.0))
+        .px(px(12.0))
+        .flex()
+        .items_center()
+        .gap(px(8.0))
+        .rounded(px(4.0))
+        .text_color(colors.text_primary.to_gpui())
+        .when(selected, |row| row.bg(colors.selected_inactive.to_gpui()))
+        .hover(move |style| style.bg(colors.control_hover.to_gpui()))
+        .when_some(on_action, move |row, callback| {
+            let hover_callback = callback.clone();
+            let click_callback = callback;
+            row.on_mouse_move(move |_, window, cx| {
+                hover_callback(&hover_action, window, cx);
+            })
+            .on_mouse_down(MouseButton::Left, move |_, window, cx| {
+                cx.stop_propagation();
+                click_callback(&action, window, cx);
+            })
+        })
+        .child(div().w(px(18.0)).flex_none().child(icon))
+        .child(
+            div()
+                .min_w_0()
+                .flex_1()
+                .overflow_hidden()
+                .whitespace_nowrap()
+                .text_ellipsis()
+                .child(label),
+        )
+}
+
+fn app_menu_zoom_row(
+    catalog: Catalog,
+    icon_size: u16,
+    selected: bool,
+    tokens: UiTokens,
+    on_action: Option<ActionCallback>,
+) -> impl IntoElement {
+    let colors = tokens.theme.colors;
+    let zoom_button = |id, label, direction, callback: Option<ActionCallback>| {
+        div()
+            .id(id)
+            .role(Role::Button)
+            .w(px(28.0))
+            .h(px(28.0))
+            .flex()
+            .items_center()
+            .justify_center()
+            .rounded(px(14.0))
+            .hover(|style| style.bg(colors.control_hover.to_gpui()))
+            .child(label)
+            .when_some(callback, |button, callback| {
+                button.on_mouse_down(MouseButton::Left, move |_, window, cx| {
+                    cx.stop_propagation();
+                    callback(&ExplorerAction::AppMenuZoom { direction }, window, cx);
+                })
+            })
+    };
+    div()
+        .id("app-menu-zoom")
+        .role(Role::MenuItem)
+        .aria_label(catalog.t("menu-zoom"))
+        .h(px(36.0))
+        .px(px(12.0))
+        .flex()
+        .items_center()
+        .rounded(px(4.0))
+        .when(selected, |row| row.bg(colors.selected_inactive.to_gpui()))
+        .child(catalog.t("menu-zoom"))
+        .child(div().flex_1())
+        .child(zoom_button(
+            "app-menu-zoom-out",
+            "−",
+            -1,
+            on_action.clone(),
+        ))
+        .child(
+            div()
+                .min_w(px(48.0))
+                .text_center()
+                .child(icon_size.to_string()),
+        )
+        .child(zoom_button("app-menu-zoom-in", "+", 1, on_action))
 }
 
 fn operation_navigation_location(
@@ -11284,6 +12045,7 @@ impl RenderOnce for NavigationPane {
                 &self.state,
                 self.tokens,
                 on_action.clone(),
+                bookmark_shell_icons(&self.shell_icons, self.tokens, self.shell_icon_dpi),
             ))
             .children({
                 let catalog = self.state.catalog();
@@ -11361,12 +12123,14 @@ fn bookmark_navigation_rows(
     state: &AppViewState,
     tokens: UiTokens,
     callback: Option<ActionCallback>,
+    shell_icons: BookmarkShellIcons<'_>,
 ) -> Vec<gpui::AnyElement> {
     fn visit(
         output: &mut Vec<gpui::AnyElement>,
         state: &AppViewState,
         tokens: UiTokens,
         callback: &Option<ActionCallback>,
+        shell_icons: BookmarkShellIcons<'_>,
         current: Option<&explorer_model::LocationDescriptor>,
         parent: Option<explorer_model::BookmarkFolderId>,
         depth: u8,
@@ -11391,8 +12155,20 @@ fn bookmark_navigation_rows(
                 expanded,
                 selected,
                 true,
-                Some(crate::navigation_pane::NavigationIcon::Folder),
                 None,
+                Some(
+                    div()
+                        .ml(px(8.0))
+                        .flex_1()
+                        .overflow_hidden()
+                        .child(bookmark_collection_label(
+                            folder.name.clone(),
+                            false,
+                            tokens,
+                            shell_icons,
+                        ))
+                        .into_any_element(),
+                ),
                 tokens,
                 state.catalog(),
                 left_cb,
@@ -11412,6 +12188,7 @@ fn bookmark_navigation_rows(
                     state,
                     tokens,
                     callback,
+                    shell_icons,
                     current,
                     Some(id),
                     depth.saturating_add(1),
@@ -11434,7 +12211,12 @@ fn bookmark_navigation_rows(
                 selected,
                 false,
                 None,
-                Some(bookmark_label(&bookmark.target, bookmark.name.clone())),
+                Some(bookmark_label(
+                    &bookmark.target,
+                    bookmark.name.clone(),
+                    tokens,
+                    shell_icons,
+                )),
                 tokens,
                 state.catalog(),
                 callback,
@@ -11492,6 +12274,7 @@ fn bookmark_navigation_rows(
             state,
             tokens,
             &callback,
+            shell_icons,
             current.as_ref(),
             None,
             1,
@@ -13014,6 +13797,10 @@ impl RenderOnce for FileViewHost {
                 let row_id = format!("shell-row-{:02x?}", entry.id.provider_bytes());
                 let display_name = file_display_name(&entry, &view_settings);
                 let selected = selection.contains(&entry.id) || editor.is_some();
+                // Visual selection includes the rename editor. Drag preservation must use the
+                // real set so an unmodified press on one selected row can still carry the rest.
+                let already_in_multi_selection =
+                    selection.contains(&entry.id) && selection.len() > 1;
                 let context_item_id = entry.id.clone();
                 let kind = if entry.is_container { "Folder" } else { "File" };
                 let modified = entry.metadata.modified_display.clone().unwrap_or_default();
@@ -13410,29 +14197,39 @@ impl RenderOnce for FileViewHost {
                                         cx,
                                     );
                                 } else {
-                                    callback(
-                                        &if event.modifiers.shift {
-                                            ExplorerAction::SelectRange {
-                                                row_index: visible_index,
-                                                additive: event.modifiers.control,
-                                            }
-                                        } else if event.modifiers.control {
-                                            ExplorerAction::SelectAdditionalItem {
-                                                row_index: visible_index,
-                                            }
-                                        } else {
-                                            ExplorerAction::SelectItem {
-                                                row_index: visible_index,
-                                            }
-                                        },
-                                        window,
-                                        cx,
-                                    );
+                                    // Explorer does not collapse an existing multi-selection on
+                                    // mouse-down. The set stays intact so a drag carries every
+                                    // selected item; a click collapses to this row on mouse-up.
+                                    let defer_multi_selection = already_in_multi_selection
+                                        && !event.modifiers.shift
+                                        && !event.modifiers.control;
+                                    if !defer_multi_selection {
+                                        callback(
+                                            &if event.modifiers.shift {
+                                                ExplorerAction::SelectRange {
+                                                    row_index: visible_index,
+                                                    additive: event.modifiers.control,
+                                                }
+                                            } else if event.modifiers.control {
+                                                ExplorerAction::SelectAdditionalItem {
+                                                    row_index: visible_index,
+                                                }
+                                            } else {
+                                                ExplorerAction::SelectItem {
+                                                    row_index: visible_index,
+                                                }
+                                            },
+                                            window,
+                                            cx,
+                                        );
+                                    }
                                     callback(
                                         &ExplorerAction::BeginFileDrag {
                                             x: f32::from(event.position.x),
                                             y: f32::from(event.position.y),
                                             button: explorer_model::DragButton::Left,
+                                            deferred_row: defer_multi_selection
+                                                .then_some(visible_index),
                                         },
                                         window,
                                         cx,
@@ -14684,7 +15481,10 @@ fn explorer_vertical_scrollbar(
         0.0
     };
     let click_handle = handle.clone();
+    let menu_callback = on_action.clone();
+    let thumb_menu_callback = on_action.clone();
     let begin_callback = on_action;
+    let folder_menu = kind == crate::interaction::ScrollbarKind::FileView;
     div()
         .id(id)
         .debug_selector(move || id.to_owned())
@@ -14753,6 +15553,30 @@ fn explorer_vertical_scrollbar(
             cx.stop_propagation();
             cx.refresh_windows();
         })
+        .when(folder_menu, |element| {
+            element.when_some(menu_callback, |element, callback| {
+                element.on_mouse_down(MouseButton::Right, move |event, window, cx| {
+                    // Explorer opens the folder background menu from the file-view
+                    // scrollbar as well as from empty space in the folder.
+                    cx.stop_propagation();
+                    let (owner_window, x, y) = context_menu_coordinates(event.position, window);
+                    callback(
+                        &ExplorerAction::ShowContextMenu {
+                            item_id: None,
+                            owner_window,
+                            x,
+                            y,
+                            client_x: f32::from(event.position.x),
+                            client_y: f32::from(event.position.y),
+                            keyboard_invoked: false,
+                            extended_verbs: event.modifiers.shift,
+                        },
+                        window,
+                        cx,
+                    );
+                })
+            })
+        })
         .child(
             div()
                 .absolute()
@@ -14762,7 +15586,30 @@ fn explorer_vertical_scrollbar(
                 .h(px(thumb_height))
                 .rounded(px(tokens.layout.corner_radius.value()))
                 .bg(colors.text_disabled.to_gpui())
-                .hover(|style| style.bg(colors.text_secondary.to_gpui())),
+                .hover(|style| style.bg(colors.text_secondary.to_gpui()))
+                .when(folder_menu, |thumb| {
+                    thumb.when_some(thumb_menu_callback, |thumb, callback| {
+                        thumb.on_mouse_down(MouseButton::Right, move |event, window, cx| {
+                            cx.stop_propagation();
+                            let (owner_window, x, y) =
+                                context_menu_coordinates(event.position, window);
+                            callback(
+                                &ExplorerAction::ShowContextMenu {
+                                    item_id: None,
+                                    owner_window,
+                                    x,
+                                    y,
+                                    client_x: f32::from(event.position.x),
+                                    client_y: f32::from(event.position.y),
+                                    keyboard_invoked: false,
+                                    extended_verbs: event.modifiers.shift,
+                                },
+                                window,
+                                cx,
+                            );
+                        })
+                    })
+                }),
         )
 }
 
@@ -17033,6 +17880,10 @@ impl RenderOnce for StatusBar {
             full_status.push_str(" · ");
             full_status.push_str(notice);
         }
+        if let Some(notice) = self.state.thumbnail_quota_notice() {
+            full_status.push_str(" · ");
+            full_status.push_str(notice);
+        }
         if let Some(notice) = self.state.quick_access_notice() {
             full_status.push_str(" | ");
             full_status.push_str(notice);
@@ -18078,13 +18929,9 @@ impl RenderOnce for WindowChrome {
                             .relative()
                             .window_control_area(WindowControlArea::Drag)
                             .when(tab_metrics.multi_row, |element| {
-                                element
-                                    .flex_none()
-                                    .h(px(layout.title_tab_height.value()))
+                                element.flex_none().h(px(layout.title_tab_height.value()))
                             })
-                            .when(!tab_metrics.multi_row, |element| {
-                                element.h_full().flex_1()
-                            })
+                            .when(!tab_metrics.multi_row, |element| element.h_full().flex_1())
                             .min_w(px(crate::layout::tabs::CAPTION_DRAG_RESERVE.value()))
                             .overflow_hidden()
                             .on_mouse_down(MouseButton::Left, |event, window, _| {
@@ -18688,11 +19535,42 @@ mod tests {
         let lua = explorer_model::BookmarkTarget::LuaScript {
             source: "return 1".into(),
         };
-        assert_eq!(bookmark_icon(&local), "🔖");
+        assert_eq!(bookmark_icon(&local), "📁");
         assert_eq!(bookmark_icon(&adb), "📱");
         assert_eq!(bookmark_icon(&sftp), "🖥");
         assert_eq!(bookmark_icon(&gdrive), "☁");
         assert_eq!(bookmark_icon(&lua), "⚡");
+    }
+
+    #[test]
+    fn local_file_and_folder_bookmarks_resolve_shell_icon_locations() {
+        let file = explorer_model::BookmarkTarget::FilePath {
+            path: r"D:\AI_Pic\start.bat".into(),
+        };
+        let folder = explorer_model::BookmarkTarget::FolderPath {
+            path: r"C:\portable\KoikatuSunshine".into(),
+        };
+        let lua = explorer_model::BookmarkTarget::LuaScript {
+            source: "return 1".into(),
+        };
+        let adb = explorer_model::BookmarkTarget::FilePath {
+            path: "adb://emulator-5554/sdcard/start.bat".into(),
+        };
+        let file_location = crate::state::bookmark_target_shell_location(&file)
+            .expect("local file bookmarks use the shell icon");
+        let folder_location = crate::state::bookmark_target_shell_location(&folder)
+            .expect("local folder bookmarks use the shell icon");
+        assert_eq!(
+            file_location.path().and_then(|path| path.to_str()),
+            Some(r"D:\AI_Pic\start.bat")
+        );
+        assert_eq!(
+            folder_location.path().and_then(|path| path.to_str()),
+            Some(r"C:\portable\KoikatuSunshine")
+        );
+        assert!(crate::state::bookmark_target_shell_location(&lua).is_none());
+        assert!(crate::state::bookmark_target_shell_location(&adb).is_none());
+        assert!(include_str!("chrome.rs").contains("bookmark_shell_image"));
     }
 
     fn virtual_location(
@@ -19645,6 +20523,31 @@ mod tests {
             .expect("production source precedes tests");
         assert!(!production.contains("if !event.modifiers.shift"));
         assert!(production.contains("ExplorerAction::BeginFileDrag"));
+    }
+
+    #[test]
+    fn unmodified_press_on_selected_row_defers_collapse_until_mouse_up() {
+        let source = include_str!("chrome.rs");
+        let production = source
+            .split("#[cfg(test)]")
+            .next()
+            .expect("production source precedes tests");
+        assert!(production.contains("already_in_multi_selection"));
+        assert!(production.contains("defer_multi_selection"));
+        assert!(production.contains("deferred_row: defer_multi_selection"));
+        let defer_gate = production
+            .find("if !defer_multi_selection")
+            .expect("unmodified multi-selection press skips immediate SelectItem");
+        let select_item = production[defer_gate..]
+            .find("ExplorerAction::SelectItem")
+            .expect("SelectItem remains the ordinary click path");
+        let begin_drag = production[defer_gate..]
+            .find("ExplorerAction::BeginFileDrag")
+            .expect("drag candidate still starts from the pressed row");
+        assert!(
+            select_item < begin_drag,
+            "ordinary clicks still select before arming a drag, while a deferred press skips that select"
+        );
     }
 
     #[test]
@@ -21696,6 +22599,68 @@ mod tests {
     }
 
     #[test]
+    fn app_menu_button_is_rightmost_and_history_is_an_in_panel_page() {
+        let source = include_str!("chrome.rs");
+        let production = source
+            .split("#[cfg(test)]")
+            .next()
+            .expect("production source precedes tests");
+        let transfer = production
+            .find("\"command-transfer-center\"")
+            .expect("transfer button");
+        let app_menu = production
+            .find("\"command-app-menu\"")
+            .expect("application menu button");
+        assert!(
+            transfer < app_menu,
+            "the application menu button must be the rightmost command"
+        );
+        let panel = production
+            .split("fn app_menu_panel(")
+            .nth(1)
+            .and_then(|source| source.split("\nfn ").next())
+            .expect("application menu panel");
+        assert!(panel.contains("AppMenuPage::History"));
+        assert!(panel.contains("menu-app-history"));
+        assert!(panel.contains("ExplorerIcon::Back"));
+        assert!(panel.contains("app_menu_zoom_row"));
+        assert!(!panel.contains("gmail"));
+        assert!(!panel.contains("建立新設定檔"));
+        assert!(production.contains("fn app_menu_zoom_row("));
+        let slots = include_str!("state.rs");
+        assert!(slots.contains("menu-clear-recent-history"));
+        assert!(slots.contains("menu-search-history"));
+        assert!(slots.contains("menu-recent-history"));
+        assert!(!slots.contains("建立新設定檔"));
+    }
+
+    #[test]
+    fn file_view_scrollbar_right_click_opens_the_folder_background_menu() {
+        let source = include_str!("chrome.rs");
+        let production = source
+            .split("#[cfg(test)]")
+            .next()
+            .expect("production source precedes tests");
+        let scrollbar = production
+            .split("fn explorer_vertical_scrollbar(")
+            .nth(1)
+            .and_then(|source| source.split("\nfn ").next())
+            .expect("vertical scrollbar builder");
+        assert!(scrollbar.contains("ScrollbarKind::FileView"));
+        assert!(scrollbar.contains("MouseButton::Right"));
+        assert!(scrollbar.contains("item_id: None"));
+        assert!(scrollbar.contains("cx.stop_propagation()"));
+        let navigation = production
+            .split("\"navigation-scrollbar\"")
+            .nth(1)
+            .expect("navigation scrollbar call");
+        assert!(
+            !navigation[..navigation.len().min(400)].contains("ShowContextMenu"),
+            "only the file-view scrollbar opens the folder menu"
+        );
+    }
+
+    #[test]
     fn background_right_click_stops_nested_host_bubbling_before_dispatch() {
         let source = include_str!("chrome.rs");
         let production = source
@@ -22558,6 +23523,8 @@ impl Render for BookmarkManagerProbe {
             "",
             None,
             None,
+            &HashMap::new(),
+            96,
         ))
     }
 }

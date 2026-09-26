@@ -5,6 +5,7 @@
 )]
 
 use std::{
+    ffi::OsStr,
     mem,
     mem::size_of,
     os::windows::ffi::OsStrExt as _,
@@ -13,7 +14,10 @@ use std::{
     time::UNIX_EPOCH,
 };
 
-use explorer_common::{ExplorerError, ExplorerErrorKind};
+use explorer_common::{
+    ErrorSeverity, ExplorerError, ExplorerErrorKind, log_isolated_panic, record_process_error,
+    record_process_error_message,
+};
 use explorer_model::{
     BreadcrumbMenuItem, DriveAvailability, DriveKind, DriveMetadata, ExplorerEvent, FileEntry,
     FileEntryMetadata, LocationDescriptor, LocationMetadata, NamespaceCapabilities, PropertyValue,
@@ -36,15 +40,12 @@ use windows::{
             },
             Time::{FileTimeToSystemTime, SystemTimeToTzSpecificLocalTime},
         },
-        UI::{
-            Shell::{
-                Common::ITEMIDLIST, IEnumIDList, ILCombine, ILGetSize, IShellFolder, IShellItem,
-                SHCONTF_FOLDERS, SHCONTF_INCLUDEHIDDEN, SHCONTF_INCLUDESUPERHIDDEN,
-                SHCONTF_NONFOLDERS, SHCreateItemFromIDList, SHFILEINFOW, SHGFI_TYPENAME,
-                SHGetDesktopFolder, SHGetFileInfoW, SHGetKnownFolderIDList, SHGetNameFromIDList,
-                SHParseDisplayName, SIGDN_FILESYSPATH, SIGDN_NORMALDISPLAY, ShellExecuteW,
-            },
-            WindowsAndMessaging::SW_SHOWNORMAL,
+        UI::Shell::{
+            Common::ITEMIDLIST, IEnumIDList, ILCombine, ILGetSize, IShellFolder, IShellItem,
+            SHCONTF_FOLDERS, SHCONTF_INCLUDEHIDDEN, SHCONTF_INCLUDESUPERHIDDEN, SHCONTF_NONFOLDERS,
+            SHCreateItemFromIDList, SHFILEINFOW, SHGFI_TYPENAME, SHGetDesktopFolder,
+            SHGetFileInfoW, SHGetKnownFolderIDList, SHGetNameFromIDList, SHParseDisplayName,
+            SIGDN_FILESYSPATH, SIGDN_NORMALDISPLAY,
         },
     },
     core::{GUID, HSTRING, PCWSTR},
@@ -1104,6 +1105,11 @@ mod tests {
     }
 }
 
+/// Opens the descriptor with the registered default verb.
+///
+/// # Errors
+///
+/// Returns a Shell error when `ShellExecuteW` fails or an in-process handler throws.
 pub fn open_default(descriptor: &LocationDescriptor) -> Result<(), ExplorerError> {
     let target = match descriptor {
         LocationDescriptor::FileSystem(path) => path.as_os_str().to_string_lossy().into_owned(),
@@ -1150,20 +1156,115 @@ pub fn open_default(descriptor: &LocationDescriptor) -> Result<(), ExplorerError
             ));
         }
     };
-    let target = HSTRING::from(target);
-    // SAFETY: all text parameters are live NUL-terminated HSTRING/None values. ShellExecuteW does
-    // not retain them and requests the user's registered default verb without a process handle.
-    let result = unsafe { ShellExecuteW(None, None, &target, None, None, SW_SHOWNORMAL) };
-    let code = result.0 as isize;
+    let directory = descriptor
+        .path()
+        .and_then(|path| path.parent())
+        .map(|parent| {
+            parent
+                .as_os_str()
+                .encode_wide()
+                .chain(std::iter::once(0))
+                .collect::<Vec<u16>>()
+        });
+    let wide_target = OsStr::new(&target)
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect::<Vec<u16>>();
+    let code = unsafe {
+        seh_shell_execute_w(
+            wide_target.as_ptr(),
+            directory.as_ref().map_or(ptr::null(), Vec::as_ptr),
+        )
+    };
     if code > 32 {
         Ok(())
+    } else if code < 0 {
+        let detail = format!("ShellExecuteW raised an exception and was isolated (code={code})");
+        record_process_error_message(
+            ErrorSeverity::Critical,
+            "shell",
+            "shell_execute_exception",
+            &detail,
+            Some(file!()),
+        );
+        Err(shell_error("open Shell item", Some(code), &detail))
     } else {
         Err(shell_error(
             "open Shell item",
-            Some(i32::try_from(code).unwrap_or(i32::MIN)),
+            Some(code),
             "ShellExecuteW returned an execution error code",
         ))
     }
+}
+
+/// Starts the default verb on a private thread.
+///
+/// Bookmark activation runs on the GPUI UI thread. `ShellExecuteW` for a `.sln`
+/// can load Visual Studio's in-process handler, throw a C++ exception, and abort
+/// this process while GPUI drops jump-list paths. The worker owns that call.
+///
+/// # Errors
+///
+/// Returns an error when the worker thread cannot be started. Failures inside
+/// the worker are written to `error.log` instead of being returned.
+pub fn open_default_detached(descriptor: LocationDescriptor) -> Result<(), ExplorerError> {
+    std::thread::Builder::new()
+        .name("shell-open".into())
+        .spawn(move || {
+            let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                let _apartment = OpenApartmentGuard::initialize();
+                if let Err(error) = open_default(&descriptor) {
+                    record_process_error(
+                        ErrorSeverity::Error,
+                        "shell",
+                        "open_bookmarked_file",
+                        &error,
+                        Some(file!()),
+                    );
+                    tracing::error!(%error, "failed to open bookmarked file");
+                }
+            }));
+            if let Err(payload) = outcome {
+                log_isolated_panic(
+                    "shell",
+                    "open_bookmarked_file_panic",
+                    payload.as_ref(),
+                    Some(file!()),
+                );
+            }
+        })
+        .map(|_| ())
+        .map_err(|error| {
+            let detail = error.to_string();
+            shell_error("start file open", None, &detail)
+        })
+}
+
+struct OpenApartmentGuard {
+    initialized: bool,
+}
+
+impl OpenApartmentGuard {
+    fn initialize() -> Self {
+        use windows::Win32::System::Com::{COINIT_APARTMENTTHREADED, CoInitializeEx};
+        // SAFETY: null reserved pointer, balanced by Drop on this same worker thread.
+        let initialized = unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED) }.is_ok();
+        Self { initialized }
+    }
+}
+
+impl Drop for OpenApartmentGuard {
+    fn drop(&mut self) {
+        if self.initialized {
+            use windows::Win32::System::Com::CoUninitialize;
+            // SAFETY: balances the successful CoInitializeEx on this worker thread.
+            unsafe { CoUninitialize() };
+        }
+    }
+}
+
+unsafe extern "C" {
+    fn seh_shell_execute_w(path: *const u16, directory: *const u16) -> i32;
 }
 
 pub(crate) fn child_entry(

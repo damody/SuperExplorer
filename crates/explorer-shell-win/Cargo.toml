@@ -23,6 +23,9 @@ windows.workspace = true
 windows-core.workspace = true
 explorer-remote = { path = "../explorer-remote" }
 
+[build-dependencies]
+cc = "1"
+
 [dev-dependencies]
 explorer-test-support = { path = "../explorer-test-support" }
 tempfile.workspace = true

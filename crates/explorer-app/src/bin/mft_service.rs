@@ -1833,7 +1833,15 @@ impl SharedFolderQueryServiceV1 {
                 aggregate_limit,
             )
         }))
-        .unwrap_or_else(|_| Err("MFT folder aggregate computation failed".to_owned()))
+        .unwrap_or_else(|payload| {
+            explorer_common::log_isolated_panic(
+                "mft",
+                "folder_aggregate",
+                payload.as_ref(),
+                Some(file!()),
+            );
+            Err("MFT folder aggregate computation failed".to_owned())
+        })
         .and_then(|value| {
             require_exact_folder_aggregate(value, observed, durable, exact, aggregate_limit)
         })

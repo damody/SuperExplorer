@@ -31,6 +31,9 @@ gpui::actions!(
         ToggleExplorerTheme,
         ToggleExplorerPreview,
         CloseExplorerWindow,
+        ShowTransferPanel,
+        OpenHistoryLibrary,
+        ShowExtensionsMenu,
         ShrinkNavigationPane,
         GrowNavigationPane,
         ResetNavigationPane,
@@ -43,6 +46,7 @@ gpui::actions!(
 /// translated back into the same domain dispatcher used by pointer controls.
 pub fn gpui_key_bindings() -> Vec<gpui::KeyBinding> {
     vec![
+        // History back. Backspace is parent-folder Up, not this binding.
         gpui::KeyBinding::new("alt-left", NavigateBack, None),
         gpui::KeyBinding::new("alt-right", NavigateForward, None),
         gpui::KeyBinding::new("alt-up", NavigateUp, None),
@@ -65,6 +69,10 @@ pub fn gpui_key_bindings() -> Vec<gpui::KeyBinding> {
         gpui::KeyBinding::new("ctrl-shift-d", ToggleExplorerTheme, None),
         gpui::KeyBinding::new("alt-p", ToggleExplorerPreview, None),
         gpui::KeyBinding::new("alt-f4", CloseExplorerWindow, None),
+        gpui::KeyBinding::new("ctrl-shift-q", CloseExplorerWindow, None),
+        gpui::KeyBinding::new("ctrl-j", ShowTransferPanel, None),
+        gpui::KeyBinding::new("ctrl-shift-h", OpenHistoryLibrary, None),
+        gpui::KeyBinding::new("ctrl-shift-a", ShowExtensionsMenu, None),
         gpui::KeyBinding::new("ctrl-alt-left", ShrinkNavigationPane, None),
         gpui::KeyBinding::new("ctrl-alt-right", GrowNavigationPane, None),
         gpui::KeyBinding::new("ctrl-alt-home", ResetNavigationPane, None),
@@ -88,6 +96,30 @@ pub fn gpui_text_input_bindings() -> Vec<gpui::KeyBinding> {
                 .any(|keystroke| matches!(keystroke.key(), "enter" | "escape" | "tab"))
         })
         .collect()
+}
+
+/// Firefox-style application menu page. Subpages replace the panel instead of opening a flyout.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum AppMenuPage {
+    #[default]
+    Main,
+    History,
+    Bookmarks,
+    MoreTools,
+    ClosedWindows,
+}
+
+impl AppMenuPage {
+    /// Focus index on the main page that opens this page.
+    pub const fn main_focus_index(self) -> usize {
+        match self {
+            Self::Main => 0,
+            Self::History => 1,
+            Self::Bookmarks => 2,
+            Self::MoreTools => 8,
+            Self::ClosedWindows => 1,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -477,6 +509,9 @@ pub enum ExplorerAction {
     },
     EndFolderOptionSliderDrag,
     ClearThumbnailCache,
+    OpenCacheInspector,
+    SetCacheInspectorSource(crate::cache_inspector::CacheInspectorSource),
+    CloseCacheInspector,
     ToggleFolderOptionDetailsPane,
     ToggleFolderOptionPreviewPane,
     SetFolderOptionLocaleChoice(LocaleChoice),
@@ -499,6 +534,9 @@ pub enum ExplorerAction {
         x: f32,
         y: f32,
         button: explorer_model::DragButton,
+        /// Row already inside a multi-selection. Selection stays intact for the drag and
+        /// collapses to this row only if the gesture ends before the drag threshold.
+        deferred_row: Option<usize>,
     },
     BeginContextItemGesture {
         item_id: explorer_model::ShellItemId,
@@ -679,6 +717,31 @@ pub enum ExplorerAction {
     ToggleCompactView,
     ToggleTheme,
     CloseWindow,
+    ToggleAppMenu,
+    CloseAppMenu,
+    SetAppMenuPage(AppMenuPage),
+    MoveAppMenuFocus {
+        direction: i8,
+    },
+    SetAppMenuFocus {
+        index: usize,
+    },
+    AppendAppMenuHistoryQuery {
+        text: String,
+    },
+    BackspaceAppMenuHistoryQuery,
+    AppMenuZoom {
+        direction: i8,
+    },
+    ClearRecentHistory,
+    OpenBookmarkManagerHistory,
+    RestoreClosedWindow {
+        id: u64,
+        tab_index: Option<u16>,
+    },
+    ToggleClosedWindowExpanded {
+        id: u64,
+    },
     ResizeNavigationPane {
         width: LogicalPx,
     },
@@ -872,6 +935,9 @@ impl ExplorerAction {
             Self::BeginFolderOptionSliderDrag { .. } => "BeginFolderOptionSliderDrag",
             Self::EndFolderOptionSliderDrag => "EndFolderOptionSliderDrag",
             Self::ClearThumbnailCache => "ClearThumbnailCache",
+            Self::OpenCacheInspector => "OpenCacheInspector",
+            Self::SetCacheInspectorSource(_) => "SetCacheInspectorSource",
+            Self::CloseCacheInspector => "CloseCacheInspector",
             Self::ToggleFolderOptionDetailsPane => "ToggleFolderOptionDetailsPane",
             Self::ToggleFolderOptionPreviewPane => "ToggleFolderOptionPreviewPane",
             Self::SetFolderOptionLocaleChoice(_) => "SetFolderOptionLocaleChoice",
@@ -963,6 +1029,18 @@ impl ExplorerAction {
             Self::ToggleCompactView => "ToggleCompactView",
             Self::ToggleTheme => "ToggleTheme",
             Self::CloseWindow => "CloseWindow",
+            Self::ToggleAppMenu => "ToggleAppMenu",
+            Self::CloseAppMenu => "CloseAppMenu",
+            Self::SetAppMenuPage(_) => "SetAppMenuPage",
+            Self::MoveAppMenuFocus { .. } => "MoveAppMenuFocus",
+            Self::SetAppMenuFocus { .. } => "SetAppMenuFocus",
+            Self::AppendAppMenuHistoryQuery { .. } => "AppendAppMenuHistoryQuery",
+            Self::BackspaceAppMenuHistoryQuery => "BackspaceAppMenuHistoryQuery",
+            Self::AppMenuZoom { .. } => "AppMenuZoom",
+            Self::ClearRecentHistory => "ClearRecentHistory",
+            Self::OpenBookmarkManagerHistory => "OpenBookmarkManagerHistory",
+            Self::RestoreClosedWindow { .. } => "RestoreClosedWindow",
+            Self::ToggleClosedWindowExpanded { .. } => "ToggleClosedWindowExpanded",
             Self::ResizeNavigationPane { .. } => "ResizeNavigationPane",
             Self::BeginNavigationPaneResize { .. } => "BeginNavigationPaneResize",
             Self::UpdateNavigationPaneResize { .. } => "UpdateNavigationPaneResize",
@@ -993,6 +1071,10 @@ pub enum KeyCode {
     T,
     W,
     Tab,
+    J,
+    Q,
+    H,
+    A,
 }
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
@@ -1010,7 +1092,7 @@ pub struct KeyBinding {
     pub action: ExplorerAction,
 }
 
-pub const DEFAULT_BINDINGS: [KeyBinding; 16] = [
+pub const DEFAULT_BINDINGS: [KeyBinding; 20] = [
     binding(
         BindingScope::Window,
         KeyCode::Left,
@@ -1138,6 +1220,38 @@ pub const DEFAULT_BINDINGS: [KeyBinding; 16] = [
         false,
         true,
         ExplorerAction::CloseWindow,
+    ),
+    binding(
+        BindingScope::Window,
+        KeyCode::Q,
+        true,
+        true,
+        false,
+        ExplorerAction::CloseWindow,
+    ),
+    binding(
+        BindingScope::Window,
+        KeyCode::J,
+        true,
+        false,
+        false,
+        ExplorerAction::ToggleTransferPanel,
+    ),
+    binding(
+        BindingScope::Window,
+        KeyCode::H,
+        true,
+        true,
+        false,
+        ExplorerAction::OpenBookmarkManagerHistory,
+    ),
+    binding(
+        BindingScope::Window,
+        KeyCode::A,
+        true,
+        true,
+        false,
+        ExplorerAction::ToggleExtensionsMenu,
     ),
 ];
 
@@ -1287,6 +1401,16 @@ pub fn dispatch_action(
             | ExplorerAction::CloseNavigationHistory
             | ExplorerAction::MoveNavigationHistoryFocus { .. }
             | ExplorerAction::ActivateNavigationHistory { .. }
+            | ExplorerAction::ToggleAppMenu
+            | ExplorerAction::CloseAppMenu
+            | ExplorerAction::SetAppMenuPage(_)
+            | ExplorerAction::MoveAppMenuFocus { .. }
+            | ExplorerAction::SetAppMenuFocus { .. }
+            | ExplorerAction::AppendAppMenuHistoryQuery { .. }
+            | ExplorerAction::BackspaceAppMenuHistoryQuery
+            | ExplorerAction::AppMenuZoom { .. }
+            | ExplorerAction::ClearRecentHistory
+            | ExplorerAction::ToggleClosedWindowExpanded { .. }
     );
     let preserve_more_menu = matches!(
         &action,
@@ -1335,6 +1459,18 @@ pub fn dispatch_action(
             | ExplorerAction::ToggleDetailsFilter { .. }
             | ExplorerAction::ClearDetailsFilter { .. }
     );
+    let preserve_app_menu = matches!(
+        &action,
+        ExplorerAction::ToggleAppMenu
+            | ExplorerAction::SetAppMenuPage(_)
+            | ExplorerAction::MoveAppMenuFocus { .. }
+            | ExplorerAction::SetAppMenuFocus { .. }
+            | ExplorerAction::AppendAppMenuHistoryQuery { .. }
+            | ExplorerAction::BackspaceAppMenuHistoryQuery
+            | ExplorerAction::AppMenuZoom { .. }
+            | ExplorerAction::ClearRecentHistory
+            | ExplorerAction::ToggleClosedWindowExpanded { .. }
+    );
     let preserve_navigation_history = matches!(
         &action,
         ExplorerAction::OpenNavigationHistory { .. }
@@ -1377,6 +1513,9 @@ pub fn dispatch_action(
         }
         if !preserve_navigation_history {
             state.close_navigation_history_menu();
+        }
+        if !preserve_app_menu {
+            state.close_app_menu();
         }
         ActionOutcome::Handled
     } else {
@@ -1704,6 +1843,9 @@ fn action_available(state: &AppViewState, action: &ExplorerAction) -> bool {
         | ExplorerAction::BeginFolderOptionSliderDrag { .. }
         | ExplorerAction::EndFolderOptionSliderDrag
         | ExplorerAction::ClearThumbnailCache
+        | ExplorerAction::OpenCacheInspector
+        | ExplorerAction::SetCacheInspectorSource(_)
+        | ExplorerAction::CloseCacheInspector
         | ExplorerAction::ToggleFolderOptionDetailsPane
         | ExplorerAction::ToggleFolderOptionPreviewPane
         | ExplorerAction::SetFolderOptionLocaleChoice(_)
@@ -1785,6 +1927,18 @@ fn action_available(state: &AppViewState, action: &ExplorerAction) -> bool {
         | ExplorerAction::CommitBookmarkDrop { .. }
         | ExplorerAction::UpdateBookmarkDropCue { .. } => true,
         ExplorerAction::CloseWindow => availability.is_enabled(CommandKind::CloseWindow),
+        ExplorerAction::ToggleAppMenu
+        | ExplorerAction::CloseAppMenu
+        | ExplorerAction::SetAppMenuPage(_)
+        | ExplorerAction::MoveAppMenuFocus { .. }
+        | ExplorerAction::SetAppMenuFocus { .. }
+        | ExplorerAction::AppendAppMenuHistoryQuery { .. }
+        | ExplorerAction::BackspaceAppMenuHistoryQuery
+        | ExplorerAction::AppMenuZoom { .. }
+        | ExplorerAction::ClearRecentHistory
+        | ExplorerAction::OpenBookmarkManagerHistory
+        | ExplorerAction::RestoreClosedWindow { .. }
+        | ExplorerAction::ToggleClosedWindowExpanded { .. } => true,
         ExplorerAction::ResizeNavigationPane { .. }
         | ExplorerAction::BeginNavigationPaneResize { .. }
         | ExplorerAction::UpdateNavigationPaneResize { .. }
@@ -1806,8 +1960,12 @@ fn apply_action(state: &mut AppViewState, action: ExplorerAction) -> FocusSurfac
         ExplorerAction::Back
         | ExplorerAction::Forward
         | ExplorerAction::ActivateNavigationHistory { .. }
-        | ExplorerAction::Up
         | ExplorerAction::Refresh => state.focused_surface(),
+        ExplorerAction::Up => {
+            // Backspace/Up lands in the file list so F2 renames the folder just left.
+            state.focus(FocusSurface::FileView);
+            FocusSurface::FileView
+        }
         ExplorerAction::OpenNavigationHistory { direction } => {
             let _ = state.open_navigation_history_menu(direction);
             state.focus(FocusSurface::AddressBar);
@@ -2026,8 +2184,17 @@ fn apply_action(state: &mut AppViewState, action: ExplorerAction) -> FocusSurfac
         | ExplorerAction::ToggleCurrentFolderBookmark { .. }
         | ExplorerAction::CopySelectedPaths
         | ExplorerAction::CancelOperation { .. } => FocusSurface::FileView,
-        ExplorerAction::BeginFileDrag { x, y, button } => {
-            let _ = state.begin_drag_candidate(x, y, button);
+        ExplorerAction::BeginFileDrag {
+            x,
+            y,
+            button,
+            deferred_row,
+        } => {
+            if state.begin_drag_candidate(x, y, button) {
+                state.arm_deferred_click_selection(deferred_row);
+            } else {
+                state.clear_deferred_click_selection();
+            }
             FocusSurface::FileView
         }
         ExplorerAction::BeginContextItemGesture {
@@ -2270,6 +2437,10 @@ fn apply_action(state: &mut AppViewState, action: ExplorerAction) -> FocusSurfac
             state.open_folder_options();
             FocusSurface::CommandBar
         }
+        ExplorerAction::ToggleBookmarkManager => {
+            state.clear_open_bookmark_manager_on_history();
+            FocusSurface::CommandBar
+        }
         ExplorerAction::ActivateBookmark { .. }
         | ExplorerAction::LaunchRunRecord { .. }
         | ExplorerAction::RevealRunRecord { .. }
@@ -2294,7 +2465,6 @@ fn apply_action(state: &mut AppViewState, action: ExplorerAction) -> FocusSurfac
         | ExplorerAction::ConfirmRemoveBookmarkFolder
         | ExplorerAction::CancelRemoveBookmarkFolder
         | ExplorerAction::RemoveEditingBookmark
-        | ExplorerAction::ToggleBookmarkManager
         | ExplorerAction::ImportBookmarksFromClipboard
         | ExplorerAction::BackupBookmarksToClipboard
         | ExplorerAction::AddBookmarkSeparator { .. }
@@ -2463,7 +2633,10 @@ fn apply_action(state: &mut AppViewState, action: ExplorerAction) -> FocusSurfac
             });
             FocusSurface::CommandBar
         }
-        ExplorerAction::ClearThumbnailCache => FocusSurface::CommandBar,
+        ExplorerAction::ClearThumbnailCache
+        | ExplorerAction::OpenCacheInspector
+        | ExplorerAction::SetCacheInspectorSource(_)
+        | ExplorerAction::CloseCacheInspector => FocusSurface::CommandBar,
         ExplorerAction::ToggleFolderOptionDetailsPane => {
             state.update_folder_options(|settings| {
                 settings.details_pane = !settings.details_pane;
@@ -2762,6 +2935,51 @@ fn apply_action(state: &mut AppViewState, action: ExplorerAction) -> FocusSurfac
             state.request_close();
             FocusSurface::WindowChrome
         }
+        ExplorerAction::ToggleAppMenu => {
+            state.toggle_app_menu();
+            FocusSurface::CommandBar
+        }
+        ExplorerAction::CloseAppMenu => {
+            state.close_app_menu();
+            FocusSurface::CommandBar
+        }
+        ExplorerAction::SetAppMenuPage(page) => {
+            state.set_app_menu_page(page);
+            FocusSurface::CommandBar
+        }
+        ExplorerAction::MoveAppMenuFocus { direction } => {
+            state.move_app_menu_focus(direction);
+            FocusSurface::CommandBar
+        }
+        ExplorerAction::SetAppMenuFocus { index } => {
+            let _ = state.set_app_menu_focus(index);
+            FocusSurface::CommandBar
+        }
+        ExplorerAction::AppendAppMenuHistoryQuery { text } => {
+            state.append_app_menu_history_query(&text);
+            FocusSurface::CommandBar
+        }
+        ExplorerAction::BackspaceAppMenuHistoryQuery => {
+            state.backspace_app_menu_history_query();
+            FocusSurface::CommandBar
+        }
+        ExplorerAction::AppMenuZoom { direction } => {
+            state.zoom_view(direction);
+            FocusSurface::CommandBar
+        }
+        ExplorerAction::ClearRecentHistory => {
+            state.clear_recent_visits();
+            FocusSurface::CommandBar
+        }
+        ExplorerAction::OpenBookmarkManagerHistory => {
+            state.request_bookmark_manager_history();
+            FocusSurface::CommandBar
+        }
+        ExplorerAction::RestoreClosedWindow { .. } => FocusSurface::CommandBar,
+        ExplorerAction::ToggleClosedWindowExpanded { id } => {
+            state.toggle_closed_window_expanded(id);
+            FocusSurface::CommandBar
+        }
         ExplorerAction::ResizeNavigationPane { width } => {
             let layout = LayoutTokens::WINDOWS_11;
             let clamped = width.value().clamp(
@@ -2823,6 +3041,7 @@ mod tests {
                 x: 1.0,
                 y: 2.0,
                 button: explorer_model::DragButton::Left,
+                deferred_row: None,
             },
             ActionOutcome::Handled
         ));

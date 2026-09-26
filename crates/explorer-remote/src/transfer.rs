@@ -231,10 +231,18 @@ impl<'a> TransferEngine<'a> {
             match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 self.copy(&source, &destination, conflict, cancellation, progress)
             })) {
-                Err(_) => TransferResult::Failed {
-                    stage: TransferStage::ProviderPanic,
-                    diagnostic: "transfer provider panicked".to_owned(),
-                },
+                Err(payload) => {
+                    explorer_common::log_isolated_panic(
+                        "remote",
+                        "transfer_provider",
+                        payload.as_ref(),
+                        Some(file!()),
+                    );
+                    TransferResult::Failed {
+                        stage: TransferStage::ProviderPanic,
+                        diagnostic: "transfer provider panicked".to_owned(),
+                    }
+                }
                 Ok(copy_result) => match copy_result {
                     Ok(false) => TransferResult::Skipped,
                     Ok(true) if mode == TransferMode::Copy => TransferResult::Succeeded,

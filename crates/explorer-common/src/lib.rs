@@ -20,8 +20,8 @@ use uuid::Uuid;
 
 pub use diagnostics::{
     DiagnosticsConfig, DiagnosticsError, DiagnosticsRegistry, DiagnosticsSession, ErrorSeverity,
-    initialize_diagnostics, install_panic_hook, panic_payload_message, record_process_error,
-    record_process_error_message,
+    initialize_diagnostics, install_panic_hook, log_isolated_panic, panic_payload_message,
+    record_process_error, record_process_error_message, write_stderr_lossy,
 };
 pub use error::{ExplorerError, ExplorerErrorKind};
 pub use process::configure_background_command;

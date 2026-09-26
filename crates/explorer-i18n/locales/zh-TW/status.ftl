@@ -62,6 +62,7 @@ status-preview-loading = 正在載入預覽…
 status-preview-item-failed = 無法載入預覽項目
 status-preview-select-single = 選取單一項目以預覽
 status-no-transfers = 本次執行期間尚無檔案操作
+status-thumbnail-quota-full = 縮圖名額已滿（{ $used } / { $limit }）
 status-thumbnail-cleared = 縮圖快取已清除
 status-thumbnail-clear-partial = 無法完整清除縮圖快取；可重試，檔案瀏覽仍可使用
 status-invalid-folder-name = 資料夾名稱無效，請修正後再試一次。

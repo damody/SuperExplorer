@@ -14,8 +14,8 @@ use std::{
 };
 
 use explorer_common::{
-    ErrorSeverity, ExplorerError, ExplorerErrorKind, RequestId, panic_payload_message,
-    record_process_error, record_process_error_message,
+    ErrorSeverity, ExplorerError, ExplorerErrorKind, RequestId, log_isolated_panic,
+    panic_payload_message, record_process_error, record_process_error_message,
 };
 use explorer_model::{
     BreadcrumbIconHint, BreadcrumbSegment, BreadcrumbSegmentId, BreadcrumbTerminal,
@@ -55,7 +55,7 @@ const OPERATION_TERMINAL_RETAIN_CAPACITY: usize = FOREGROUND_COMMAND_QUEUE_CAPAC
 const TYPED_TERMINAL_RETAIN_CAPACITY: usize =
     COMMAND_QUEUE_CAPACITY + FOREGROUND_COMMAND_QUEUE_CAPACITY;
 const FILE_OPERATION_WORKER_CAPACITY: usize = 4;
-const THUMBNAIL_WORKER_CAPACITY: usize = 2;
+const THUMBNAIL_WORKER_CAPACITY: usize = 4;
 const SEARCH_WORKER_CAPACITY: usize = 8;
 const BREADCRUMB_WORKER_CAPACITY: usize = 4;
 
@@ -1494,13 +1494,19 @@ fn process_command(
                             context.cancellation.clone(),
                         )
                     }))
-                    .unwrap_or_else(|_| {
+                    .unwrap_or_else(|payload| {
+                        log_isolated_panic(
+                            "shell",
+                            "ole_drag_panic",
+                            payload.as_ref(),
+                            Some(file!()),
+                        );
                         Err(ExplorerError::new(
                             ExplorerErrorKind::Internal,
                             "begin OLE drag",
                             false,
                             "拖放工作階段失敗。",
-                            "OLE drag callback panicked",
+                            panic_payload_message(payload.as_ref()),
                         ))
                     })
                     .map_err(|_| {

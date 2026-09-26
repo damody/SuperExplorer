@@ -31,6 +31,74 @@ pub struct ApkInstallNotice {
     pub terminal_at: Option<Instant>,
 }
 
+fn operation_terminal_summary(outcome: &OperationTerminal) -> String {
+    match outcome {
+        OperationTerminal::Finished => "finished".to_owned(),
+        OperationTerminal::Cancelled => "cancelled".to_owned(),
+        OperationTerminal::Failed(error) => format!("failed: {}", error.technical_detail),
+        OperationTerminal::Partial { outcomes } => {
+            format!("partial items={}", outcomes.len())
+        }
+    }
+}
+
+fn log_operation_terminal(context: &RequestContext, outcome: &OperationTerminal) {
+    let failed = matches!(
+        outcome,
+        OperationTerminal::Failed(_) | OperationTerminal::Partial { .. }
+    );
+    if !failed {
+        return;
+    }
+    crate::interaction_log::record_ui_interaction(
+        "operation_terminal",
+        &format!(
+            "result={} request_id={:?} tab_id={:?}",
+            operation_terminal_summary(outcome),
+            context.request_id,
+            context.tab_id
+        ),
+    );
+}
+
+fn locations_identify_same_child(
+    candidate: &LocationDescriptor,
+    left: &LocationDescriptor,
+) -> bool {
+    if candidate == left {
+        return true;
+    }
+    match (candidate, left) {
+        (LocationDescriptor::FileSystem(candidate), LocationDescriptor::FileSystem(left)) => {
+            selection_path_key(candidate) == selection_path_key(left)
+        }
+        (LocationDescriptor::Virtual(candidate), LocationDescriptor::Virtual(left)) => {
+            candidate.provider_id == left.provider_id
+                && candidate.public_authority == left.public_authority
+                && candidate.components == left.components
+                && candidate.provider_entry_key == left.provider_entry_key
+        }
+        _ => false,
+    }
+}
+
+fn selection_path_key(path: &std::path::Path) -> String {
+    let mut text = path.to_string_lossy().replace('/', "\\");
+    if let Some(stripped) = text.strip_prefix(r"\\?\") {
+        text = stripped.to_owned();
+    }
+    let lower = text.to_ascii_lowercase();
+    text = if let Some(stripped) = lower.strip_prefix(r"unc\") {
+        format!(r"\\{stripped}")
+    } else {
+        lower
+    };
+    while text.len() > 3 && (text.ends_with('\\') || text.ends_with('/')) {
+        text.pop();
+    }
+    text
+}
+
 fn strip_fluent_isolates(value: String) -> String {
     value
         .chars()
@@ -64,6 +132,27 @@ pub(crate) fn bookmark_entry_location(bookmark: &explorer_model::Bookmark) -> Lo
             LocationDescriptor::synthetic(explorer_model::SyntheticRoot::Favorites)
         }
     }
+}
+
+/// Local filesystem targets can use the Windows shell icon for that exact file or folder.
+/// Remote, Lua, and separator bookmarks keep their existing glyphs.
+pub(crate) fn bookmark_target_shell_location(
+    target: &explorer_model::BookmarkTarget,
+) -> Option<LocationDescriptor> {
+    let location = match target {
+        explorer_model::BookmarkTarget::Folder { location }
+        | explorer_model::BookmarkTarget::File { location } => location.clone(),
+        explorer_model::BookmarkTarget::FolderPath { path }
+        | explorer_model::BookmarkTarget::FilePath { path } => resolve_bookmark_path(path),
+        explorer_model::BookmarkTarget::LuaScript { .. }
+        | explorer_model::BookmarkTarget::Separator => return None,
+    };
+    matches!(
+        location.file_system_kind(),
+        Some(explorer_model::FileSystemKind::Local | explorer_model::FileSystemKind::Wsl)
+    )
+    .then_some(location)
+    .filter(|location| location.path().is_some())
 }
 
 fn unique_remote_folder_symlink_name(
@@ -245,7 +334,9 @@ impl DirectorySnapshotCache {
 }
 
 use crate::{
-    actions::{FolderOptionsPage, NavigationHistoryDirection, PermanentDeleteDialogTarget},
+    actions::{
+        AppMenuPage, FolderOptionsPage, NavigationHistoryDirection, PermanentDeleteDialogTarget,
+    },
     extension_commands::ExtensionCommandPanel,
     focus::{FocusCoordinator, FocusDirection, FocusSurface},
     interaction::{DividerInteraction, ScrollbarDragSession, ScrollbarKind, ScrollbarTerminal},
@@ -818,6 +909,16 @@ struct PendingLeaveSelection {
     tab_id: TabId,
     generation: explorer_model::Generation,
     child: LocationDescriptor,
+    revealed: bool,
+}
+
+/// An unmodified press on an already-selected row. Explorer keeps the set until mouse-up so a
+/// drag can carry every selected item; a click that never crosses the drag threshold collapses.
+#[derive(Clone, Debug)]
+struct PendingClickSelection {
+    tab_id: TabId,
+    generation: explorer_model::Generation,
+    item_id: ShellItemId,
 }
 
 #[derive(Clone, Debug)]
@@ -849,18 +950,21 @@ pub struct AppViewState {
     rename_editor: Option<explorer_model::RenameEditorState>,
     pending_new_folder_rename: Option<PendingNewFolderRename>,
     pending_leave_selection: Option<PendingLeaveSelection>,
+    leave_selection_reveal: Option<usize>,
     permanent_delete_confirmation: Option<PermanentDeleteConfirmation>,
     permanent_delete_confirmation_focus: PermanentDeleteDialogTarget,
     lock_recovery: Option<LockRecoveryUiState>,
     pending_lock_recovery_command: Option<ExplorerCommand>,
     clipboard: explorer_model::ClipboardState,
     drag_session: explorer_model::DragSession,
+    pending_click_selection: Option<PendingClickSelection>,
     pending_drag_command: Option<ExplorerCommand>,
     pending_new_tab_command: Option<ExplorerCommand>,
     drop_target_row: Option<usize>,
     pending_right_drop: Option<PendingRightDrop>,
     context_menu_error: Option<explorer_common::ExplorerError>,
     thumbnail_cache_notice: Option<String>,
+    thumbnail_quota_notice: Option<String>,
     quick_access: QuickAccessPins,
     bookmarks: explorer_model::Bookmarks,
     recent_items: RecentItems,
@@ -912,6 +1016,13 @@ pub struct AppViewState {
     view_menu_index: usize,
     more_menu_open: bool,
     more_menu_index: usize,
+    app_menu_open: bool,
+    app_menu_page: AppMenuPage,
+    app_menu_index: usize,
+    app_menu_history_query: String,
+    open_bookmark_manager_on_history: bool,
+    closed_windows: Vec<ClosedWindowRecord>,
+    collapsed_closed_windows: HashSet<u64>,
     more_theme_submenu_open: bool,
     transfer_panel_open: bool,
     about_dialog_open: bool,
@@ -1203,6 +1314,139 @@ pub(crate) struct PendingRightDrop {
     generation: explorer_model::Generation,
 }
 
+/// One tab inside a saved window, in left-to-right presentation order.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ClosedWindowTab {
+    pub title: String,
+    pub active: bool,
+    /// Index in the saved window, so restoring still opens that tab after duplicates are hidden.
+    pub tab_index: u16,
+}
+
+/// A saved window that is not currently running, shown from History.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ClosedWindowRecord {
+    pub id: u64,
+    pub title: String,
+    pub tabs: Vec<ClosedWindowTab>,
+}
+
+/// One row in the application menu. Focus skips separators, headings, and empty notes.
+#[derive(Clone, Debug)]
+pub(crate) enum AppMenuSlot {
+    Action {
+        id: &'static str,
+        label_key: &'static str,
+        shortcut_key: Option<&'static str>,
+        submenu: bool,
+        enabled: bool,
+        action: crate::actions::ExplorerAction,
+    },
+    Zoom,
+    Separator,
+    Heading(&'static str),
+    Empty(&'static str),
+    Recent {
+        label: String,
+        location: LocationDescriptor,
+    },
+    Bookmark {
+        id: explorer_model::BookmarkId,
+        name: String,
+        target: explorer_model::BookmarkTarget,
+    },
+    ClosedWindow {
+        id: u64,
+        title: String,
+        expanded: bool,
+        tab_count: usize,
+    },
+    ClosedWindowTab {
+        window_id: u64,
+        tab_index: u16,
+        title: String,
+        active: bool,
+    },
+}
+
+impl AppMenuSlot {
+    fn action(
+        id: &'static str,
+        label_key: &'static str,
+        shortcut_key: Option<&'static str>,
+        submenu: bool,
+        enabled: bool,
+        action: crate::actions::ExplorerAction,
+    ) -> Self {
+        Self::Action {
+            id,
+            label_key,
+            shortcut_key,
+            submenu,
+            enabled,
+            action,
+        }
+    }
+
+    pub(crate) const fn is_focusable(&self) -> bool {
+        matches!(
+            self,
+            Self::Action { .. }
+                | Self::Zoom
+                | Self::Recent { .. }
+                | Self::Bookmark { .. }
+                | Self::ClosedWindow { .. }
+                | Self::ClosedWindowTab { .. }
+        )
+    }
+
+    fn is_focusable_ref(slot: &Self) -> bool {
+        slot.is_focusable()
+    }
+
+    pub(crate) fn activation(&self) -> Option<crate::actions::ExplorerAction> {
+        match self {
+            Self::Action { action, enabled, .. } if *enabled => Some(action.clone()),
+            Self::Zoom => Some(crate::actions::ExplorerAction::AppMenuZoom { direction: 1 }),
+            Self::Recent { location, .. } => Some(
+                crate::actions::ExplorerAction::ActivateNavigationItem {
+                    location: location.clone(),
+                },
+            ),
+            Self::Bookmark { id, .. } => {
+                Some(crate::actions::ExplorerAction::ActivateBookmark { id: *id })
+            }
+            Self::ClosedWindow { id, .. } => {
+                Some(crate::actions::ExplorerAction::RestoreClosedWindow {
+                    id: *id,
+                    tab_index: None,
+                })
+            }
+            Self::ClosedWindowTab {
+                window_id,
+                tab_index,
+                ..
+            } => Some(crate::actions::ExplorerAction::RestoreClosedWindow {
+                id: *window_id,
+                tab_index: Some(*tab_index),
+            }),
+            _ => None,
+        }
+    }
+
+    pub(crate) fn submenu_action(&self) -> Option<crate::actions::ExplorerAction> {
+        match self {
+            Self::Action {
+                submenu: true,
+                enabled: true,
+                action,
+                ..
+            } => Some(action.clone()),
+            _ => None,
+        }
+    }
+}
+
 impl Default for AppViewState {
     fn default() -> Self {
         Self::with_initial_location(HistoryEntry::new(
@@ -1246,18 +1490,21 @@ impl AppViewState {
             rename_editor: None,
             pending_new_folder_rename: None,
             pending_leave_selection: None,
+            leave_selection_reveal: None,
             permanent_delete_confirmation: None,
             permanent_delete_confirmation_focus: PermanentDeleteDialogTarget::Delete,
             lock_recovery: None,
             pending_lock_recovery_command: None,
             clipboard: explorer_model::ClipboardState::default(),
             drag_session: explorer_model::DragSession::new(drag_threshold.0, drag_threshold.1),
+            pending_click_selection: None,
             pending_drag_command: None,
             pending_new_tab_command: None,
             drop_target_row: None,
             pending_right_drop: None,
             context_menu_error: None,
             thumbnail_cache_notice: None,
+            thumbnail_quota_notice: None,
             quick_access: QuickAccessPins::default(),
             bookmarks: explorer_model::Bookmarks::default(),
             recent_items: load_recent_visits(),
@@ -1306,6 +1553,13 @@ impl AppViewState {
             view_menu_index: 0,
             more_menu_open: false,
             more_menu_index: 0,
+            app_menu_open: false,
+            app_menu_page: AppMenuPage::Main,
+            app_menu_index: 0,
+            app_menu_history_query: String::new(),
+            open_bookmark_manager_on_history: false,
+            closed_windows: Vec::new(),
+            collapsed_closed_windows: HashSet::new(),
             more_theme_submenu_open: false,
             transfer_panel_open: false,
             about_dialog_open: false,
@@ -1568,6 +1822,17 @@ impl AppViewState {
 
     pub(crate) const fn bookmarks(&self) -> &explorer_model::Bookmarks {
         &self.bookmarks
+    }
+
+    /// Filesystem locations whose Windows shell icon should appear on a bookmark.
+    pub(crate) fn bookmark_shell_locations(&self) -> Vec<LocationDescriptor> {
+        let mut seen = HashSet::new();
+        self.bookmarks
+            .entries()
+            .iter()
+            .filter_map(|bookmark| bookmark_target_shell_location(&bookmark.target))
+            .filter(|location| seen.insert(location.clone()))
+            .collect()
     }
 
     pub(crate) fn add_bookmark_folder(
@@ -2782,6 +3047,7 @@ impl AppViewState {
             self.more_menu_open = false;
             self.extensions_menu_open = false;
             self.new_menu_open = false;
+            self.close_app_menu();
         }
     }
 
@@ -2796,6 +3062,7 @@ impl AppViewState {
             self.close_view_menu();
             self.more_menu_open = false;
             self.extensions_menu_open = false;
+            self.close_app_menu();
         }
     }
 
@@ -2839,6 +3106,7 @@ impl AppViewState {
             self.close_view_menu();
             self.extensions_menu_open = false;
             self.new_menu_open = false;
+            self.close_app_menu();
         } else {
             self.more_theme_submenu_open = false;
         }
@@ -2872,6 +3140,7 @@ impl AppViewState {
             self.close_view_menu();
             self.extensions_menu_open = false;
             self.new_menu_open = false;
+            self.close_app_menu();
         }
     }
 
@@ -2892,6 +3161,7 @@ impl AppViewState {
             self.more_menu_open = false;
             self.close_view_menu();
             self.new_menu_open = false;
+            self.close_app_menu();
         }
     }
 
@@ -3438,6 +3708,7 @@ impl AppViewState {
             self.more_menu_open = false;
             self.extensions_menu_open = false;
             self.new_menu_open = false;
+            self.close_app_menu();
         }
         if !self.view_menu_open {
             self.view_show_submenu_open = false;
@@ -3449,6 +3720,518 @@ impl AppViewState {
         self.view_menu_open = false;
         self.view_show_submenu_open = false;
         self.view_theme_submenu_open = false;
+    }
+
+    pub(crate) const fn app_menu_open(&self) -> bool {
+        self.app_menu_open
+    }
+
+    pub(crate) const fn app_menu_page(&self) -> AppMenuPage {
+        self.app_menu_page
+    }
+
+    pub(crate) const fn app_menu_index(&self) -> usize {
+        self.app_menu_index
+    }
+
+    pub(crate) fn app_menu_history_query(&self) -> &str {
+        &self.app_menu_history_query
+    }
+
+    pub(crate) const fn open_bookmark_manager_on_history(&self) -> bool {
+        self.open_bookmark_manager_on_history
+    }
+
+    pub(crate) fn clear_open_bookmark_manager_on_history(&mut self) {
+        self.open_bookmark_manager_on_history = false;
+    }
+
+    pub(crate) fn request_bookmark_manager_history(&mut self) {
+        self.open_bookmark_manager_on_history = true;
+    }
+
+    pub fn set_closed_windows(&mut self, windows: Vec<ClosedWindowRecord>) {
+        self.closed_windows = windows;
+    }
+
+    pub(crate) fn remove_closed_window(&mut self, id: u64) {
+        self.closed_windows.retain(|window| window.id != id);
+        self.collapsed_closed_windows.remove(&id);
+    }
+
+    pub(crate) fn toggle_closed_window_expanded(&mut self, id: u64) {
+        let collapsing = !self.collapsed_closed_windows.contains(&id);
+        if collapsing {
+            self.collapsed_closed_windows.insert(id);
+            if let Some(index) = self
+                .app_menu_slots()
+                .into_iter()
+                .filter(AppMenuSlot::is_focusable_ref)
+                .position(|slot| matches!(slot, AppMenuSlot::ClosedWindow { id: window_id, .. } if window_id == id))
+            {
+                self.app_menu_index = index;
+            }
+        } else {
+            self.collapsed_closed_windows.remove(&id);
+        }
+        self.clamp_app_menu_focus();
+    }
+
+    pub(crate) fn closed_window_tree_key(&self, expand: bool) -> Option<crate::actions::ExplorerAction> {
+        match self.app_menu_focused_slot()? {
+            AppMenuSlot::ClosedWindow {
+                id,
+                expanded,
+                tab_count,
+                ..
+            } => {
+                let toggles = if expand {
+                    !expanded && tab_count > 1
+                } else {
+                    expanded
+                };
+                toggles.then_some(crate::actions::ExplorerAction::ToggleClosedWindowExpanded { id })
+            }
+            AppMenuSlot::ClosedWindowTab { window_id, .. } if !expand => {
+                Some(crate::actions::ExplorerAction::ToggleClosedWindowExpanded { id: window_id })
+            }
+            _ => None,
+        }
+    }
+
+    pub(crate) fn toggle_app_menu(&mut self) {
+        self.app_menu_open = !self.app_menu_open;
+        if self.app_menu_open {
+            self.app_menu_page = AppMenuPage::Main;
+            self.app_menu_index = 0;
+            self.app_menu_history_query.clear();
+            self.transfer_panel_open = false;
+            self.details_column_menu = None;
+            self.details_filter_menu = None;
+            self.sort_menu_open = false;
+            self.close_view_menu();
+            self.more_menu_open = false;
+            self.more_theme_submenu_open = false;
+            self.extensions_menu_open = false;
+            self.new_menu_open = false;
+        } else {
+            self.close_app_menu();
+        }
+    }
+
+    pub(crate) fn close_app_menu(&mut self) {
+        self.app_menu_open = false;
+        self.app_menu_page = AppMenuPage::Main;
+        self.app_menu_index = 0;
+        self.app_menu_history_query.clear();
+    }
+
+    pub(crate) fn set_app_menu_page(&mut self, page: AppMenuPage) {
+        if !self.app_menu_open {
+            return;
+        }
+        let previous = self.app_menu_page;
+        self.app_menu_page = page;
+        self.app_menu_index = if page == AppMenuPage::Main {
+            previous.main_focus_index()
+        } else {
+            0
+        };
+        self.clamp_app_menu_focus();
+    }
+
+    pub(crate) fn move_app_menu_focus(&mut self, direction: i8) {
+        if !self.app_menu_open {
+            return;
+        }
+        let last = self.app_menu_focusable_count().saturating_sub(1);
+        self.app_menu_index = move_bounded_menu_index(self.app_menu_index, direction, last);
+    }
+
+    pub(crate) fn set_app_menu_focus(&mut self, index: usize) -> bool {
+        if !self.app_menu_open || self.app_menu_index == index {
+            return false;
+        }
+        let last = self.app_menu_focusable_count().saturating_sub(1);
+        if index > last {
+            return false;
+        }
+        self.app_menu_index = index;
+        true
+    }
+
+    pub(crate) fn append_app_menu_history_query(&mut self, text: &str) {
+        if self.app_menu_open && self.app_menu_page == AppMenuPage::History {
+            self.app_menu_history_query.push_str(text);
+            self.app_menu_index = 0;
+        }
+    }
+
+    pub(crate) fn backspace_app_menu_history_query(&mut self) {
+        if self.app_menu_open && self.app_menu_page == AppMenuPage::History {
+            self.app_menu_history_query.pop();
+            self.app_menu_index = 0;
+        }
+    }
+
+    pub(crate) fn clear_recent_visits(&mut self) {
+        self.recent_items.clear();
+        save_recent_visits(&self.recent_items);
+    }
+
+    fn clamp_app_menu_focus(&mut self) {
+        let last = self.app_menu_focusable_count().saturating_sub(1);
+        if self.app_menu_index > last {
+            self.app_menu_index = last;
+        }
+    }
+
+    pub(crate) fn app_menu_focusable_count(&self) -> usize {
+        self.app_menu_slots()
+            .iter()
+            .filter(|slot| slot.is_focusable())
+            .count()
+            .max(1)
+    }
+
+    pub(crate) fn app_menu_focused_slot(&self) -> Option<AppMenuSlot> {
+        self.app_menu_slots()
+            .into_iter()
+            .filter(AppMenuSlot::is_focusable_ref)
+            .nth(self.app_menu_index)
+    }
+
+    pub(crate) fn app_menu_activation(&self) -> Option<crate::actions::ExplorerAction> {
+        if self.app_menu_page == AppMenuPage::History
+            && self
+                .app_menu_focused_slot()
+                .is_some_and(|slot| matches!(slot, AppMenuSlot::Action { id: "app-menu-search-history", .. }))
+            && !self.app_menu_history_query.trim().is_empty()
+            && let Some(location) = self.app_menu_history_entries().into_iter().next().map(|entry| {
+                entry.identity.descriptor
+            })
+        {
+            return Some(crate::actions::ExplorerAction::ActivateNavigationItem { location });
+        }
+        let slot = self.app_menu_focused_slot()?;
+        slot.activation()
+    }
+
+    pub(crate) fn app_menu_slots(&self) -> Vec<AppMenuSlot> {
+        use crate::actions::ExplorerAction;
+        let has_selection = !self.tabs.active_tab().selection.is_empty();
+        match self.app_menu_page {
+            AppMenuPage::Main => vec![
+                AppMenuSlot::action(
+                    "app-menu-new-tab",
+                    "menu-new-tab",
+                    Some("menu-shortcut-ctrl-t"),
+                    false,
+                    true,
+                    ExplorerAction::NewTab,
+                ),
+                AppMenuSlot::action(
+                    "app-menu-history",
+                    "menu-app-history",
+                    None,
+                    true,
+                    true,
+                    ExplorerAction::SetAppMenuPage(AppMenuPage::History),
+                ),
+                AppMenuSlot::action(
+                    "app-menu-bookmarks",
+                    "menu-app-bookmarks",
+                    None,
+                    true,
+                    true,
+                    ExplorerAction::SetAppMenuPage(AppMenuPage::Bookmarks),
+                ),
+                AppMenuSlot::Separator,
+                AppMenuSlot::action(
+                    "app-menu-transfers",
+                    "menu-transfers",
+                    Some("menu-shortcut-ctrl-j"),
+                    false,
+                    true,
+                    ExplorerAction::ToggleTransferPanel,
+                ),
+                AppMenuSlot::action(
+                    "app-menu-extensions",
+                    "menu-extensions-and-themes",
+                    Some("menu-shortcut-ctrl-shift-a"),
+                    false,
+                    true,
+                    ExplorerAction::ToggleExtensionsMenu,
+                ),
+                AppMenuSlot::Separator,
+                AppMenuSlot::action(
+                    "app-menu-find",
+                    "menu-find-in-folder",
+                    Some("menu-shortcut-ctrl-f"),
+                    false,
+                    true,
+                    ExplorerAction::FocusSearch,
+                ),
+                AppMenuSlot::Zoom,
+                AppMenuSlot::Separator,
+                AppMenuSlot::action(
+                    "app-menu-settings",
+                    "menu-settings",
+                    None,
+                    false,
+                    true,
+                    ExplorerAction::OpenFolderOptions,
+                ),
+                AppMenuSlot::action(
+                    "app-menu-more-tools",
+                    "menu-more-tools",
+                    None,
+                    true,
+                    true,
+                    ExplorerAction::SetAppMenuPage(AppMenuPage::MoreTools),
+                ),
+                AppMenuSlot::Separator,
+                AppMenuSlot::action(
+                    "app-menu-quit",
+                    "menu-quit",
+                    Some("menu-shortcut-ctrl-shift-q"),
+                    false,
+                    true,
+                    ExplorerAction::CloseWindow,
+                ),
+            ],
+            AppMenuPage::History => {
+                let mut slots = vec![
+                    AppMenuSlot::action(
+                        "app-menu-closed-windows",
+                        "menu-closed-windows",
+                        None,
+                        true,
+                        true,
+                        ExplorerAction::SetAppMenuPage(AppMenuPage::ClosedWindows),
+                    ),
+                    AppMenuSlot::action(
+                        "app-menu-search-history",
+                        "menu-search-history",
+                        None,
+                        false,
+                        true,
+                        ExplorerAction::OpenBookmarkManagerHistory,
+                    ),
+                    AppMenuSlot::Separator,
+                    AppMenuSlot::action(
+                        "app-menu-clear-history",
+                        "menu-clear-recent-history",
+                        None,
+                        false,
+                        true,
+                        ExplorerAction::ClearRecentHistory,
+                    ),
+                    AppMenuSlot::Separator,
+                    AppMenuSlot::Heading("menu-recent-history"),
+                ];
+                let entries = self.app_menu_history_entries();
+                if entries.is_empty() {
+                    slots.push(AppMenuSlot::Empty("menu-no-recent-history"));
+                } else {
+                    slots.extend(entries.into_iter().map(|entry| AppMenuSlot::Recent {
+                        label: entry.identity.display_name,
+                        location: entry.identity.descriptor,
+                    }));
+                }
+                slots.push(AppMenuSlot::Separator);
+                slots.push(AppMenuSlot::action(
+                    "app-menu-manage-history",
+                    "menu-manage-history",
+                    Some("menu-shortcut-ctrl-shift-h"),
+                    false,
+                    true,
+                    ExplorerAction::OpenBookmarkManagerHistory,
+                ));
+                slots
+            }
+            AppMenuPage::ClosedWindows => {
+                if self.closed_windows.is_empty() {
+                    vec![AppMenuSlot::Empty("menu-no-closed-windows")]
+                } else {
+                    let mut slots = Vec::new();
+                    for window in &self.closed_windows {
+                        let has_children = window.tabs.len() > 1;
+                        let expanded =
+                            has_children && !self.collapsed_closed_windows.contains(&window.id);
+                        slots.push(AppMenuSlot::ClosedWindow {
+                            id: window.id,
+                            title: window.title.clone(),
+                            expanded,
+                            tab_count: window.tabs.len(),
+                        });
+                        if expanded {
+                            for tab in &window.tabs {
+                                slots.push(AppMenuSlot::ClosedWindowTab {
+                                    window_id: window.id,
+                                    tab_index: tab.tab_index,
+                                    title: tab.title.clone(),
+                                    active: tab.active,
+                                });
+                            }
+                        }
+                    }
+                    slots
+                }
+            }
+            AppMenuPage::Bookmarks => {
+                let mut slots = self
+                    .app_menu_bookmarks()
+                    .into_iter()
+                    .map(|(id, name, target)| AppMenuSlot::Bookmark { id, name, target })
+                    .collect::<Vec<_>>();
+                if slots.is_empty() {
+                    slots.push(AppMenuSlot::Empty("menu-no-bookmarks"));
+                }
+                slots.push(AppMenuSlot::Separator);
+                slots.push(AppMenuSlot::action(
+                    "app-menu-manage-bookmarks",
+                    "menu-bookmark-manager",
+                    None,
+                    false,
+                    true,
+                    ExplorerAction::ToggleBookmarkManager,
+                ));
+                slots
+            }
+            AppMenuPage::MoreTools => vec![
+                AppMenuSlot::action(
+                    "app-menu-undo",
+                    "menu-undo",
+                    Some("menu-shortcut-ctrl-z"),
+                    false,
+                    true,
+                    ExplorerAction::UndoCurrentFolder,
+                ),
+                AppMenuSlot::action(
+                    "app-menu-zip",
+                    "menu-zip",
+                    None,
+                    false,
+                    has_selection,
+                    ExplorerAction::CompressSelectedToZip,
+                ),
+                AppMenuSlot::action(
+                    "app-menu-favorite",
+                    "menu-add-to-favorites",
+                    None,
+                    false,
+                    has_selection,
+                    ExplorerAction::AddSelectedToFavorites,
+                ),
+                AppMenuSlot::action(
+                    "app-menu-add-bookmark",
+                    "menu-add-bookmark",
+                    None,
+                    false,
+                    has_selection,
+                    ExplorerAction::AddSelectedToBookmarks,
+                ),
+                AppMenuSlot::action(
+                    "app-menu-copy-path",
+                    "menu-copy-path",
+                    None,
+                    false,
+                    has_selection,
+                    ExplorerAction::CopySelectedPaths,
+                ),
+                AppMenuSlot::Separator,
+                AppMenuSlot::action(
+                    "app-menu-select-all",
+                    "menu-select-all",
+                    Some("menu-shortcut-ctrl-a"),
+                    false,
+                    true,
+                    ExplorerAction::SelectAllItems,
+                ),
+                AppMenuSlot::action(
+                    "app-menu-select-none",
+                    "menu-select-none",
+                    None,
+                    false,
+                    has_selection,
+                    ExplorerAction::ClearSelection,
+                ),
+                AppMenuSlot::action(
+                    "app-menu-invert",
+                    "menu-invert-selection",
+                    None,
+                    false,
+                    true,
+                    ExplorerAction::InvertSelection,
+                ),
+                AppMenuSlot::Separator,
+                AppMenuSlot::action(
+                    "app-menu-theme",
+                    "menu-theme",
+                    None,
+                    false,
+                    true,
+                    ExplorerAction::ToggleTheme,
+                ),
+            ],
+        }
+    }
+
+    fn app_menu_history_entries(&self) -> Vec<explorer_model::RecentNamespaceItem> {
+        let query = self.app_menu_history_query.trim().to_ascii_lowercase();
+        self.recent_items
+            .entries()
+            .iter()
+            .filter(|entry| {
+                if query.is_empty() {
+                    return true;
+                }
+                entry
+                    .identity
+                    .display_name
+                    .to_ascii_lowercase()
+                    .contains(&query)
+                    || entry
+                        .identity
+                        .descriptor
+                        .editable_text()
+                        .to_ascii_lowercase()
+                        .contains(&query)
+            })
+            .take(50)
+            .cloned()
+            .collect()
+    }
+
+    fn app_menu_bookmarks(
+        &self,
+    ) -> Vec<(
+        explorer_model::BookmarkId,
+        String,
+        explorer_model::BookmarkTarget,
+    )> {
+        let mut entries = self
+            .bookmarks
+            .entries()
+            .iter()
+            .filter(|bookmark| !matches!(bookmark.target, explorer_model::BookmarkTarget::Separator))
+            .cloned()
+            .collect::<Vec<_>>();
+        entries.sort_by_key(|bookmark| (bookmark.parent_id.is_some(), bookmark.order));
+        entries
+            .into_iter()
+            .take(40)
+            .map(|bookmark| (bookmark.id, bookmark.name, bookmark.target))
+            .collect()
+    }
+
+    #[cfg(test)]
+    fn replace_recent_visits_for_test(
+        &mut self,
+        entries: Vec<explorer_model::RecentNamespaceItem>,
+    ) {
+        self.recent_items.replace_entries(entries);
     }
 
     pub(crate) fn move_view_menu_focus(&mut self, direction: i8) {
@@ -3694,6 +4477,7 @@ impl AppViewState {
         self.more_menu_open = false;
         self.new_menu_open = false;
         self.extensions_menu_open = false;
+        self.close_app_menu();
     }
     pub fn close_details_column_menu(&mut self) {
         self.details_column_menu = None;
@@ -4258,6 +5042,14 @@ impl AppViewState {
 
     pub fn thumbnail_cache_notice(&self) -> Option<&str> {
         self.thumbnail_cache_notice.as_deref()
+    }
+
+    pub fn thumbnail_quota_notice(&self) -> Option<&str> {
+        self.thumbnail_quota_notice.as_deref()
+    }
+
+    pub(crate) fn set_thumbnail_quota_notice(&mut self, notice: Option<String>) {
+        self.thumbnail_quota_notice = notice;
     }
 
     pub fn quick_access_notice(&self) -> Option<&str> {
@@ -5061,6 +5853,7 @@ impl AppViewState {
         {
             pending.generation = context.generation;
         }
+        self.retarget_leave_selection_generation();
         Some(command)
     }
 
@@ -5804,6 +6597,7 @@ impl AppViewState {
             }
             let recovery_transition =
                 if let ExplorerEvent::OperationFinished { context, outcome } = &event {
+                    log_operation_terminal(context, outcome);
                     self.handle_locked_delete_terminal(context, outcome)
                 } else {
                     false
@@ -5822,6 +6616,16 @@ impl AppViewState {
             return if operation_applied || cleared_drag || recovery_transition {
                 WindowEventOutcome::Applied
             } else {
+                if let ExplorerEvent::OperationFinished { context, outcome } = &event {
+                    crate::interaction_log::record_ui_interaction(
+                        "operation_terminal",
+                        &format!(
+                            "result=ignored_stale request_id={:?} outcome={}",
+                            context.request_id,
+                            operation_terminal_summary(outcome)
+                        ),
+                    );
+                }
                 WindowEventOutcome::IgnoredStale
             };
         }
@@ -6192,9 +6996,15 @@ impl AppViewState {
         let Some(row_index) = row_index else {
             return false;
         };
-        if self.focused_row_index().is_none() && !self.select_row(row_index) {
+        if self.pending_leave_selection.is_some() {
+            let _ = self.apply_pending_leave_selection();
+            if self.focused_row_index().is_none() {
+                return false;
+            }
+        } else if self.focused_row_index().is_none() && !self.select_row(row_index) {
             return false;
         }
+        let row_index = self.focused_row_index().unwrap_or(row_index);
         self.begin_inline_rename(row_index)
     }
 
@@ -6204,16 +7014,20 @@ impl AppViewState {
     }
 
     pub(crate) fn select_location(&mut self, location: &LocationDescriptor) -> bool {
-        let Some(row_index) = self.directory_presentation().and_then(|presentation| {
-            (0..presentation.len()).find(|row_index| {
-                presentation
-                    .entry(*row_index)
-                    .is_some_and(|(_, entry)| &entry.location == location)
-            })
-        }) else {
+        let Some(row_index) = self.presentation_row_for_location(location) else {
             return false;
         };
         self.select_row_preserving_leave(row_index)
+    }
+
+    fn presentation_row_for_location(&self, location: &LocationDescriptor) -> Option<usize> {
+        self.directory_presentation().and_then(|presentation| {
+            (0..presentation.len()).find(|row_index| {
+                presentation.entry(*row_index).is_some_and(|(_, entry)| {
+                    locations_identify_same_child(&entry.location, location)
+                })
+            })
+        })
     }
 
     fn select_row_preserving_leave(&mut self, row_index: usize) -> bool {
@@ -6230,8 +7044,24 @@ impl AppViewState {
             tab_id: tab.id,
             generation: tab.generation,
             child,
+            revealed: false,
         });
-        self.apply_pending_leave_selection();
+        let _ = self.apply_pending_leave_selection();
+    }
+
+    fn retarget_leave_selection_generation(&mut self) {
+        let tab_id = self.tabs.active_tab_id();
+        let generation = self.tabs.active_tab().generation;
+        if let Some(pending) = self.pending_leave_selection.as_mut()
+            && pending.tab_id == tab_id
+        {
+            pending.generation = generation;
+            pending.revealed = false;
+        }
+    }
+
+    pub(crate) fn take_leave_selection_reveal(&mut self) -> Option<usize> {
+        self.leave_selection_reveal.take()
     }
 
     fn apply_pending_leave_selection(&mut self) -> bool {
@@ -6243,7 +7073,17 @@ impl AppViewState {
             self.pending_leave_selection = None;
             return false;
         }
-        self.select_location(&pending.child)
+        if !self.select_location(&pending.child) {
+            return false;
+        }
+        self.focus(FocusSurface::FileView);
+        if !pending.revealed
+            && let Some(slot) = self.pending_leave_selection.as_mut()
+        {
+            slot.revealed = true;
+            self.leave_selection_reveal = self.focused_row_index();
+        }
+        true
     }
 
     pub(crate) fn typeahead_file_view(&mut self, text: &str, now: Instant) -> Option<usize> {
@@ -6537,6 +7377,7 @@ impl AppViewState {
             return false;
         }
         self.prepare_context_selection(Some(&item_id));
+        self.pending_click_selection = None;
         self.pending_context_hit = Some(item_id);
         self.pending_context_extended_verbs = extended_verbs;
         self.begin_drag_candidate(x, y, explorer_model::DragButton::Right)
@@ -7113,10 +7954,73 @@ impl AppViewState {
         self.drag_session.begin_candidate(x, y, button)
     }
 
+    /// Remembers an unmodified press on a row that already belongs to a multi-selection.
+    ///
+    /// `None` clears any previous click so Shift/Ctrl presses and ordinary single selection
+    /// still collapse only through their own selection action.
+    pub(crate) fn arm_deferred_click_selection(&mut self, row_index: Option<usize>) {
+        let Some(row_index) = row_index else {
+            self.pending_click_selection = None;
+            return;
+        };
+        let Some(item_id) = self.presentation_entry(row_index).map(|entry| entry.id) else {
+            self.pending_click_selection = None;
+            return;
+        };
+        let (tab_id, generation, in_multi_selection) = {
+            let tab = self.tabs.active_tab();
+            (
+                tab.id,
+                tab.generation,
+                tab.selection.contains(&item_id) && tab.selection.len() >= 2,
+            )
+        };
+        if !in_multi_selection {
+            self.pending_click_selection = None;
+            return;
+        }
+        self.tabs
+            .active_tab_mut()
+            .selection
+            .focus_only(item_id.clone());
+        self.pending_click_selection = Some(PendingClickSelection {
+            tab_id,
+            generation,
+            item_id,
+        });
+    }
+
+    pub(crate) fn clear_deferred_click_selection(&mut self) {
+        self.pending_click_selection = None;
+    }
+
+    fn commit_deferred_click_selection(&mut self) {
+        let Some(pending) = self.pending_click_selection.take() else {
+            return;
+        };
+        let tab = self.tabs.active_tab();
+        if tab.id != pending.tab_id || tab.generation != pending.generation {
+            return;
+        }
+        if !self
+            .presentation_ids()
+            .iter()
+            .any(|id| id == &pending.item_id)
+        {
+            return;
+        }
+        self.tabs
+            .active_tab_mut()
+            .selection
+            .select_only(pending.item_id);
+    }
+
     pub(crate) fn update_drag_pointer(&mut self, x: f32, y: f32) -> bool {
         if !self.drag_session.update_pointer(x, y) {
             return false;
         }
+        // The gesture is a drag, not a click. Keep every selected item in the payload.
+        self.pending_click_selection = None;
         let items = self.selected_items();
         if items.is_empty() {
             let _ = self
@@ -7146,11 +8050,25 @@ impl AppViewState {
     }
 
     pub(crate) fn cancel_drag(&mut self) -> bool {
+        let commit_click = matches!(
+            self.drag_session.state(),
+            explorer_model::DragSessionState::Candidate {
+                button: explorer_model::DragButton::Left,
+                ..
+            }
+        );
         self.pending_drag_command = None;
         self.pending_context_hit = None;
         self.pending_context_extended_verbs = false;
-        self.drag_session
-            .finish(explorer_model::DragSessionState::Cancelled)
+        let finished = self
+            .drag_session
+            .finish(explorer_model::DragSessionState::Cancelled);
+        if commit_click {
+            self.commit_deferred_click_selection();
+        } else {
+            self.pending_click_selection = None;
+        }
+        finished
     }
 
     pub(crate) fn take_pending_drag_command(&mut self) -> Option<ExplorerCommand> {
@@ -7180,6 +8098,10 @@ impl AppViewState {
                 ?effect,
                 "external file drop rejected because no destination was resolved"
             );
+            crate::interaction_log::record_ui_interaction(
+                "pointer_drag_release",
+                "result=ignored reason=no_destination kind=external_drop",
+            );
             return;
         };
         if paths.is_empty() {
@@ -7187,6 +8109,10 @@ impl AppViewState {
                 destination = %destination,
                 ?effect,
                 "external file drop rejected because it contained no paths"
+            );
+            crate::interaction_log::record_ui_interaction(
+                "pointer_drag_release",
+                "result=ignored reason=no_paths kind=external_drop",
             );
             return;
         }
@@ -7203,9 +8129,20 @@ impl AppViewState {
                 ?effect,
                 "external file drop rejected by filesystem destination validation"
             );
+            crate::interaction_log::record_ui_interaction(
+                "pointer_drag_release",
+                "result=ignored reason=invalid_destination kind=external_drop",
+            );
             return;
         }
         if right_button {
+            crate::interaction_log::record_ui_interaction(
+                "pointer_drag_release",
+                &format!(
+                    "result=awaiting_right_drag_choice paths={} effect={effect:?}",
+                    paths.len()
+                ),
+            );
             self.pending_right_drop = Some(PendingRightDrop {
                 paths,
                 destination,
@@ -7294,6 +8231,7 @@ impl AppViewState {
         self.drop_target_row = None;
         self.drag_session.reset();
         self.pending_right_drop = None;
+        self.pending_click_selection = None;
     }
 
     pub(crate) fn recycle_selected_request(&self) -> Option<FileOperationRequest> {
@@ -7643,6 +8581,7 @@ impl AppViewState {
         }
         let location = tab.history.current()?.location.clone();
         let context = tab.begin_refresh_request()?;
+        self.retarget_leave_selection_generation();
         Some(ExplorerCommand::Refresh { context, location })
     }
 
@@ -8137,6 +9076,39 @@ fn load_recent_visits() -> RecentItems {
     recents
 }
 
+/// Puts these locations at the front of history, inserting them when they were never recorded.
+pub fn promote_locations(entries: impl IntoIterator<Item = (LocationDescriptor, String)>) {
+    let mut recents = load_recent_visits();
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |value| value.as_secs());
+    let mut changed = false;
+    for (location, display_name) in entries {
+        let display_name = display_name.trim().to_owned();
+        let payload = location.editable_text();
+        if payload.is_empty() || display_name.is_empty() {
+            continue;
+        }
+        let Some(stable_id) = ShellItemId::from_provider_bytes(payload.into_bytes()) else {
+            continue;
+        };
+        changed |= recents.record(
+            ShellIdentity {
+                stable_id,
+                descriptor: location,
+                display_name,
+                parsing_name: None,
+                serializable: true,
+                nonserializable_reason: None,
+            },
+            now,
+        );
+    }
+    if changed {
+        save_recent_visits(&recents);
+    }
+}
+
 fn save_recent_visits(recents: &RecentItems) {
     let Some(path) = recent_visits_path() else {
         return;
@@ -8295,7 +9267,10 @@ mod tests {
     use explorer_i18n::{AppLocale, Catalog};
 
     use super::{
-        AppViewState, BookmarkDropCue, BookmarkInsertEdge, CommandKind, DirectoryCacheKey,
+        AppMenuSlot, AppViewState, BookmarkDropCue, BookmarkInsertEdge, ClosedWindowRecord,
+        ClosedWindowTab,
+        CommandKind,
+        DirectoryCacheKey,
         DirectorySnapshotCache, FolderOptionsApplyResultV1, NetworkLoginRetry,
         bookmark_reorder_destination, bookmark_target_for_current_location,
         resolve_bookmark_insert_edge, resolve_details_column_insertion,
@@ -8453,6 +9428,7 @@ mod tests {
         );
     }
     use crate::{
+        actions::AppMenuPage,
         focus::FocusSurface,
         layout::LayoutTokens,
         theme::{ColorTheme, ThemeMode},
@@ -9014,6 +9990,70 @@ mod tests {
                 folder_entry(1, "aaa", r"C:\fixture\aaa"),
                 folder_entry(2, "zzz", r"C:\fixture\zzz"),
             ],
+        );
+        assert_eq!(focused_display_name(&state).as_deref(), Some("zzz"));
+        assert!(state.begin_focused_inline_rename());
+        assert_eq!(state.rename_editor().unwrap().buffer, "zzz");
+    }
+
+    #[test]
+    fn up_reveals_the_left_folder_despite_shell_path_spelling_and_refresh() {
+        let child = explorer_model::LocationDescriptor::file_system(r"C:\fixture\zzz");
+        let parent = explorer_model::LocationDescriptor::file_system(r"C:\fixture");
+        let mut state =
+            AppViewState::with_initial_location(explorer_model::HistoryEntry::new(child, "zzz"));
+        let up = state.begin_up_navigation().expect("Up");
+        let context = up.context().expect("navigation context").clone();
+        assert_eq!(
+            state.apply_service_event(explorer_model::ExplorerEvent::LocationResolved {
+                context: context.clone(),
+                metadata: explorer_model::LocationMetadata {
+                    descriptor: parent.clone(),
+                    display_title: "fixture".to_owned(),
+                    can_go_up: true,
+                    can_write: true,
+                },
+            }),
+            explorer_model::WindowEventOutcome::Applied
+        );
+        assert_eq!(
+            state.apply_service_event(explorer_model::ExplorerEvent::DirectoryBatch {
+                context: context.clone(),
+                entries: vec![folder_entry(1, "aaa", r"C:\fixture\aaa")],
+            }),
+            explorer_model::WindowEventOutcome::Applied
+        );
+        assert!(
+            !state.begin_focused_inline_rename(),
+            "F2 must not rename another row before the left folder is listed"
+        );
+        assert!(state.rename_editor().is_none());
+
+        let mut left = folder_entry(2, "zzz", r"C:\fixture\zzz");
+        left.location = explorer_model::LocationDescriptor::file_system(r"\\?\C:\Fixture\ZZZ\");
+        assert_eq!(
+            state.apply_service_event(explorer_model::ExplorerEvent::DirectoryBatch {
+                context: context.clone(),
+                entries: vec![left],
+            }),
+            explorer_model::WindowEventOutcome::Applied
+        );
+        assert_eq!(
+            state.apply_service_event(explorer_model::ExplorerEvent::DirectoryFinished { context }),
+            explorer_model::WindowEventOutcome::Applied
+        );
+        assert_eq!(focused_display_name(&state).as_deref(), Some("zzz"));
+        assert!(state.take_leave_selection_reveal().is_some());
+        assert!(state.begin_focused_inline_rename());
+        assert_eq!(state.rename_editor().unwrap().buffer, "zzz");
+        state.cancel_inline_rename();
+
+        let refresh = state.begin_refresh_navigation().expect("refresh");
+        complete_cached_directory(
+            &mut state,
+            &refresh,
+            parent,
+            vec![folder_entry(9, "zzz", r"C:\FIXTURE\zzz")],
         );
         assert_eq!(focused_display_name(&state).as_deref(), Some("zzz"));
         assert!(state.begin_focused_inline_rename());
@@ -10681,6 +11721,115 @@ mod tests {
         assert!(allowed_effects.move_item);
         assert_eq!(button, explorer_model::DragButton::Left);
         assert!(state.take_pending_drag_command().is_none());
+    }
+
+    #[test]
+    fn unmodified_press_on_selected_row_drags_the_full_selection() {
+        use crate::actions::{ActionSource, ExplorerAction, dispatch_action};
+
+        let mut state = state_with_rows();
+        assert!(state.select_row(0));
+        assert!(state.select_row_additive(1));
+        let pressed = state.presentation_item_id(1).expect("pressed row");
+        dispatch_action(
+            &mut state,
+            ExplorerAction::BeginFileDrag {
+                x: 10.0,
+                y: 10.0,
+                button: explorer_model::DragButton::Left,
+                deferred_row: Some(1),
+            },
+            ActionSource::Mouse,
+        );
+        assert_eq!(
+            state.tabs().active_tab().selection.len(),
+            2,
+            "mouse-down must not collapse a multi-selection before the drag threshold"
+        );
+        assert_eq!(
+            state.tabs().active_tab().selection.focused(),
+            Some(&pressed)
+        );
+        dispatch_action(
+            &mut state,
+            ExplorerAction::UpdateFileDrag { x: 20.0, y: 10.0 },
+            ActionSource::Mouse,
+        );
+        let command = state
+            .take_pending_drag_command()
+            .expect("threshold crossing queues one drag for the whole selection");
+        let explorer_model::ExplorerCommand::DataTransfer {
+            request: explorer_model::DataTransferRequest::BeginDrag { items, button, .. },
+            ..
+        } = command
+        else {
+            panic!("multi-selection drag must queue BeginDrag");
+        };
+        assert_eq!(items.len(), 2);
+        assert_eq!(button, explorer_model::DragButton::Left);
+        dispatch_action(
+            &mut state,
+            ExplorerAction::CancelFileDrag,
+            ActionSource::Mouse,
+        );
+        assert_eq!(
+            state.tabs().active_tab().selection.len(),
+            2,
+            "a started drag must not collapse the selection on release"
+        );
+    }
+
+    #[test]
+    fn unmodified_click_on_selected_row_collapses_only_after_release() {
+        use crate::actions::{ActionSource, ExplorerAction, dispatch_action};
+
+        let mut state = state_with_rows();
+        assert!(state.select_row(0));
+        assert!(state.select_row_additive(1));
+        let pressed = state.presentation_item_id(0).expect("pressed row");
+        dispatch_action(
+            &mut state,
+            ExplorerAction::BeginFileDrag {
+                x: 10.0,
+                y: 10.0,
+                button: explorer_model::DragButton::Left,
+                deferred_row: Some(0),
+            },
+            ActionSource::Mouse,
+        );
+        assert_eq!(state.tabs().active_tab().selection.len(), 2);
+        dispatch_action(
+            &mut state,
+            ExplorerAction::CancelFileDrag,
+            ActionSource::Mouse,
+        );
+        assert_eq!(state.tabs().active_tab().selection.len(), 1);
+        assert!(state.tabs().active_tab().selection.contains(&pressed));
+    }
+
+    #[test]
+    fn shift_or_ctrl_press_does_not_defer_a_later_single_selection_collapse() {
+        use crate::actions::{ActionSource, ExplorerAction, dispatch_action};
+
+        let mut state = state_with_rows();
+        assert!(state.select_row(0));
+        assert!(state.select_row_additive(1));
+        dispatch_action(
+            &mut state,
+            ExplorerAction::BeginFileDrag {
+                x: 10.0,
+                y: 10.0,
+                button: explorer_model::DragButton::Left,
+                deferred_row: None,
+            },
+            ActionSource::Mouse,
+        );
+        dispatch_action(
+            &mut state,
+            ExplorerAction::CancelFileDrag,
+            ActionSource::Mouse,
+        );
+        assert_eq!(state.tabs().active_tab().selection.len(), 2);
     }
 
     #[test]
@@ -13652,6 +14801,168 @@ mod tests {
         state.close_about_dialog();
         assert!(state.about_dialog().is_none());
         assert_eq!(state.tabs().active_tab_id(), tab);
+    }
+
+    #[test]
+    fn app_menu_history_uses_recent_visits_and_page_changes_stay_open() {
+        let mut state = AppViewState::default();
+        crate::actions::dispatch_action(
+            &mut state,
+            crate::actions::ExplorerAction::ToggleAppMenu,
+            crate::actions::ActionSource::Mouse,
+        );
+        assert!(state.app_menu_open());
+        assert_eq!(state.app_menu_page(), AppMenuPage::Main);
+        let history = state.app_menu_activation();
+        state.set_app_menu_focus(1);
+        assert!(matches!(
+            state.app_menu_activation(),
+            Some(crate::actions::ExplorerAction::SetAppMenuPage(AppMenuPage::History))
+        ));
+        let _ = history;
+        crate::actions::dispatch_action(
+            &mut state,
+            crate::actions::ExplorerAction::SetAppMenuPage(AppMenuPage::History),
+            crate::actions::ActionSource::Mouse,
+        );
+        assert!(state.app_menu_open());
+        assert_eq!(state.app_menu_page(), AppMenuPage::History);
+        let location = explorer_model::LocationDescriptor::file_system(r"C:\pics");
+        let stable_id =
+            explorer_model::ShellItemId::from_provider_bytes(b"C:\\pics".to_vec()).expect("id");
+        state.replace_recent_visits_for_test(vec![explorer_model::RecentNamespaceItem {
+            identity: explorer_model::ShellIdentity {
+                stable_id,
+                descriptor: location.clone(),
+                display_name: "pics".to_owned(),
+                parsing_name: None,
+                serializable: true,
+                nonserializable_reason: None,
+            },
+            last_opened_epoch_seconds: 10,
+        }]);
+        let recent_index = state
+            .app_menu_slots()
+            .iter()
+            .filter(|slot| slot.is_focusable())
+            .position(|slot| matches!(slot, AppMenuSlot::Recent { .. }))
+            .expect("recent visit row");
+        state.set_app_menu_focus(recent_index);
+        match state.app_menu_activation() {
+            Some(crate::actions::ExplorerAction::ActivateNavigationItem { location: opened }) => {
+                assert_eq!(opened, location);
+            }
+            other => panic!("expected recent visit activation, got {other:?}"),
+        }
+        state.append_app_menu_history_query("missing");
+        assert!(state
+            .app_menu_slots()
+            .iter()
+            .any(|slot| matches!(slot, AppMenuSlot::Empty(_))));
+        crate::actions::dispatch_action(
+            &mut state,
+            crate::actions::ExplorerAction::NewTab,
+            crate::actions::ActionSource::Mouse,
+        );
+        assert!(!state.app_menu_open());
+    }
+
+    #[test]
+    fn closed_windows_page_lists_saved_windows_and_can_drop_a_restored_one() {
+        let mut state = AppViewState::default();
+        state.set_closed_windows(vec![
+            ClosedWindowRecord {
+                id: 7,
+                title: "Screenshots".to_owned(),
+                tabs: vec![
+                    ClosedWindowTab {
+                        title: "Screenshots".to_owned(),
+                        active: true,
+                        tab_index: 0,
+                    },
+                    ClosedWindowTab {
+                        title: "temp".to_owned(),
+                        active: false,
+                        tab_index: 1,
+                    },
+                ],
+            },
+            ClosedWindowRecord {
+                id: 9,
+                title: "Koikatu".to_owned(),
+                tabs: vec![ClosedWindowTab {
+                    title: "Koikatu".to_owned(),
+                    active: true,
+                    tab_index: 0,
+                }],
+            },
+        ]);
+        state.toggle_app_menu();
+        state.set_app_menu_page(AppMenuPage::ClosedWindows);
+        let slots = state.app_menu_slots();
+        assert!(matches!(
+            slots.first(),
+            Some(AppMenuSlot::ClosedWindow {
+                id: 7,
+                expanded: true,
+                tab_count: 2,
+                ..
+            })
+        ));
+        assert!(matches!(
+            slots.get(1),
+            Some(AppMenuSlot::ClosedWindowTab {
+                window_id: 7,
+                tab_index: 0,
+                active: true,
+                ..
+            })
+        ));
+        assert!(matches!(
+            slots.get(2),
+            Some(AppMenuSlot::ClosedWindowTab {
+                window_id: 7,
+                tab_index: 1,
+                ..
+            })
+        ));
+        assert!(matches!(
+            slots.get(3),
+            Some(AppMenuSlot::ClosedWindow {
+                id: 9,
+                expanded: false,
+                tab_count: 1,
+                ..
+            })
+        ));
+        assert!(matches!(
+            state.app_menu_activation(),
+            Some(crate::actions::ExplorerAction::RestoreClosedWindow {
+                id: 7,
+                tab_index: None
+            })
+        ));
+        assert!(state.set_app_menu_focus(2));
+        assert!(matches!(
+            state.app_menu_activation(),
+            Some(crate::actions::ExplorerAction::RestoreClosedWindow {
+                id: 7,
+                tab_index: Some(1)
+            })
+        ));
+        state.toggle_closed_window_expanded(7);
+        assert!(state
+            .app_menu_slots()
+            .iter()
+            .all(|slot| !matches!(slot, AppMenuSlot::ClosedWindowTab { .. })));
+        state.remove_closed_window(7);
+        assert!(matches!(
+            state.app_menu_activation(),
+            Some(crate::actions::ExplorerAction::RestoreClosedWindow {
+                id: 9,
+                tab_index: None
+            })
+        ));
     }
 
     #[test]
