@@ -274,3 +274,19 @@ menu-shortcut-ctrl-shift-q = Ctrl+Shift+Q
 
 menu-closed-windows = Recently closed windows
 menu-no-closed-windows = No recently closed windows
+
+menu-columns = Kolumny
+column-empty = Ten folder jest pusty
+column-loading = Ładowanie…
+column-error = Nie można odczytać tego folderu
+column-cycle = Ten folder wraca do wcześniejszej kolumny
+column-preview-folder = Folder
+column-preview-multiple = Zaznaczono wiele elementów
+column-preview-empty = Nic do podglądu
+column-preview-offline = Element offline nie jest pobierany
+column-preview-handler-ready = Podgląd gotowy
+a11y-column-view = Widok kolumn
+a11y-column-level = Kolumna
+a11y-column-row = Element
+a11y-column-divider = Zmień szerokość kolumny
+a11y-column-preview = Zintegrowany podgląd

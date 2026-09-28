@@ -274,3 +274,19 @@ menu-shortcut-ctrl-shift-q = Ctrl+Shift+Q
 
 menu-closed-windows = Recently closed windows
 menu-no-closed-windows = No recently closed windows
+
+menu-columns = カラム
+column-empty = このフォルダーは空です
+column-loading = 読み込み中…
+column-error = このフォルダーを読み取れません
+column-cycle = このフォルダーは前の列に戻ります
+column-preview-folder = フォルダー
+column-preview-multiple = 複数の項目が選択されています
+column-preview-empty = プレビューするものがありません
+column-preview-offline = オフライン項目はダウンロードしません
+column-preview-handler-ready = プレビューの準備ができました
+a11y-column-view = カラム表示
+a11y-column-level = 列
+a11y-column-row = 項目
+a11y-column-divider = 列の幅を変更
+a11y-column-preview = 統合プレビュー

@@ -2050,6 +2050,7 @@ dependencies = [
  "serde_json",
  "smallvec",
  "tracing",
+ "windows 0.61.3",
 ]
 
 [[package]]

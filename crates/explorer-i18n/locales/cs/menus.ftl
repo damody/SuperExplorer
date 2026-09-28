@@ -274,3 +274,19 @@ menu-shortcut-ctrl-shift-q = Ctrl+Shift+Q
 
 menu-closed-windows = Recently closed windows
 menu-no-closed-windows = No recently closed windows
+
+menu-columns = Sloupce
+column-empty = Tato složka je prázdná
+column-loading = Načítání…
+column-error = Tuto složku nelze přečíst
+column-cycle = Tato složka odkazuje na předchozí sloupec
+column-preview-folder = Složka
+column-preview-multiple = Vybráno více položek
+column-preview-empty = Není co zobrazit
+column-preview-offline = Offline položka se nestahuje
+column-preview-handler-ready = Náhled je připraven
+a11y-column-view = Zobrazení sloupců
+a11y-column-level = Sloupec
+a11y-column-row = Položka
+a11y-column-divider = Změnit šířku sloupce
+a11y-column-preview = Integrovaný náhled

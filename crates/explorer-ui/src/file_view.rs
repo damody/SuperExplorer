@@ -246,6 +246,34 @@ impl DirectoryPresentation {
             .map(|entry| (snapshot_index, entry))
     }
 
+    pub fn visible_position(&self, id: &explorer_model::ShellItemId) -> Option<usize> {
+        self.ordered_indices.iter().position(|index| {
+            self.entries
+                .get(*index)
+                .is_some_and(|entry| &entry.id == id)
+        })
+    }
+
+    pub fn visible_entry(&self, id: &explorer_model::ShellItemId) -> Option<&FileEntry> {
+        self.entry(self.visible_position(id)?)
+            .map(|(_, entry)| entry)
+    }
+
+    /// Snapshot identity removed by the hidden-item, system-item, or details filter policy.
+    pub fn hides_entry(&self, id: &explorer_model::ShellItemId) -> bool {
+        self.entries.iter().any(|entry| &entry.id == id) && self.visible_position(id).is_none()
+    }
+
+    pub fn visible_ids(&self) -> Vec<explorer_model::ShellItemId> {
+        let mut ids = Vec::with_capacity(self.len());
+        for index in 0..self.len() {
+            if let Some((_, entry)) = self.entry(index) {
+                ids.push(entry.id.clone());
+            }
+        }
+        ids
+    }
+
     /// Reorders an already-filtered presentation using copied exact-byte
     /// values supplied by a runtime Details column. Missing values stay last
     /// in either direction, matching the built-in size-column contract.
@@ -331,6 +359,55 @@ impl DirectoryPresentationCache {
         self.current = Some(presentation.clone());
         self.rebuilds = self.rebuilds.saturating_add(1);
         presentation
+    }
+
+    pub const fn rebuilds(&self) -> u64 {
+        self.rebuilds
+    }
+}
+
+/// Shared projections for every visible Columns directory.
+///
+/// A hit clones the presentation handle (entry storage and index vector are
+/// reference-counted). Callers that only need a row count, including a wheel
+/// event, must not clone the underlying `FileEntry` values.
+#[derive(Clone, Debug, Default)]
+pub struct ColumnProjectionCache {
+    slots: Vec<DirectoryPresentation>,
+    rebuilds: u64,
+}
+
+impl ColumnProjectionCache {
+    const LIMIT: usize = 32;
+
+    pub fn recall(
+        &mut self,
+        snapshot: &DirectorySnapshot,
+        hidden_items: bool,
+        sort: &SortDescriptor,
+        filters: &DetailsFilters,
+    ) -> Option<DirectoryPresentation> {
+        let index = self
+            .slots
+            .iter()
+            .position(|presentation| presentation.matches(snapshot, hidden_items, sort, filters))?;
+        let presentation = self.slots.remove(index);
+        let recalled = presentation.clone();
+        self.slots.push(presentation);
+        Some(recalled)
+    }
+
+    pub fn store(&mut self, presentation: DirectoryPresentation) {
+        self.slots.push(presentation);
+        self.rebuilds = self.rebuilds.saturating_add(1);
+        if self.slots.len() > Self::LIMIT {
+            let overflow = self.slots.len() - Self::LIMIT;
+            self.slots.drain(0..overflow);
+        }
+    }
+
+    pub fn invalidate(&mut self) {
+        self.slots.clear();
     }
 
     pub const fn rebuilds(&self) -> u64 {

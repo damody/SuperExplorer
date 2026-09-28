@@ -275,3 +275,19 @@ menu-shortcut-ctrl-shift-q = Ctrl+Shift+Q
 
 menu-closed-windows = 最近关闭的窗口
 menu-no-closed-windows = 没有最近关闭的窗口
+
+menu-columns = 分栏
+column-empty = 此文件夹是空的
+column-loading = 正在加载…
+column-error = 无法读取此文件夹
+column-cycle = 此文件夹链接回先前的栏
+column-preview-folder = 文件夹
+column-preview-multiple = 已选择多个项目
+column-preview-empty = 没有可预览的内容
+column-preview-offline = 离线项目不会自动下载
+column-preview-handler-ready = 预览已就绪
+a11y-column-view = 分栏视图
+a11y-column-level = 栏
+a11y-column-row = 项目
+a11y-column-divider = 调整栏宽
+a11y-column-preview = 集成预览

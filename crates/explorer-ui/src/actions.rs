@@ -165,6 +165,14 @@ pub enum PermanentDeleteDialogTarget {
     Delete,
 }
 
+pub const VIEW_MENU_COLUMNS: usize = 8;
+pub const VIEW_MENU_DETAILS_PANE: usize = 9;
+pub const VIEW_MENU_PREVIEW_PANE: usize = 10;
+pub const VIEW_MENU_THEME: usize = 11;
+pub const VIEW_MENU_SHOW: usize = 12;
+pub const VIEW_MENU_EXTENSION: usize = 13;
+pub const VIEW_MENU_LAST: usize = VIEW_MENU_EXTENSION;
+
 #[derive(Clone, Debug, PartialEq)]
 pub enum ExplorerAction {
     Back,
@@ -539,10 +547,33 @@ pub enum ExplorerAction {
         deferred_row: Option<usize>,
     },
     BeginContextItemGesture {
+        /// `Some` selects that column instead of the rightmost tab presentation.
+        column_index: Option<usize>,
         item_id: explorer_model::ShellItemId,
         x: f32,
         y: f32,
         extended_verbs: bool,
+    },
+    /// Left press on a column row. Release navigates; movement drags that column's items.
+    PressColumnRow {
+        column_index: usize,
+        item_id: explorer_model::ShellItemId,
+        location: explorer_model::LocationDescriptor,
+        is_container: bool,
+        x: f32,
+        y: f32,
+        shift: bool,
+        control: bool,
+    },
+    FinishColumnPress,
+    /// Drop onto a column directory or one of its folder rows.
+    DropOnColumn {
+        column_index: usize,
+        folder_id: Option<explorer_model::ShellItemId>,
+        paths: Vec<std::path::PathBuf>,
+        effect: explorer_model::DragEffect,
+        right_button: bool,
+        allowed: explorer_model::TransferEffects,
     },
     UpdateFileDrag {
         x: f32,
@@ -570,6 +601,8 @@ pub enum ExplorerAction {
     },
     ShowContextMenu {
         item_id: Option<explorer_model::ShellItemId>,
+        /// Column that owns a background or keyboard menu. `None` is the ordinary file view.
+        column_index: Option<usize>,
         owner_window: u64,
         x: i32,
         y: i32,
@@ -756,6 +789,57 @@ pub enum ExplorerAction {
     AdjustNavigationPaneWidth {
         direction: i8,
     },
+    ActivateColumnItem {
+        column_index: usize,
+        item_id: explorer_model::ShellItemId,
+        location: explorer_model::LocationDescriptor,
+        is_container: bool,
+        shift: bool,
+        control: bool,
+    },
+    OpenColumnItem {
+        column_index: usize,
+        item_id: explorer_model::ShellItemId,
+        location: explorer_model::LocationDescriptor,
+        is_container: bool,
+    },
+    MoveColumnCursor {
+        vertical: i8,
+        horizontal: i8,
+        shift: bool,
+        control: bool,
+    },
+    SetColumnWidth {
+        column_index: usize,
+        width: u16,
+    },
+    SetColumnPreviewWidth {
+        width: u16,
+    },
+    SetColumnScroll {
+        column_index: usize,
+        offset: f32,
+    },
+    SetColumnHorizontalOffset {
+        offset: f32,
+    },
+    BeginColumnPreviewResize {
+        pointer_x: f32,
+    },
+    UpdateColumnPreviewResize {
+        pointer_x: f32,
+    },
+    EndColumnPreviewResize,
+    BeginColumnHorizontalScroll {
+        track_left: f32,
+        track_width: f32,
+        grab_offset: f32,
+        minimum_thumb: f32,
+    },
+    UpdateColumnHorizontalScroll {
+        pointer_x: f32,
+    },
+    EndColumnHorizontalScroll,
 }
 
 impl ExplorerAction {
@@ -958,6 +1042,9 @@ impl ExplorerAction {
             Self::ConfirmFolderOptions => "ConfirmFolderOptions",
             Self::BeginFileDrag { .. } => "BeginFileDrag",
             Self::BeginContextItemGesture { .. } => "BeginContextItemGesture",
+            Self::PressColumnRow { .. } => "PressColumnRow",
+            Self::FinishColumnPress => "FinishColumnPress",
+            Self::DropOnColumn { .. } => "DropOnColumn",
             Self::UpdateFileDrag { .. } => "UpdateFileDrag",
             Self::CancelFileDrag => "CancelFileDrag",
             Self::DropExternal { .. } => "DropExternal",
@@ -1047,6 +1134,19 @@ impl ExplorerAction {
             Self::EndNavigationPaneResize => "EndNavigationPaneResize",
             Self::ResetNavigationPaneWidth => "ResetNavigationPaneWidth",
             Self::AdjustNavigationPaneWidth { .. } => "AdjustNavigationPaneWidth",
+            Self::ActivateColumnItem { .. } => "ActivateColumnItem",
+            Self::OpenColumnItem { .. } => "OpenColumnItem",
+            Self::MoveColumnCursor { .. } => "MoveColumnCursor",
+            Self::SetColumnWidth { .. } => "SetColumnWidth",
+            Self::SetColumnPreviewWidth { .. } => "SetColumnPreviewWidth",
+            Self::SetColumnScroll { .. } => "SetColumnScroll",
+            Self::SetColumnHorizontalOffset { .. } => "SetColumnHorizontalOffset",
+            Self::BeginColumnPreviewResize { .. } => "BeginColumnPreviewResize",
+            Self::UpdateColumnPreviewResize { .. } => "UpdateColumnPreviewResize",
+            Self::EndColumnPreviewResize => "EndColumnPreviewResize",
+            Self::BeginColumnHorizontalScroll { .. } => "BeginColumnHorizontalScroll",
+            Self::UpdateColumnHorizontalScroll { .. } => "UpdateColumnHorizontalScroll",
+            Self::EndColumnHorizontalScroll => "EndColumnHorizontalScroll",
         }
     }
 }
@@ -1323,7 +1423,12 @@ pub struct ActionTrace {
 }
 
 fn action_dispatches_at_info(action: &ExplorerAction, outcome: ActionOutcome) -> bool {
-    if matches!(action, ExplorerAction::UpdateFileDrag { .. }) {
+    // Layout probes and pointer tracking are not user commands. Logging them at info makes an idle
+    // window look like it is receiving a stream of clicks.
+    if matches!(
+        action,
+        ExplorerAction::UpdateFileDrag { .. } | ExplorerAction::UpdatePreviewHostBoundary { .. }
+    ) {
         return false;
     }
     if outcome == ActionOutcome::Disabled && is_high_frequency_pointer_action(action) {
@@ -1352,6 +1457,10 @@ fn is_high_frequency_pointer_action(action: &ExplorerAction) -> bool {
             | ExplorerAction::CancelDetailsColumnDrag
             | ExplorerAction::UpdateSidePaneResize { .. }
             | ExplorerAction::EndSidePaneResize
+            | ExplorerAction::UpdateColumnPreviewResize { .. }
+            | ExplorerAction::EndColumnPreviewResize
+            | ExplorerAction::UpdateColumnHorizontalScroll { .. }
+            | ExplorerAction::EndColumnHorizontalScroll
             | ExplorerAction::UpdateScrollbarDrag { .. }
             | ExplorerAction::EndScrollbarDrag { .. }
             | ExplorerAction::UpdateNavigationPaneResize { .. }
@@ -1477,6 +1586,7 @@ pub fn dispatch_action(
             | ExplorerAction::MoveNavigationHistoryFocus { .. }
             | ExplorerAction::SetNavigationHistoryFocus { .. }
     );
+    let passive_layout = matches!(action, ExplorerAction::UpdatePreviewHostBoundary { .. });
     let handled_surface = if available {
         let handled_surface = apply_action(state, action);
         // Keep the reducer's focus model synchronized with the surface that handled the action.
@@ -1490,6 +1600,14 @@ pub fn dispatch_action(
         state.focused_surface()
     };
     let outcome = if available {
+        if passive_layout {
+            return ActionTrace {
+                action_name,
+                source,
+                handled_surface,
+                outcome: ActionOutcome::Handled,
+            };
+        }
         if !preserve_more_menu {
             state.close_more_menu();
         }
@@ -1656,15 +1774,21 @@ fn action_available(state: &AppViewState, action: &ExplorerAction) -> bool {
         | ExplorerAction::BeginMarquee { .. }
         | ExplorerAction::UpdateMarquee { .. }
         | ExplorerAction::EndMarquee => true,
-        ExplorerAction::BeginRenameFocused => state
-            .focused_row_index()
-            .or_else(|| (state.visible_row_count() > 0).then_some(0))
-            .is_some_and(|row_index| {
-                state.row_namespace_command_enabled(
-                    row_index,
-                    explorer_model::NamespaceCommand::Rename,
-                )
-            }),
+        ExplorerAction::BeginRenameFocused => {
+            if state.effective_view_mode() == explorer_model::ViewMode::Columns {
+                state.selected_namespace_command_enabled(explorer_model::NamespaceCommand::Rename)
+            } else {
+                state
+                    .focused_row_index()
+                    .or_else(|| (state.visible_row_count() > 0).then_some(0))
+                    .is_some_and(|row_index| {
+                        state.row_namespace_command_enabled(
+                            row_index,
+                            explorer_model::NamespaceCommand::Rename,
+                        )
+                    })
+            }
+        }
         ExplorerAction::RequestPermanentDelete => {
             state.selected_namespace_command_enabled(explorer_model::NamespaceCommand::Delete)
         }
@@ -1695,10 +1819,16 @@ fn action_available(state: &AppViewState, action: &ExplorerAction) -> bool {
             state.selected_namespace_command_enabled(explorer_model::NamespaceCommand::Delete)
         }
         ExplorerAction::CreateShortcutSelected => {
-            !state.tabs().active_tab().selection.is_empty() && state.active_presentation().can_write
+            !state.selected_items_for_extension_command().is_empty()
+                && state.active_presentation().can_write
         }
-        ExplorerAction::BeginContextItemGesture { .. } => true,
-        ExplorerAction::BeginFileDrag { .. } => !state.tabs().active_tab().selection.is_empty(),
+        ExplorerAction::BeginContextItemGesture { .. }
+        | ExplorerAction::PressColumnRow { .. }
+        | ExplorerAction::FinishColumnPress
+        | ExplorerAction::DropOnColumn { .. } => true,
+        ExplorerAction::BeginFileDrag { .. } => {
+            !state.selected_items_for_extension_command().is_empty()
+        }
         ExplorerAction::UpdateFileDrag { .. } | ExplorerAction::CancelFileDrag => {
             drag_pointer_session_active(state)
         }
@@ -1731,7 +1861,9 @@ fn action_available(state: &AppViewState, action: &ExplorerAction) -> bool {
         ExplorerAction::ToggleCurrentFolderBookmark { .. } => {
             state.current_folder_bookmark_target_and_id().is_some()
         }
-        ExplorerAction::CopySelectedPaths => !state.tabs().active_tab().selection.is_empty(),
+        ExplorerAction::CopySelectedPaths => {
+            !state.selected_items_for_extension_command().is_empty()
+        }
         ExplorerAction::Paste => {
             !matches!(
                 state.clipboard(),
@@ -1750,11 +1882,24 @@ fn action_available(state: &AppViewState, action: &ExplorerAction) -> bool {
         | ExplorerAction::UpdateExternalDrag { .. }
         | ExplorerAction::ClearExternalDrag
         | ExplorerAction::ResolveRightDrop { .. } => true,
-        ExplorerAction::ShowContextMenu { item_id, .. } => item_id.as_ref().is_none_or(|item_id| {
-            state.item_namespace_command_enabled(
-                item_id,
-                explorer_model::NamespaceCommand::ContextMenu,
-            )
+        ExplorerAction::ShowContextMenu {
+            item_id,
+            column_index,
+            ..
+        } => item_id.as_ref().is_none_or(|item_id| {
+            if column_index.is_some()
+                || state.effective_view_mode() == explorer_model::ViewMode::Columns
+            {
+                state.column_item_command_enabled(
+                    item_id,
+                    explorer_model::NamespaceCommand::ContextMenu,
+                )
+            } else {
+                state.item_namespace_command_enabled(
+                    item_id,
+                    explorer_model::NamespaceCommand::ContextMenu,
+                )
+            }
         }),
         ExplorerAction::CancelOperation { request_id } => {
             state
@@ -1947,6 +2092,19 @@ fn action_available(state: &AppViewState, action: &ExplorerAction) -> bool {
         | ExplorerAction::AdjustNavigationPaneWidth { .. } => {
             availability.is_enabled(CommandKind::ResizeNavigationPane)
         }
+        ExplorerAction::ActivateColumnItem { .. }
+        | ExplorerAction::OpenColumnItem { .. }
+        | ExplorerAction::MoveColumnCursor { .. }
+        | ExplorerAction::SetColumnWidth { .. }
+        | ExplorerAction::SetColumnPreviewWidth { .. }
+        | ExplorerAction::SetColumnScroll { .. }
+        | ExplorerAction::SetColumnHorizontalOffset { .. }
+        | ExplorerAction::BeginColumnPreviewResize { .. }
+        | ExplorerAction::UpdateColumnPreviewResize { .. }
+        | ExplorerAction::EndColumnPreviewResize
+        | ExplorerAction::BeginColumnHorizontalScroll { .. }
+        | ExplorerAction::UpdateColumnHorizontalScroll { .. }
+        | ExplorerAction::EndColumnHorizontalScroll => true,
     }
 }
 
@@ -2198,13 +2356,40 @@ fn apply_action(state: &mut AppViewState, action: ExplorerAction) -> FocusSurfac
             FocusSurface::FileView
         }
         ExplorerAction::BeginContextItemGesture {
+            column_index,
             item_id,
             x,
             y,
             extended_verbs,
         } => {
-            let _ = state.begin_context_item_gesture(item_id, x, y, extended_verbs);
+            let _ = state.begin_context_item_gesture(column_index, item_id, x, y, extended_verbs);
             state.focus(FocusSurface::FileView);
+            FocusSurface::FileView
+        }
+        ExplorerAction::PressColumnRow {
+            column_index,
+            item_id,
+            location,
+            is_container,
+            x,
+            y,
+            shift,
+            control,
+        } => {
+            let _ = state.press_column_row(
+                column_index,
+                item_id,
+                location,
+                is_container,
+                x,
+                y,
+                shift,
+                control,
+            );
+            state.focus(FocusSurface::FileView);
+            FocusSurface::FileView
+        }
+        ExplorerAction::FinishColumnPress | ExplorerAction::DropOnColumn { .. } => {
             FocusSurface::FileView
         }
         ExplorerAction::UpdateFileDrag { x, y } => {
@@ -2253,13 +2438,18 @@ fn apply_action(state: &mut AppViewState, action: ExplorerAction) -> FocusSurfac
         }
         ExplorerAction::ShowContextMenu {
             item_id,
+            column_index,
             keyboard_invoked,
             ..
         } => {
             // Pointer item selection was committed from the stable mouse-down identity.
             // Reapplying a mouse-up closure identity here can select a stale/first row after
             // GPUI replaces the hit element during the selection re-render.
-            if keyboard_invoked || item_id.is_none() {
+            if let Some(column_index) = column_index {
+                if keyboard_invoked || item_id.is_none() {
+                    state.prepare_column_context_target(column_index, item_id.as_ref());
+                }
+            } else if keyboard_invoked || item_id.is_none() {
                 state.prepare_context_selection(item_id.as_ref());
             }
             state.focus(FocusSurface::FileView);
@@ -3009,6 +3199,19 @@ fn apply_action(state: &mut AppViewState, action: ExplorerAction) -> FocusSurfac
             state.adjust_divider(direction);
             FocusSurface::NavigationPane
         }
+        ExplorerAction::ActivateColumnItem { .. }
+        | ExplorerAction::OpenColumnItem { .. }
+        | ExplorerAction::MoveColumnCursor { .. }
+        | ExplorerAction::SetColumnWidth { .. }
+        | ExplorerAction::SetColumnPreviewWidth { .. }
+        | ExplorerAction::SetColumnScroll { .. }
+        | ExplorerAction::SetColumnHorizontalOffset { .. }
+        | ExplorerAction::BeginColumnPreviewResize { .. }
+        | ExplorerAction::UpdateColumnPreviewResize { .. }
+        | ExplorerAction::EndColumnPreviewResize
+        | ExplorerAction::BeginColumnHorizontalScroll { .. }
+        | ExplorerAction::UpdateColumnHorizontalScroll { .. }
+        | ExplorerAction::EndColumnHorizontalScroll => FocusSurface::FileView,
     }
 }
 
@@ -3059,6 +3262,17 @@ mod tests {
         ));
         assert!(action_dispatches_at_info(
             &ExplorerAction::Refresh,
+            ActionOutcome::Handled
+        ));
+        assert!(!action_dispatches_at_info(
+            &ExplorerAction::UpdatePreviewHostBoundary {
+                parent_window: 1,
+                left_physical: 0,
+                top_physical: 0,
+                width_physical: 10,
+                height_physical: 10,
+                dpi: 96,
+            },
             ActionOutcome::Handled
         ));
 
@@ -3331,6 +3545,22 @@ mod tests {
             ActionSource::Mouse,
         );
         assert!(state.view_menu_open());
+        dispatch_action(
+            &mut state,
+            ExplorerAction::UpdatePreviewHostBoundary {
+                parent_window: 1,
+                left_physical: 0,
+                top_physical: 0,
+                width_physical: 10,
+                height_physical: 10,
+                dpi: 96,
+            },
+            ActionSource::Mouse,
+        );
+        assert!(
+            state.view_menu_open(),
+            "preview layout measurement must not dismiss the view menu"
+        );
         dispatch_action(
             &mut state,
             ExplorerAction::SetViewMode(explorer_model::ViewMode::ExtraLargeIcons),

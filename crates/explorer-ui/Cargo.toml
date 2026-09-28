@@ -17,6 +17,7 @@ explorer-jobs = { path = "../explorer-jobs" }
 explorer-search = { path = "../explorer-search" }
 explorer-extension-ui-api = { path = "../explorer-extension-ui-api" }
 gpui.workspace = true
+windows.workspace = true
 gpui_elements.workspace = true
 raw-window-handle.workspace = true
 serde.workspace = true

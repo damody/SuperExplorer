@@ -274,3 +274,19 @@ menu-shortcut-ctrl-shift-q = Ctrl+Shift+Q
 
 menu-closed-windows = Recently closed windows
 menu-no-closed-windows = No recently closed windows
+
+menu-columns = Sütunlar
+column-empty = Bu klasör boş
+column-loading = Yükleniyor…
+column-error = Bu klasör okunamıyor
+column-cycle = Bu klasör önceki bir sütuna bağlanıyor
+column-preview-folder = Klasör
+column-preview-multiple = Birden çok öğe seçili
+column-preview-empty = Önizlenecek bir şey yok
+column-preview-offline = Çevrimdışı öğe indirilmez
+column-preview-handler-ready = Önizleme hazır
+a11y-column-view = Sütun görünümü
+a11y-column-level = Sütun
+a11y-column-row = Öğe
+a11y-column-divider = Sütun genişliğini değiştir
+a11y-column-preview = Tümleşik önizleme

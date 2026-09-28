@@ -89,8 +89,7 @@ use crate::{
     },
     state::{
         AppMenuSlot, AppViewState, BookmarkDropCue, CommandKind, LockRecoveryPhase,
-        LockRecoveryUiState,
-        RunRecord, resolve_bookmark_insert_edge,
+        LockRecoveryUiState, RunRecord, resolve_bookmark_insert_edge,
     },
     typography::TypographyStyle,
 };
@@ -221,8 +220,11 @@ fn bookmark_icon(target: &explorer_model::BookmarkTarget) -> &'static str {
 }
 
 fn bookmark_target_uses_folder_glyph(target: &explorer_model::BookmarkTarget) -> bool {
-    matches!(target, explorer_model::BookmarkTarget::Folder { .. } | explorer_model::BookmarkTarget::FolderPath { .. })
-        && bookmark_icon(target) == "📁"
+    matches!(
+        target,
+        explorer_model::BookmarkTarget::Folder { .. }
+            | explorer_model::BookmarkTarget::FolderPath { .. }
+    ) && bookmark_icon(target) == "📁"
 }
 
 #[derive(Clone, Copy)]
@@ -257,19 +259,17 @@ impl BookmarkShellIcons<'_> {
 
     fn generic_folder(self) -> Option<Arc<RenderImage>> {
         self.icons.iter().find_map(|(key, texture)| {
-            (is_generic_breadcrumb_folder_icon_key(key) && key.theme == self.theme && key.dpi == self.dpi)
+            (is_generic_breadcrumb_folder_icon_key(key)
+                && key.theme == self.theme
+                && key.dpi == self.dpi)
                 .then(|| Arc::clone(texture))
         })
     }
 
     fn for_target(self, target: &explorer_model::BookmarkTarget) -> Option<Arc<RenderImage>> {
         let location = crate::state::bookmark_target_shell_location(target)?;
-        self.texture_for_location(&location).or_else(|| {
-            target
-                .is_folder()
-                .then(|| self.generic_folder())
-                .flatten()
-        })
+        self.texture_for_location(&location)
+            .or_else(|| target.is_folder().then(|| self.generic_folder()).flatten())
     }
 }
 
@@ -774,6 +774,7 @@ pub struct ExplorerWindow {
     file_performance: Option<Arc<crate::performance::FileViewPerformanceCounters>>,
     preview_texture: Option<Arc<RenderImage>>,
     preview_thumbnail_failed: bool,
+    column_handler_phase: crate::column_view::ColumnHandlerPhase,
     folder_size_visuals: Option<crate::folder_size_column::FolderSizeColumnVisuals>,
     visual_column_runtime: Option<crate::folder_size_column::VisualColumnRuntimeHandleV1>,
     code_lines_visuals: Vec<crate::code_lines_column::CodeLinesColumnVisuals>,
@@ -805,6 +806,7 @@ impl ExplorerWindow {
             file_performance: None,
             preview_texture: None,
             preview_thumbnail_failed: false,
+            column_handler_phase: crate::column_view::ColumnHandlerPhase::Inactive,
             folder_size_visuals: None,
             visual_column_runtime: None,
             code_lines_visuals: Vec::new(),
@@ -908,6 +910,15 @@ impl ExplorerWindow {
     }
 
     #[must_use]
+    pub fn with_column_handler_phase(
+        mut self,
+        phase: crate::column_view::ColumnHandlerPhase,
+    ) -> Self {
+        self.column_handler_phase = phase;
+        self
+    }
+
+    #[must_use]
     pub fn with_folder_size_visuals(
         mut self,
         visuals: Option<crate::folder_size_column::FolderSizeColumnVisuals>,
@@ -971,8 +982,11 @@ impl RenderOnce for ExplorerWindow {
                     extension.package_id == "rust-folder-size-map-view" && extension.enabled
                 })
             });
-        let show_side_pane = f32::from(window.bounds().size.width)
-            >= self.tokens.layout.compact_window_width.value()
+        let columns_effective =
+            self.state.effective_view_mode() == explorer_model::ViewMode::Columns;
+        let show_side_pane = !columns_effective
+            && f32::from(window.bounds().size.width)
+                >= self.tokens.layout.compact_window_width.value()
             && (view_settings.details_pane || view_settings.preview_pane);
         let scrollbar_dragging = self
             .state
@@ -980,6 +994,8 @@ impl RenderOnce for ExplorerWindow {
             .map(|session| session.kind);
         let details_column_resizing = self.state.details_column_resize_active();
         let side_pane_resizing = self.state.side_pane_resize_active();
+        let column_preview_resizing = self.state.column_preview_resize_active();
+        let column_hscroll_dragging = self.state.column_horizontal_scroll_active();
         let marquee = self.state.marquee_session().cloned();
         let marquee_active = marquee.is_some();
         let about_dialog_info = self.state.about_dialog().cloned();
@@ -1104,7 +1120,7 @@ impl RenderOnce for ExplorerWindow {
                                 self.tokens,
                                 self.state.clone(),
                                 self.navigation_scroll.clone(),
-                                self.shell_icons,
+                                self.shell_icons.clone(),
                                 self.shell_icon_dpi,
                                 self.on_action.clone(),
                             ))
@@ -1129,61 +1145,96 @@ impl RenderOnce for ExplorerWindow {
                             .h_full()
                             .flex_1()
                             .overflow_hidden()
-                            .child(FileViewHost::new(
-                                self.tokens,
-                                FileViewStatus::from_tab(self.state.tabs().active_tab()),
-                                self.file_presentation,
-                                self.file_performance,
-                                self.state.tabs().active_tab().selection.clone(),
-                                self.state.rename_editor().cloned(),
-                                self.state.provisional_new_folder_entry(),
-                                self.rename_input,
-                                self.state.clipboard().clone(),
-                                self.state.drag_session().state().clone(),
-                                self.state.drop_target_row(),
-                                self.state.active_presentation().can_write,
-                                self.state
-                                    .tabs()
-                                    .active_tab()
-                                    .history
-                                    .current()
-                                    .map(|entry| entry.location.clone()),
-                                self.state.context_menu_pending(),
-                                marquee,
-                                file_origin_x,
-                                file_origin_y,
-                                self.state.view_settings(),
-                                column_registry.clone(),
-                                file_viewport_width,
-                                self.file_scroll.clone(),
-                                file_icons,
-                                thumbnail_icon_keys,
-                                self.shell_icon_dpi,
-                                self.state.details_column_menu(),
-                                self.state.details_column_menu_anchor(),
-                                self.state.details_filter_menu(),
-                                self.state.active_details_filters(),
-                                explorer_model::ColumnId::BUILT_INS
-                                    .into_iter()
-                                    .map(|column| {
-                                        (column.clone(), self.state.details_filter_options(column))
-                                    })
-                                    .collect(),
-                                self.folder_size_visuals,
-                                self.visual_column_runtime,
-                                self.code_lines_visuals,
-                                self.code_lines_runtimes,
-                                self.size_map_active,
-                                self.size_map_visuals,
-                                self.size_map_runtime,
-                                self.size_map_context,
-                                explorer_model::RequestContext::new(
-                                    self.state.tabs().active_tab().id,
-                                    self.state.tabs().active_tab().generation,
-                                ),
-                                self.state.catalog(),
-                                self.on_action.clone(),
-                            ))
+                            .child(
+                                if let Some(model) = self.state.column_strip_model_for_viewport(
+                                    f32::from(window.viewport_size().height),
+                                ) {
+                                    crate::column_view::ColumnStrip::new(
+                                        self.tokens,
+                                        model,
+                                        self.state.catalog(),
+                                        f32::from(window.viewport_size().height),
+                                        self.shell_icons.clone(),
+                                        self.shell_icon_dpi,
+                                        explorer_model::effective_icon_size(
+                                            &self.state.view_settings(),
+                                        ),
+                                        self.on_action.clone(),
+                                    )
+                                    .with_preview(
+                                        self.preview_texture.clone(),
+                                        self.preview_thumbnail_failed,
+                                        self.state.broker_health().message(),
+                                        self.column_handler_phase,
+                                        explorer_file_viewport_height(window, self.tokens),
+                                    )
+                                    .with_rename(
+                                        self.state.rename_editor().cloned(),
+                                        self.rename_input.clone(),
+                                    )
+                                    .into_any_element()
+                                } else {
+                                    FileViewHost::new(
+                                        self.tokens,
+                                        FileViewStatus::from_tab(self.state.tabs().active_tab()),
+                                        self.file_presentation,
+                                        self.file_performance,
+                                        self.state.tabs().active_tab().selection.clone(),
+                                        self.state.rename_editor().cloned(),
+                                        self.state.provisional_new_folder_entry(),
+                                        self.rename_input,
+                                        self.state.clipboard().clone(),
+                                        self.state.drag_session().state().clone(),
+                                        self.state.drop_target_row(),
+                                        self.state.active_presentation().can_write,
+                                        self.state
+                                            .tabs()
+                                            .active_tab()
+                                            .history
+                                            .current()
+                                            .map(|entry| entry.location.clone()),
+                                        self.state.context_menu_pending(),
+                                        marquee,
+                                        file_origin_x,
+                                        file_origin_y,
+                                        self.state.view_settings(),
+                                        column_registry.clone(),
+                                        file_viewport_width,
+                                        self.file_scroll.clone(),
+                                        file_icons,
+                                        thumbnail_icon_keys,
+                                        self.shell_icon_dpi,
+                                        self.state.details_column_menu(),
+                                        self.state.details_column_menu_anchor(),
+                                        self.state.details_filter_menu(),
+                                        self.state.active_details_filters(),
+                                        explorer_model::ColumnId::BUILT_INS
+                                            .into_iter()
+                                            .map(|column| {
+                                                (
+                                                    column.clone(),
+                                                    self.state.details_filter_options(column),
+                                                )
+                                            })
+                                            .collect(),
+                                        self.folder_size_visuals,
+                                        self.visual_column_runtime,
+                                        self.code_lines_visuals,
+                                        self.code_lines_runtimes,
+                                        self.size_map_active,
+                                        self.size_map_visuals,
+                                        self.size_map_runtime,
+                                        self.size_map_context,
+                                        explorer_model::RequestContext::new(
+                                            self.state.tabs().active_tab().id,
+                                            self.state.tabs().active_tab().generation,
+                                        ),
+                                        self.state.catalog(),
+                                        self.on_action.clone(),
+                                    )
+                                    .into_any_element()
+                                },
+                            )
                             .when_some(self.file_scroll.clone(), |element, handle| {
                                 element
                                     .child(explorer_vertical_scrollbar(
@@ -1336,6 +1387,8 @@ impl RenderOnce for ExplorerWindow {
                 scrollbar_dragging.is_some()
                     || details_column_resizing
                     || side_pane_resizing
+                    || column_preview_resizing
+                    || column_hscroll_dragging
                     || marquee_active,
                 |element| {
                     element.child(pointer_drag_capture_listener(
@@ -1343,6 +1396,8 @@ impl RenderOnce for ExplorerWindow {
                         scrollbar_dragging,
                         details_column_resizing,
                         side_pane_resizing,
+                        column_preview_resizing,
+                        column_hscroll_dragging,
                         marquee_active,
                         file_origin_x,
                         file_origin_y,
@@ -1525,7 +1580,12 @@ fn bookmark_bar(
                 .when(folder_drop_active, |element| {
                     element.bg(tokens.theme.colors.control_pressed.to_gpui())
                 })
-                .child(bookmark_collection_label(folder.name.clone(), true, tokens, shell_icons))
+                .child(bookmark_collection_label(
+                    folder.name.clone(),
+                    true,
+                    tokens,
+                    shell_icons,
+                ))
                 .when_some(callback, move |element, callback| {
                     element.on_click(move |_, window, cx| callback(&action, window, cx))
                 })
@@ -1662,7 +1722,12 @@ fn bookmark_bar(
                             })
                         })
                 })
-                .child(bookmark_label(&bookmark.target, display_name, tokens, shell_icons))
+                .child(bookmark_label(
+                    &bookmark.target,
+                    display_name,
+                    tokens,
+                    shell_icons,
+                ))
                 .when_some(caret_before, |element, before| {
                     element.child(bookmark_drop_caret(tokens, before))
                 })
@@ -1772,7 +1837,12 @@ fn bookmark_bar(
                                 .hover(|style| {
                                     style.bg(tokens.theme.colors.control_hover.to_gpui())
                                 })
-                                .child(bookmark_label(&bookmark.target, bookmark.name.clone(), tokens, shell_icons))
+                                .child(bookmark_label(
+                                    &bookmark.target,
+                                    bookmark.name.clone(),
+                                    tokens,
+                                    shell_icons,
+                                ))
                                 .when_some(callback, move |element, callback| {
                                     element.on_click(move |_, window, cx| {
                                         callback(&action, window, cx)
@@ -1884,7 +1954,12 @@ fn bookmark_bar(
                                     .when(nested_drop_active, |item| {
                                         item.bg(tokens.theme.colors.control_pressed.to_gpui())
                                     })
-                                    .child(bookmark_collection_label(folder.name.clone(), false, tokens, shell_icons))
+                                    .child(bookmark_collection_label(
+                                        folder.name.clone(),
+                                        false,
+                                        tokens,
+                                        shell_icons,
+                                    ))
                                     .child("›")
                                     .when_some(callback, move |item, cb| {
                                         item.on_click(move |_, window, cx| cb(&action, window, cx))
@@ -1988,7 +2063,12 @@ fn bookmark_bar(
                                             })
                                         },
                                     )
-                                    .child(bookmark_label(&bookmark.target, bookmark.name.clone(), tokens, shell_icons))
+                                    .child(bookmark_label(
+                                        &bookmark.target,
+                                        bookmark.name.clone(),
+                                        tokens,
+                                        shell_icons,
+                                    ))
                                     .when_some(line_before, |item, before| {
                                         item.child(bookmark_drop_line(tokens, before))
                                     })
@@ -2442,7 +2522,12 @@ pub(crate) fn bookmark_manager(
                                 .min_w(px(0.0))
                                 .overflow_hidden()
                                 .px(px(8.0))
-                                .child(bookmark_label(&bookmark.target, bookmark.name.clone(), tokens, shell_icons)),
+                                .child(bookmark_label(
+                                    &bookmark.target,
+                                    bookmark.name.clone(),
+                                    tokens,
+                                    shell_icons,
+                                )),
                         )
                     })
                     .when(ui.columns.tags, |row| {
@@ -7744,6 +7829,8 @@ fn captured_left_mouse_up_action(
     scrollbar_dragging: Option<crate::interaction::ScrollbarKind>,
     details_column_resizing: bool,
     side_pane_resizing: bool,
+    column_preview_resizing: bool,
+    column_hscroll_dragging: bool,
 ) -> Option<ExplorerAction> {
     if marquee_active {
         Some(ExplorerAction::EndMarquee)
@@ -7755,6 +7842,10 @@ fn captured_left_mouse_up_action(
         Some(ExplorerAction::EndSidePaneResize)
     } else if details_column_resizing {
         Some(ExplorerAction::EndDetailsColumnResize)
+    } else if column_preview_resizing {
+        Some(ExplorerAction::EndColumnPreviewResize)
+    } else if column_hscroll_dragging {
+        Some(ExplorerAction::EndColumnHorizontalScroll)
     } else {
         None
     }
@@ -7765,6 +7856,8 @@ fn pointer_drag_capture_listener(
     scrollbar_dragging: Option<crate::interaction::ScrollbarKind>,
     details_column_resizing: bool,
     side_pane_resizing: bool,
+    column_preview_resizing: bool,
+    column_hscroll_dragging: bool,
     marquee_active: bool,
     file_origin_x: f32,
     file_origin_y: f32,
@@ -7827,6 +7920,18 @@ fn pointer_drag_capture_listener(
                         ExplorerAction::EndSidePaneResize
                     } else if details_column_resizing {
                         ExplorerAction::EndDetailsColumnResize
+                    } else if column_preview_resizing && event.dragging() {
+                        ExplorerAction::UpdateColumnPreviewResize {
+                            pointer_x: f32::from(event.position.x),
+                        }
+                    } else if column_preview_resizing {
+                        ExplorerAction::EndColumnPreviewResize
+                    } else if column_hscroll_dragging && event.dragging() {
+                        ExplorerAction::UpdateColumnHorizontalScroll {
+                            pointer_x: f32::from(event.position.x),
+                        }
+                    } else if column_hscroll_dragging {
+                        ExplorerAction::EndColumnHorizontalScroll
                     } else {
                         // External OLE drag-over is also represented as a pressed-button mouse
                         // move. An idle resize-capture listener must not consume that event.
@@ -7848,6 +7953,8 @@ fn pointer_drag_capture_listener(
                         scrollbar_dragging,
                         details_column_resizing,
                         side_pane_resizing,
+                        column_preview_resizing,
+                        column_hscroll_dragging,
                     ) else {
                         // Windows OLE submits an external file drop to GPUI as a synthetic left
                         // MouseUp.  A capture listener that stops every idle MouseUp prevents the
@@ -8097,12 +8204,98 @@ fn preview_side_pane(
         })
 }
 
+/// Physical client rectangle for a Preview Handler child of the GPUI window.
+///
+/// `origin_*` and `client_*` are GPUI window-client logical pixels (`layout_bounds`),
+/// not screen coordinates. Subtracting [`Window::bounds`] origin would slide the
+/// child by the window's desktop position and paint it over the columns.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct PreviewHostClientRect {
+    pub left_physical: i32,
+    pub top_physical: i32,
+    pub width_physical: u32,
+    pub height_physical: u32,
+    pub dpi: u32,
+}
+
 #[allow(
     clippy::cast_possible_truncation,
     clippy::cast_sign_loss,
     reason = "finite GPUI logical bounds are rounded and clamped before becoming bounded Win32 client coordinates"
 )]
-fn preview_host_boundary_probe(on_action: Option<ActionCallback>) -> impl IntoElement {
+pub(crate) fn preview_host_client_rect(
+    origin_x: f32,
+    origin_y: f32,
+    width: f32,
+    height: f32,
+    scale: f32,
+    client_width: f32,
+    client_height: f32,
+) -> Option<PreviewHostClientRect> {
+    let values = [
+        origin_x,
+        origin_y,
+        width,
+        height,
+        scale,
+        client_width,
+        client_height,
+    ];
+    if values.iter().any(|value| !value.is_finite())
+        || scale <= 0.0
+        || client_width <= 0.0
+        || client_height <= 0.0
+        || width < 1.0
+        || height < 1.0
+    {
+        return None;
+    }
+    let client_right = (client_width * scale).round();
+    let client_bottom = (client_height * scale).round();
+    if !client_right.is_finite()
+        || !client_bottom.is_finite()
+        || client_right < 1.0
+        || client_bottom < 1.0
+    {
+        return None;
+    }
+    let left = (origin_x * scale).round().clamp(0.0, client_right);
+    let top = (origin_y * scale).round().clamp(0.0, client_bottom);
+    let right = ((origin_x + width) * scale)
+        .round()
+        .clamp(left, client_right);
+    let bottom = ((origin_y + height) * scale)
+        .round()
+        .clamp(top, client_bottom);
+    let width_physical = right - left;
+    let height_physical = bottom - top;
+    let in_i32 = |value: f32| (i32::MIN as f32..=i32::MAX as f32).contains(&value);
+    if !in_i32(left)
+        || !in_i32(top)
+        || !width_physical.is_finite()
+        || !height_physical.is_finite()
+        || width_physical < 1.0
+        || height_physical < 1.0
+        || width_physical > 16_384.0
+        || height_physical > 16_384.0
+    {
+        return None;
+    }
+    Some(PreviewHostClientRect {
+        left_physical: left as i32,
+        top_physical: top as i32,
+        width_physical: width_physical as u32,
+        height_physical: height_physical as u32,
+        dpi: u32::from(crate::dpi_from_scale(scale)),
+    })
+}
+
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "finite GPUI logical bounds are rounded and clamped before becoming bounded Win32 client coordinates"
+)]
+pub(crate) fn preview_host_boundary_probe(on_action: Option<ActionCallback>) -> impl IntoElement {
     canvas(
         move |bounds, window: &mut Window, cx: &mut App| {
             let Some(callback) = on_action.clone() else {
@@ -8114,27 +8307,25 @@ fn preview_host_boundary_probe(on_action: Option<ActionCallback>) -> impl IntoEl
                 return;
             };
             let scale = window.scale_factor();
-            let window_origin = window.bounds().origin;
-            let left = ((f32::from(bounds.origin.x) - f32::from(window_origin.x)) * scale).round();
-            let top = ((f32::from(bounds.origin.y) - f32::from(window_origin.y)) * scale).round();
-            let width = (f32::from(bounds.size.width) * scale).round();
-            let height = (f32::from(bounds.size.height) * scale).round();
-            if !left.is_finite()
-                || !top.is_finite()
-                || !width.is_finite()
-                || !height.is_finite()
-                || width < 1.0
-                || height < 1.0
-            {
+            let client = window.viewport_size();
+            let Some(rect) = preview_host_client_rect(
+                f32::from(bounds.origin.x),
+                f32::from(bounds.origin.y),
+                f32::from(bounds.size.width),
+                f32::from(bounds.size.height),
+                scale,
+                f32::from(client.width),
+                f32::from(client.height),
+            ) else {
                 return;
-            }
+            };
             let action = ExplorerAction::UpdatePreviewHostBoundary {
                 parent_window: hwnd,
-                left_physical: left as i32,
-                top_physical: top as i32,
-                width_physical: width.clamp(1.0, 16_384.0) as u32,
-                height_physical: height.clamp(1.0, 16_384.0) as u32,
-                dpi: u32::from(crate::dpi_from_scale(scale)),
+                left_physical: rect.left_physical,
+                top_physical: rect.top_physical,
+                width_physical: rect.width_physical,
+                height_physical: rect.height_physical,
+                dpi: rect.dpi,
             };
             window.defer(cx, move |window, cx| callback(&action, window, cx));
         },
@@ -8142,6 +8333,7 @@ fn preview_host_boundary_probe(on_action: Option<ActionCallback>) -> impl IntoEl
     )
     .absolute()
     .inset_0()
+    .size_full()
 }
 
 /// M1 command strip. Unsupported commands deliberately have no action.
@@ -8388,6 +8580,7 @@ impl RenderOnce for CommandBar {
                         self.tokens,
                         catalog,
                         self.state.view_settings(),
+                        self.state.columns_menu_enabled(),
                         self.state.current_color_theme(),
                         self.state.view_theme_submenu_open(),
                         self.state.view_show_submenu_open(),
@@ -8715,7 +8908,8 @@ fn app_menu_panel(
             }
         }
     }
-    let pin_footer = matches!(page, AppMenuPage::History | AppMenuPage::Bookmarks) && rows.len() >= 2;
+    let pin_footer =
+        matches!(page, AppMenuPage::History | AppMenuPage::Bookmarks) && rows.len() >= 2;
     let footer = pin_footer.then(|| {
         let action = rows.pop().expect("pinned menu action");
         let separator = rows.pop().expect("pinned menu separator");
@@ -9077,12 +9271,7 @@ fn app_menu_zoom_row(
         .when(selected, |row| row.bg(colors.selected_inactive.to_gpui()))
         .child(catalog.t("menu-zoom"))
         .child(div().flex_1())
-        .child(zoom_button(
-            "app-menu-zoom-out",
-            "−",
-            -1,
-            on_action.clone(),
-        ))
+        .child(zoom_button("app-menu-zoom-out", "−", -1, on_action.clone()))
         .child(
             div()
                 .min_w(px(48.0))
@@ -10134,6 +10323,7 @@ fn view_menu(
     tokens: UiTokens,
     catalog: Catalog,
     settings: explorer_model::ViewSettings,
+    columns_enabled: bool,
     theme: crate::theme::ColorTheme,
     theme_submenu: bool,
     show_submenu: bool,
@@ -10165,6 +10355,7 @@ fn view_menu(
         (explorer_model::ViewMode::Details, catalog.t("menu-details")),
         (explorer_model::ViewMode::Tiles, catalog.t("menu-tiles")),
         (explorer_model::ViewMode::Content, catalog.t("menu-content")),
+        (explorer_model::ViewMode::Columns, catalog.t("menu-columns")),
     ];
     let menu = div()
         .id("view-menu")
@@ -10186,10 +10377,17 @@ fn view_menu(
             })
         })
         .children(modes.into_iter().enumerate().map(|(index, (mode, label))| {
+            let columns_fallback =
+                settings.mode == explorer_model::ViewMode::Columns && !columns_enabled;
+            let checked = if columns_fallback {
+                mode == explorer_model::ViewMode::Details
+            } else {
+                settings.mode == mode
+            };
             view_menu_item(
                 format!("view-mode-{mode:?}"),
                 label,
-                settings.mode == mode,
+                checked,
                 false,
                 focused_index == index,
                 Some(ExplorerAction::SetViewMenuFocus { index }),
@@ -10204,8 +10402,10 @@ fn view_menu(
             catalog.t("menu-details-pane"),
             settings.details_pane,
             false,
-            focused_index == 8,
-            Some(ExplorerAction::SetViewMenuFocus { index: 8 }),
+            focused_index == crate::actions::VIEW_MENU_DETAILS_PANE,
+            Some(ExplorerAction::SetViewMenuFocus {
+                index: crate::actions::VIEW_MENU_DETAILS_PANE,
+            }),
             ExplorerAction::ToggleDetailsPane,
             tokens,
             on_action.clone(),
@@ -10213,10 +10413,16 @@ fn view_menu(
         .child(view_menu_item(
             "view-preview-pane".to_owned(),
             catalog.t("menu-preview-pane"),
-            settings.preview_pane,
+            if settings.mode == explorer_model::ViewMode::Columns && columns_enabled {
+                settings.column_preview_visible
+            } else {
+                settings.preview_pane
+            },
             false,
-            focused_index == 9,
-            Some(ExplorerAction::SetViewMenuFocus { index: 9 }),
+            focused_index == crate::actions::VIEW_MENU_PREVIEW_PANE,
+            Some(ExplorerAction::SetViewMenuFocus {
+                index: crate::actions::VIEW_MENU_PREVIEW_PANE,
+            }),
             ExplorerAction::TogglePreviewPane,
             tokens,
             on_action.clone(),
@@ -10227,8 +10433,10 @@ fn view_menu(
             catalog.t("menu-theme"),
             false,
             true,
-            focused_index == 10,
-            Some(ExplorerAction::SetViewMenuFocus { index: 10 }),
+            focused_index == crate::actions::VIEW_MENU_THEME,
+            Some(ExplorerAction::SetViewMenuFocus {
+                index: crate::actions::VIEW_MENU_THEME,
+            }),
             ExplorerAction::ToggleViewThemeSubmenu,
             tokens,
             on_action.clone(),
@@ -10238,8 +10446,10 @@ fn view_menu(
             catalog.t("menu-show"),
             false,
             true,
-            focused_index == 11,
-            Some(ExplorerAction::SetViewMenuFocus { index: 11 }),
+            focused_index == crate::actions::VIEW_MENU_SHOW,
+            Some(ExplorerAction::SetViewMenuFocus {
+                index: crate::actions::VIEW_MENU_SHOW,
+            }),
             ExplorerAction::ToggleViewShowSubmenu,
             tokens,
             on_action.clone(),
@@ -10256,8 +10466,10 @@ fn view_menu(
                     "Size Map",
                     checked,
                     false,
-                    focused_index == 12,
-                    Some(ExplorerAction::SetViewMenuFocus { index: 12 }),
+                    focused_index == crate::actions::VIEW_MENU_EXTENSION,
+                    Some(ExplorerAction::SetViewMenuFocus {
+                        index: crate::actions::VIEW_MENU_EXTENSION,
+                    }),
                     ExplorerAction::SetExtensionView {
                         view_id: extension.view_id,
                     },
@@ -12022,6 +12234,12 @@ impl RenderOnce for NavigationPane {
                         );
                     })
                     .on_drag_move::<gpui::ExternalPaths>(move |event, window, cx| {
+                        // This listener is registered for every drag in the window, not only
+                        // drags over the pane. Negotiating the navigated folder from a column
+                        // hit rewrites a valid sibling move to None before OLE can drop it.
+                        if !event.bounds.contains(&event.event.position) {
+                            return;
+                        }
                         let effect = negotiate_external_paths(
                             event.drag(cx),
                             can_write,
@@ -14249,6 +14467,7 @@ impl RenderOnce for FileViewHost {
                                 // the pressed row already belongs to it.
                                 right_callback(
                                     &ExplorerAction::BeginContextItemGesture {
+                                        column_index: None,
                                         item_id: context_item_id.clone(),
                                         x: f32::from(event.position.x),
                                         y: f32::from(event.position.y),
@@ -14283,6 +14502,7 @@ impl RenderOnce for FileViewHost {
                                 right_up_callback(
                                     &ExplorerAction::ShowContextMenu {
                                         item_id: Some(right_up_item_id.clone()),
+                                        column_index: None,
                                         owner_window,
                                         x,
                                         y,
@@ -14308,6 +14528,7 @@ impl RenderOnce for FileViewHost {
                                 right_out_callback(
                                     &ExplorerAction::ShowContextMenu {
                                         item_id: Some(right_out_item_id.clone()),
+                                        column_index: None,
                                         owner_window,
                                         x,
                                         y,
@@ -14914,6 +15135,7 @@ impl RenderOnce for FileViewHost {
                     menu_callback(
                         &ExplorerAction::ShowContextMenu {
                             item_id: None,
+                            column_index: None,
                             owner_window,
                             x,
                             y,
@@ -15370,7 +15592,7 @@ fn view_icon_size(
         | explorer_model::ViewMode::SmallIcons => {
             f32::from(explorer_model::effective_icon_size(settings))
         }
-        explorer_model::ViewMode::List => 20.0,
+        explorer_model::ViewMode::List | explorer_model::ViewMode::Columns => 20.0,
         explorer_model::ViewMode::Details => layout.navigation_icon_size.value(),
         explorer_model::ViewMode::Tiles => 40.0,
         explorer_model::ViewMode::Content => crate::layout::feature::CONTENT_ICON_SIZE.value(),
@@ -15390,7 +15612,7 @@ pub(crate) fn view_item_width_with_registry(
         explorer_model::ViewMode::SmallIcons => {
             f32::from(explorer_model::effective_icon_size(settings)) + 192.0
         }
-        explorer_model::ViewMode::List => 240.0,
+        explorer_model::ViewMode::List | explorer_model::ViewMode::Columns => 240.0,
         explorer_model::ViewMode::Details | explorer_model::ViewMode::Content => registry
             .iter()
             .filter(|descriptor| settings.details_column_visible(&descriptor.id))
@@ -15450,9 +15672,9 @@ pub(crate) fn view_item_height(
                 layout.file_row_height.value()
             }
         }
-        explorer_model::ViewMode::List | explorer_model::ViewMode::Details => {
-            layout.file_row_height.value()
-        }
+        explorer_model::ViewMode::List
+        | explorer_model::ViewMode::Details
+        | explorer_model::ViewMode::Columns => layout.file_row_height.value(),
         explorer_model::ViewMode::Content => crate::layout::feature::CONTENT_ROW_HEIGHT.value(),
         explorer_model::ViewMode::Tiles => 64.0,
     }
@@ -15563,6 +15785,7 @@ fn explorer_vertical_scrollbar(
                     callback(
                         &ExplorerAction::ShowContextMenu {
                             item_id: None,
+                            column_index: None,
                             owner_window,
                             x,
                             y,
@@ -15596,6 +15819,7 @@ fn explorer_vertical_scrollbar(
                             callback(
                                 &ExplorerAction::ShowContextMenu {
                                     item_id: None,
+                                    column_index: None,
                                     owner_window,
                                     x,
                                     y,
@@ -18355,7 +18579,7 @@ fn right_drag_terminal_menu(
         ))
 }
 
-fn negotiate_external_paths(
+pub(crate) fn negotiate_external_paths(
     paths: &gpui::ExternalPaths,
     target_can_write: bool,
     destination: Option<&explorer_model::LocationDescriptor>,
@@ -18431,7 +18655,9 @@ const fn negotiate_remote_external_effect(
     }
 }
 
-fn external_transfer_effects(paths: &gpui::ExternalPaths) -> explorer_model::TransferEffects {
+pub(crate) fn external_transfer_effects(
+    paths: &gpui::ExternalPaths,
+) -> explorer_model::TransferEffects {
     let allowed = paths.drop_metadata().allowed;
     explorer_model::TransferEffects {
         copy: allowed.copy,
@@ -21248,18 +21474,53 @@ mod tests {
     }
 
     #[test]
+    fn navigation_drag_move_does_not_negotiate_when_the_pointer_is_outside_the_pane() {
+        let production = include_str!("chrome.rs")
+            .split("#[cfg(test)]")
+            .next()
+            .expect("production source");
+        let navigation = production
+            .split("impl RenderOnce for NavigationPane")
+            .nth(1)
+            .expect("navigation pane");
+        let drag_move = navigation
+            .split(".on_drag_move::<gpui::ExternalPaths>(")
+            .nth(1)
+            .and_then(|source| source.split(".children(bookmark_navigation_rows(").next())
+            .expect("navigation drag move");
+        let guard = drag_move
+            .find("if !event.bounds.contains(&event.event.position)")
+            .expect("outside pointer must leave the negotiated effect unchanged");
+        let negotiate = drag_move
+            .find("negotiate_external_paths(")
+            .expect("navigation still negotiates hits inside the pane");
+        assert!(
+            guard < negotiate,
+            "the pane must return before it can rewrite a column target's effect"
+        );
+    }
+
+    #[test]
     fn idle_pointer_capture_leaves_external_ole_mouse_up_for_drop_target() {
         assert!(
-            super::captured_left_mouse_up_action(false, None, false, false).is_none(),
+            super::captured_left_mouse_up_action(false, None, false, false, false, false).is_none(),
             "an idle capture listener must not consume the synthetic MouseUp used by OLE Drop"
         );
         assert!(matches!(
-            super::captured_left_mouse_up_action(false, None, true, false),
+            super::captured_left_mouse_up_action(false, None, true, false, false, false),
             Some(ExplorerAction::EndDetailsColumnResize)
         ));
         assert!(matches!(
-            super::captured_left_mouse_up_action(false, None, false, true),
+            super::captured_left_mouse_up_action(false, None, false, true, false, false),
             Some(ExplorerAction::EndSidePaneResize)
+        ));
+        assert!(matches!(
+            super::captured_left_mouse_up_action(false, None, false, false, true, false),
+            Some(ExplorerAction::EndColumnPreviewResize)
+        ));
+        assert!(matches!(
+            super::captured_left_mouse_up_action(false, None, false, false, false, true),
+            Some(ExplorerAction::EndColumnHorizontalScroll)
         ));
     }
 

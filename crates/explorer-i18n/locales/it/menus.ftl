@@ -274,3 +274,19 @@ menu-shortcut-ctrl-shift-q = Ctrl+Shift+Q
 
 menu-closed-windows = Recently closed windows
 menu-no-closed-windows = No recently closed windows
+
+menu-columns = Colonne
+column-empty = Questa cartella è vuota
+column-loading = Caricamento…
+column-error = Impossibile leggere questa cartella
+column-cycle = Questa cartella torna a una colonna precedente
+column-preview-folder = Cartella
+column-preview-multiple = Più elementi selezionati
+column-preview-empty = Niente da visualizzare in anteprima
+column-preview-offline = L'elemento offline non viene scaricato
+column-preview-handler-ready = Anteprima pronta
+a11y-column-view = Visualizzazione a colonne
+a11y-column-level = Colonna
+a11y-column-row = Elemento
+a11y-column-divider = Ridimensiona colonna
+a11y-column-preview = Anteprima integrata

@@ -274,3 +274,19 @@ menu-shortcut-ctrl-shift-q = Ctrl+Shift+Q
 
 menu-closed-windows = Recently closed windows
 menu-no-closed-windows = No recently closed windows
+
+menu-columns = Oszlopok
+column-empty = Ez a mappa üres
+column-loading = Betöltés…
+column-error = Ez a mappa nem olvasható
+column-cycle = Ez a mappa egy korábbi oszlopra mutat
+column-preview-folder = Mappa
+column-preview-multiple = Több elem van kijelölve
+column-preview-empty = Nincs mit megtekinteni
+column-preview-offline = Az offline elem nem töltődik le
+column-preview-handler-ready = Előnézet kész
+a11y-column-view = Oszlopnézet
+a11y-column-level = Oszlop
+a11y-column-row = Elem
+a11y-column-divider = Oszlopszélesség módosítása
+a11y-column-preview = Integrált előnézet

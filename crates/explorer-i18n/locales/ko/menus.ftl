@@ -274,3 +274,19 @@ menu-shortcut-ctrl-shift-q = Ctrl+Shift+Q
 
 menu-closed-windows = Recently closed windows
 menu-no-closed-windows = No recently closed windows
+
+menu-columns = 열
+column-empty = 이 폴더는 비어 있습니다
+column-loading = 로드 중…
+column-error = 이 폴더를 읽을 수 없습니다
+column-cycle = 이 폴더는 이전 열로 되돌아갑니다
+column-preview-folder = 폴더
+column-preview-multiple = 여러 항목이 선택됨
+column-preview-empty = 미리 볼 항목 없음
+column-preview-offline = 오프라인 항목은 다운로드하지 않습니다
+column-preview-handler-ready = 미리 보기 준비 완료
+a11y-column-view = 열 보기
+a11y-column-level = 열
+a11y-column-row = 항목
+a11y-column-divider = 열 너비 조정
+a11y-column-preview = 통합 미리 보기

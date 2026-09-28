@@ -176,3 +176,19 @@ menu-shortcut-ctrl-shift-q = Ctrl+Shift+Q
 
 menu-closed-windows = Recently closed windows
 menu-no-closed-windows = No recently closed windows
+
+menu-columns = Columns
+column-empty = This folder is empty
+column-loading = Loading…
+column-error = Can't read this folder
+column-cycle = This folder links back to an earlier column
+column-preview-folder = Folder
+column-preview-multiple = Multiple items selected
+column-preview-empty = Nothing to preview
+column-preview-offline = Offline item is not downloaded
+column-preview-handler-ready = Preview ready
+a11y-column-view = Column view
+a11y-column-level = Column
+a11y-column-row = Item
+a11y-column-divider = Resize column
+a11y-column-preview = Integrated preview

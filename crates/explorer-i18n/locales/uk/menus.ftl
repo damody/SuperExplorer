@@ -274,3 +274,19 @@ menu-shortcut-ctrl-shift-q = Ctrl+Shift+Q
 
 menu-closed-windows = Recently closed windows
 menu-no-closed-windows = No recently closed windows
+
+menu-columns = Стовпці
+column-empty = Ця папка порожня
+column-loading = Завантаження…
+column-error = Не вдається прочитати цю папку
+column-cycle = Ця папка посилається на попередній стовпець
+column-preview-folder = Папка
+column-preview-multiple = Вибрано кілька елементів
+column-preview-empty = Нічого переглядати
+column-preview-offline = Автономний елемент не завантажується
+column-preview-handler-ready = Попередній перегляд готовий
+a11y-column-view = Подання стовпців
+a11y-column-level = Стовпець
+a11y-column-row = Елемент
+a11y-column-divider = Змінити ширину стовпця
+a11y-column-preview = Вбудований перегляд

@@ -25,7 +25,9 @@ pub mod bookmark_manager_window;
 pub mod cache_inspector;
 pub mod chrome;
 pub mod code_lines_column;
+pub mod column_view;
 pub mod diagnostics;
+mod drive_probe;
 pub mod extension_commands;
 pub mod file_view;
 mod fluent_assets;
@@ -1762,6 +1764,10 @@ fn is_passive_pointer_action(action: &ExplorerAction) -> bool {
             | ExplorerAction::CancelDetailsColumnDrag
             | ExplorerAction::UpdateSidePaneResize { .. }
             | ExplorerAction::EndSidePaneResize
+            | ExplorerAction::UpdateColumnPreviewResize { .. }
+            | ExplorerAction::EndColumnPreviewResize
+            | ExplorerAction::UpdateColumnHorizontalScroll { .. }
+            | ExplorerAction::EndColumnHorizontalScroll
             | ExplorerAction::UpdateScrollbarDrag { .. }
             | ExplorerAction::EndScrollbarDrag { .. }
             | ExplorerAction::UpdateNavigationPaneResize { .. }
@@ -1899,6 +1905,48 @@ fn file_view_global_command_action(event: &gpui::KeyDownEvent) -> Option<Explore
         "f3" => Some(ExplorerAction::FocusSearch),
         _ => None,
     }
+}
+
+/// File commands that must run in Columns before the Details row-count gate.
+///
+/// An ancestor column can be the command target while the navigated folder is empty.
+/// F2 and Delete therefore cannot wait for a rightmost presentation row.
+fn column_keyboard_command(key: &str, shift: bool) -> Option<ExplorerAction> {
+    match key {
+        "f2" if !shift => Some(ExplorerAction::BeginRenameFocused),
+        "delete" if shift => Some(ExplorerAction::RequestPermanentDelete),
+        "delete" => Some(ExplorerAction::RecycleDeleteSelected),
+        _ => None,
+    }
+}
+
+/// Arrow and Ctrl+Space handling for the active column.
+///
+/// Ctrl+arrow must not fall through to the navigated folder's flat row list.
+/// Shift extends the range inside the active column. A zero move with Ctrl
+/// toggles the focused item in that same column.
+fn column_cursor_key_action(key: &str, shift: bool, control: bool) -> Option<ExplorerAction> {
+    let (vertical, horizontal) = match key {
+        "up" => (-1, 0),
+        "down" => (1, 0),
+        "left" => (0, -1),
+        "right" => (0, 1),
+        "space" if control && !shift => {
+            return Some(ExplorerAction::MoveColumnCursor {
+                vertical: 0,
+                horizontal: 0,
+                shift: false,
+                control: true,
+            });
+        }
+        _ => return None,
+    };
+    Some(ExplorerAction::MoveColumnCursor {
+        vertical,
+        horizontal,
+        shift,
+        control,
+    })
 }
 
 fn file_view_item_command_action(
@@ -5035,9 +5083,11 @@ impl ExplorerRoot {
                                 }
                                 this.pending_visible_bases.remove(key);
                                 if key.item_id.is_some()
-                                    || this.state.bookmark_shell_locations().iter().any(
-                                        |location| location == &key.location,
-                                    )
+                                    || this
+                                        .state
+                                        .bookmark_shell_locations()
+                                        .iter()
+                                        .any(|location| location == &key.location)
                                 {
                                     this.remember_negative_icon(key.clone());
                                 }
@@ -5065,14 +5115,8 @@ impl ExplorerRoot {
                                 }
                                 let current_preview = this.preview_thumbnail_key.as_ref()
                                     == Some(key)
-                                    && this.state.view_settings().preview_pane
-                                    && this.state.tabs().active_tab().selection.len() == 1
-                                    && this
-                                        .state
-                                        .tabs()
-                                        .active_tab()
-                                        .selection
-                                        .contains(&key.item_id)
+                                    && this.state.column_preview_open()
+                                    && this.state.preview_target_matches(&key.item_id)
                                     && this.state.tabs().active_tab().generation.value()
                                         == key.source_generation;
                                 if current_preview {
@@ -5269,6 +5313,12 @@ impl ExplorerRoot {
                                 && refresh_after_action
                                 && let Some(command) = this.state.begin_refresh_navigation()
                             {
+                                this.submit_command(command);
+                                for command in this.state.plan_column_refresh_after_mutation() {
+                                    this.submit_command(command);
+                                }
+                            }
+                            if let Some(command) = this.state.take_pending_column_repair() {
                                 this.submit_command(command);
                             }
                             if outcome == explorer_model::WindowEventOutcome::Applied
@@ -5595,10 +5645,7 @@ impl ExplorerRoot {
         let locations = self.state.bookmark_shell_locations();
         if retry_failures {
             self.negative_icon_keys.retain(|key| {
-                key.item_id.is_some()
-                    || !locations
-                        .iter()
-                        .any(|location| location == &key.location)
+                key.item_id.is_some() || !locations.iter().any(|location| location == &key.location)
             });
             self.negative_icon_order
                 .retain(|key| self.negative_icon_keys.contains(key));
@@ -5607,11 +5654,13 @@ impl ExplorerRoot {
             .iter()
             .filter(|location| {
                 retry_failures
-                    || !self.negative_icon_keys.contains(&navigation_pane::shell_icon_key(
-                        location,
-                        theme,
-                        self.shell_icon_dpi,
-                    ))
+                    || !self
+                        .negative_icon_keys
+                        .contains(&navigation_pane::shell_icon_key(
+                            location,
+                            theme,
+                            self.shell_icon_dpi,
+                        ))
             })
             .collect::<Vec<_>>();
         self.submit_location_icon_loads(&context, eligible);
@@ -5619,20 +5668,18 @@ impl ExplorerRoot {
 
     pub(crate) fn bookmark_shell_icon_snapshot(
         &self,
-    ) -> (
-        HashMap<explorer_model::ShellIconKey, Arc<RenderImage>>,
-        u16,
-    ) {
+    ) -> (HashMap<explorer_model::ShellIconKey, Arc<RenderImage>>, u16) {
         let theme = match self.tokens.theme.mode {
             ThemeMode::Light => explorer_model::ShellIconTheme::Light,
             ThemeMode::Dark => explorer_model::ShellIconTheme::Dark,
         };
         let mut textures = HashMap::new();
         for location in self.state.bookmark_shell_locations() {
-            if let Some((key, texture)) =
-                self.shell_icons
-                    .peek_compatible_navigation_icon(&location, theme, self.shell_icon_dpi)
-            {
+            if let Some((key, texture)) = self.shell_icons.peek_compatible_navigation_icon(
+                &location,
+                theme,
+                self.shell_icon_dpi,
+            ) {
                 textures.insert(key, texture);
             }
         }
@@ -5953,7 +6000,8 @@ impl ExplorerRoot {
                 if content_changed {
                     self.drop_item_thumbnail(&entry.id);
                 }
-                self.thumbnail_content_stamps.insert(entry.id.clone(), stamp);
+                self.thumbnail_content_stamps
+                    .insert(entry.id.clone(), stamp);
                 if !content_changed
                     && (self.shell_icons.has_thumbnail_presentation(&presentation)
                         || self.thumbnail_memory_cache.contains(&key)
@@ -6180,35 +6228,58 @@ impl ExplorerRoot {
         }
     }
 
+    fn synchronize_integrated_preview(&mut self) {
+        let entry = self.state.integrated_preview_entry();
+        let keeps_image = entry.as_ref().is_some_and(|entry| {
+            !entry.is_container
+                && !column_view::offline_placeholder(entry)
+                && previewable_image(&entry.location)
+        });
+        self.synchronize_preview_thumbnail(entry.as_ref());
+        self.synchronize_preview_handler(entry.as_ref());
+        if !keeps_image && self.preview_thumbnail_key.is_none() {
+            self.preview_texture = None;
+            self.preview_thumbnail_failed = false;
+        }
+    }
+
     fn synchronize_preview_thumbnail(&mut self, entry: Option<&explorer_model::FileEntry>) {
+        let preview_matches = entry.is_some_and(|entry| {
+            self.state.column_preview_open()
+                && !entry.is_container
+                && !column_view::offline_placeholder(entry)
+                && self.state.preview_target_matches(&entry.id)
+                && previewable_image(&entry.location)
+        });
+        let logical = if self.state.effective_view_mode() == explorer_model::ViewMode::Columns {
+            self.state.view_settings().column_preview_width
+        } else {
+            self.state.view_settings().preview_pane_width
+        }
+        .clamp(96, 768);
+        let theme = match self.tokens.theme.mode {
+            ThemeMode::Light => explorer_model::ShellIconTheme::Light,
+            ThemeMode::Dark => explorer_model::ShellIconTheme::Dark,
+        };
+        let association_generation = self.icon_epochs.association();
+        let dpi = self.shell_icon_dpi;
         let tab = self.state.tabs().active_tab();
-        let desired = entry
-            .filter(|entry| {
-                self.state.view_settings().preview_pane
-                    && tab.selection.len() == 1
-                    && tab.selection.contains(&entry.id)
-                    && previewable_image(&entry.location)
-            })
-            .map(|entry| {
-                let logical = self.state.view_settings().preview_pane_width.clamp(96, 768);
-                let physical = u32::from(logical)
-                    .saturating_mul(u32::from(self.shell_icon_dpi))
-                    .saturating_add(95)
-                    / 96;
-                explorer_model::ThumbnailRequestKey {
-                    item_id: entry.id.clone(),
-                    physical_size: u16::try_from(physical).unwrap_or(768).clamp(96, 768),
-                    dpi: self.shell_icon_dpi,
-                    mode: explorer_model::ThumbnailMode::Thumbnail,
-                    source_generation: tab.generation.value(),
-                    theme: match self.tokens.theme.mode {
-                        ThemeMode::Light => explorer_model::ShellIconTheme::Light,
-                        ThemeMode::Dark => explorer_model::ShellIconTheme::Dark,
-                    },
-                    association_generation: self.icon_epochs.association(),
-                    overlay_generation: 0,
-                }
-            });
+        let desired = preview_matches.then_some(entry).flatten().map(|entry| {
+            let physical = u32::from(logical)
+                .saturating_mul(u32::from(dpi))
+                .saturating_add(95)
+                / 96;
+            explorer_model::ThumbnailRequestKey {
+                item_id: entry.id.clone(),
+                physical_size: u16::try_from(physical).unwrap_or(768).clamp(96, 768),
+                dpi,
+                mode: explorer_model::ThumbnailMode::Thumbnail,
+                source_generation: tab.generation.value(),
+                theme,
+                association_generation,
+                overlay_generation: 0,
+            }
+        });
         if self.preview_thumbnail_key == desired {
             return;
         }
@@ -6301,12 +6372,11 @@ impl ExplorerRoot {
         if !self.visual_refinement_allowed() {
             return;
         }
+        let pane_open = self.state.column_preview_open();
+        let candidate = pane_open.then_some(entry).flatten().filter(|entry| {
+            self.state.preview_target_matches(&entry.id) && !column_view::offline_placeholder(entry)
+        });
         let tab = self.state.tabs().active_tab();
-        let pane_open = self.state.view_settings().preview_pane;
-        let candidate = pane_open
-            .then_some(entry)
-            .flatten()
-            .filter(|entry| tab.selection.len() == 1 && tab.selection.contains(&entry.id));
         let handler_candidate = candidate.filter(|entry| !previewable_image(&entry.location));
         let signature = Some((
             tab.id,
@@ -6319,6 +6389,9 @@ impl ExplorerRoot {
         self.preview_selection_signature = signature;
 
         if !pane_open {
+            // The probe is unmounted with the pane, so a later reopen must not Start
+            // at the hidden slot's last rectangle.
+            self.preview_host_boundary = None;
             if let Ok(Some(action)) = self.preview_coordinator.close() {
                 let _ = self.submit_preview_coordinator_action(action);
             }
@@ -6821,6 +6894,14 @@ impl ExplorerRoot {
                         "Explorer service is unavailable",
                     ),
                 );
+            } else if matches!(
+                command,
+                explorer_model::ExplorerCommand::EnumerateColumn { .. }
+            ) {
+                let _ = self.synthesize_special_submission_failure(
+                    &command,
+                    &ExplorerServiceError::Disconnected,
+                );
             }
             return false;
         };
@@ -6839,7 +6920,11 @@ impl ExplorerRoot {
         if let Err(error) = service.submit(command) {
             if matches!(error, ExplorerServiceError::Overloaded) {
                 self.service_qos.observations_mut().record_overload();
-                tracing::debug!(?context, ?error, "Explorer command submission was backpressured");
+                tracing::debug!(
+                    ?context,
+                    ?error,
+                    "Explorer command submission was backpressured"
+                );
             } else {
                 tracing::error!(?context, ?error, "Explorer command submission failed");
             }
@@ -6996,6 +7081,21 @@ impl ExplorerRoot {
                     explorer_model::ExplorerEvent::LockOwnersClosed {
                         context: context.clone(),
                         outcome: explorer_model::LockOwnerCloseTerminal::Failed(error()),
+                    },
+                );
+                true
+            }
+            explorer_model::ExplorerCommand::EnumerateColumn {
+                context,
+                location,
+                branch_revision,
+            } => {
+                let _ = self.state.apply_service_event(
+                    explorer_model::ExplorerEvent::ColumnDirectoryFinished {
+                        context: context.clone(),
+                        branch_revision: *branch_revision,
+                        location: location.clone(),
+                        outcome: explorer_model::ColumnListingTerminal::Failed(error()),
                     },
                 );
                 true
@@ -7231,6 +7331,51 @@ impl ExplorerRoot {
         (entries, actions)
     }
 
+    fn apply_preview_host_boundary(
+        &mut self,
+        parent_window: u64,
+        left_physical: i32,
+        top_physical: i32,
+        width_physical: u32,
+        height_physical: u32,
+        dpi: u32,
+    ) {
+        let boundary = (
+            parent_window,
+            left_physical,
+            top_physical,
+            width_physical,
+            height_physical,
+            dpi,
+        );
+        if self.preview_host_boundary == Some(boundary) {
+            return;
+        }
+        self.preview_host_boundary = Some(boundary);
+        if let Some(generation) = self.preview_coordinator.lifecycle().generation()
+            && matches!(
+                self.preview_coordinator.lifecycle(),
+                explorer_model::PreviewLifecycle::Loading { .. }
+                    | explorer_model::PreviewLifecycle::Visible { .. }
+            )
+        {
+            let tab = self.state.tabs().active_tab();
+            self.submit_command(explorer_model::ExplorerCommand::PreviewHost {
+                context: explorer_model::RequestContext::new(tab.id, tab.generation),
+                command: explorer_model::PreviewHostCommand::SetBounds(
+                    explorer_model::PreviewHostBounds {
+                        generation,
+                        left_physical,
+                        top_physical,
+                        width_physical,
+                        height_physical,
+                        dpi,
+                    },
+                ),
+            });
+        }
+    }
+
     fn handle_action(
         &mut self,
         action: ExplorerAction,
@@ -7238,6 +7383,27 @@ impl ExplorerRoot {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if let ExplorerAction::UpdatePreviewHostBoundary {
+            parent_window,
+            left_physical,
+            top_physical,
+            width_physical,
+            height_physical,
+            dpi,
+        } = &action
+        {
+            // This is a layout measurement, not a click. It must not enter dispatch_action, which
+            // closes the view menu and makes that menu flash shut on the next paint.
+            self.apply_preview_host_boundary(
+                *parent_window,
+                *left_physical,
+                *top_physical,
+                *width_physical,
+                *height_physical,
+                *dpi,
+            );
+            return;
+        }
         if let ExplorerAction::OpenBookmarkContextMenu { id, x, y } = action {
             self.state.open_bookmark_context_menu(id, x, y);
             cx.notify();
@@ -7558,6 +7724,8 @@ impl ExplorerRoot {
         if let Some(reason) = implicit_scrollbar_terminal {
             self.terminate_scrollbar_drag(reason, source);
             self.terminate_details_column_resize();
+            self.state.end_column_preview_resize();
+            self.state.end_column_horizontal_scroll();
             if self.state.end_marquee() {
                 self.pointer_capture.take();
             }
@@ -8447,49 +8615,6 @@ impl ExplorerRoot {
             // the newly active tab's current-folder placeholder without touching real queries.
             self.reset_search_input(String::new(), cx);
         }
-        if let ExplorerAction::UpdatePreviewHostBoundary {
-            parent_window,
-            left_physical,
-            top_physical,
-            width_physical,
-            height_physical,
-            dpi,
-        } = &action
-        {
-            let boundary = (
-                *parent_window,
-                *left_physical,
-                *top_physical,
-                *width_physical,
-                *height_physical,
-                *dpi,
-            );
-            if self.preview_host_boundary != Some(boundary) {
-                self.preview_host_boundary = Some(boundary);
-                if let Some(generation) = self.preview_coordinator.lifecycle().generation()
-                    && matches!(
-                        self.preview_coordinator.lifecycle(),
-                        explorer_model::PreviewLifecycle::Loading { .. }
-                            | explorer_model::PreviewLifecycle::Visible { .. }
-                    )
-                {
-                    let tab = self.state.tabs().active_tab();
-                    self.submit_command(explorer_model::ExplorerCommand::PreviewHost {
-                        context: explorer_model::RequestContext::new(tab.id, tab.generation),
-                        command: explorer_model::PreviewHostCommand::SetBounds(
-                            explorer_model::PreviewHostBounds {
-                                generation,
-                                left_physical: *left_physical,
-                                top_physical: *top_physical,
-                                width_physical: *width_physical,
-                                height_physical: *height_physical,
-                                dpi: *dpi,
-                            },
-                        ),
-                    });
-                }
-            }
-        }
         if action == ExplorerAction::CloseWindow
             && let Ok(Some(unload)) = self.preview_coordinator.close()
         {
@@ -8913,6 +9038,146 @@ impl ExplorerRoot {
                 .unwrap_or_default();
             self.submit_offscreen_file_icon_loads(&context, &entries);
         }
+        if let Some(command) = match &action {
+            ExplorerAction::ActivateColumnItem {
+                column_index,
+                item_id,
+                location,
+                is_container,
+                shift,
+                control,
+            } => self.state.activate_column_item(
+                *column_index,
+                item_id.clone(),
+                location.clone(),
+                *is_container,
+                *shift,
+                *control,
+            ),
+            ExplorerAction::OpenColumnItem {
+                column_index,
+                item_id,
+                location,
+                is_container,
+                ..
+            } => self.state.open_column_item(
+                *column_index,
+                item_id.clone(),
+                location.clone(),
+                *is_container,
+            ),
+            ExplorerAction::FinishColumnPress => self.state.finish_column_press(),
+            ExplorerAction::MoveColumnCursor {
+                vertical,
+                horizontal,
+                shift,
+                control,
+            } => {
+                if *vertical == 0 && *horizontal == 0 && *control && !*shift {
+                    self.state.toggle_focused_column_selection();
+                    None
+                } else {
+                    self.state
+                        .move_column_cursor_modified(*vertical, *horizontal, *shift, *control)
+                }
+            }
+            ExplorerAction::SetColumnWidth {
+                column_index,
+                width,
+            } => {
+                self.state.set_column_width(*column_index, *width);
+                None
+            }
+            ExplorerAction::SetColumnPreviewWidth { width } => {
+                self.state.set_column_preview_width(*width);
+                None
+            }
+            ExplorerAction::SetColumnScroll {
+                column_index,
+                offset,
+            } => {
+                self.state.set_column_scroll(*column_index, *offset);
+                None
+            }
+            ExplorerAction::SetColumnHorizontalOffset { offset } => {
+                self.state.set_column_horizontal_offset(*offset);
+                None
+            }
+            ExplorerAction::BeginColumnPreviewResize { pointer_x } => {
+                self.state.begin_column_preview_resize(*pointer_x);
+                None
+            }
+            ExplorerAction::UpdateColumnPreviewResize { pointer_x } => {
+                self.state.update_column_preview_resize(*pointer_x);
+                None
+            }
+            ExplorerAction::EndColumnPreviewResize => {
+                self.state.end_column_preview_resize();
+                None
+            }
+            ExplorerAction::BeginColumnHorizontalScroll {
+                track_left,
+                track_width,
+                grab_offset,
+                minimum_thumb,
+            } => {
+                self.state.begin_column_horizontal_scroll(
+                    *track_left,
+                    *track_width,
+                    *grab_offset,
+                    *minimum_thumb,
+                );
+                None
+            }
+            ExplorerAction::UpdateColumnHorizontalScroll { pointer_x } => {
+                self.state.update_column_horizontal_scroll(*pointer_x);
+                None
+            }
+            ExplorerAction::EndColumnHorizontalScroll => {
+                self.state.end_column_horizontal_scroll();
+                None
+            }
+            _ => None,
+        } {
+            self.submit_command(command);
+        }
+        if matches!(
+            action,
+            ExplorerAction::ActivateColumnItem { .. }
+                | ExplorerAction::OpenColumnItem { .. }
+                | ExplorerAction::FinishColumnPress
+                | ExplorerAction::MoveColumnCursor { .. }
+                | ExplorerAction::SetViewMode(_)
+                | ExplorerAction::Refresh
+        ) {
+            if matches!(action, ExplorerAction::Refresh) {
+                self.state.invalidate_column_branch();
+            }
+            let width = chrome::explorer_file_viewport_width(window, &self.state, self.tokens);
+            self.state.set_column_file_viewport_width(width);
+            self.state.ensure_column_branch();
+            for command in self.state.plan_column_loads() {
+                self.submit_command(command);
+            }
+        }
+        if matches!(
+            action,
+            ExplorerAction::ActivateColumnItem { .. }
+                | ExplorerAction::OpenColumnItem { .. }
+                | ExplorerAction::FinishColumnPress
+                | ExplorerAction::MoveColumnCursor { .. }
+                | ExplorerAction::ClearSelection
+                | ExplorerAction::NewTab
+                | ExplorerAction::CloseActiveTab
+                | ExplorerAction::ActivateTab { .. }
+                | ExplorerAction::CloseTab { .. }
+                | ExplorerAction::NextTab
+                | ExplorerAction::PreviousTab
+                | ExplorerAction::SetViewMode(_)
+                | ExplorerAction::TogglePreviewPane
+        ) {
+            self.synchronize_integrated_preview();
+        }
         if let ExplorerAction::OpenItem { row_index, new_tab } = action {
             if let Some(id) = self.state.bookmark_id_for_row(row_index) {
                 self.handle_action(ExplorerAction::ActivateBookmark { id }, source, window, cx);
@@ -9230,6 +9495,40 @@ impl ExplorerRoot {
         {
             cx.write_to_clipboard(ClipboardItem::new_string(text));
         }
+        if let ExplorerAction::DropOnColumn {
+            column_index,
+            folder_id,
+            paths,
+            effect,
+            right_button,
+            allowed,
+        } = &action
+        {
+            let detail = format!(
+                "column={column_index} folder={} effect={effect:?} paths={} right={right_button}",
+                folder_id.is_some(),
+                paths.len(),
+            );
+            if let Some(command) = self.state.column_drop_transfer(
+                *column_index,
+                folder_id.as_ref(),
+                paths,
+                *effect,
+                *right_button,
+                *allowed,
+            ) {
+                interaction_log::record_ui_interaction(
+                    "column_drop",
+                    &format!("result=submitted {detail}"),
+                );
+                self.submit_command(command);
+            } else {
+                interaction_log::record_ui_interaction(
+                    "column_drop",
+                    &format!("result=ignored {detail}"),
+                );
+            }
+        }
         if let ExplorerAction::ShowContextMenu {
             item_id,
             owner_window,
@@ -9239,6 +9538,7 @@ impl ExplorerRoot {
             client_y,
             keyboard_invoked,
             extended_verbs,
+            ..
         } = &action
             && let Some(command) = self.state.begin_context_menu_request(
                 item_id.clone(),
@@ -9304,7 +9604,9 @@ impl ExplorerRoot {
         if self.state.close_requested() {
             window.remove_window();
         }
-        cx.notify();
+        if !matches!(action, ExplorerAction::UpdatePreviewHostBoundary { .. }) {
+            cx.notify();
+        }
     }
 
     fn apply_cache_inspector_action(&mut self, action: &ExplorerAction) {
@@ -9469,6 +9771,71 @@ impl ExplorerRoot {
         {
             return None;
         }
+        if self.state.effective_view_mode() == explorer_model::ViewMode::Columns
+            && self.state.rename_editor().is_none()
+            && !event.keystroke.modifiers.alt
+            && !event.keystroke.modifiers.platform
+        {
+            let shift = event.keystroke.modifiers.shift;
+            let control = event.keystroke.modifiers.control;
+            if let Some(action) =
+                column_cursor_key_action(event.keystroke.key.as_str(), shift, control)
+            {
+                return Some(action);
+            }
+            // Ctrl letter shortcuts stay on the shared file-command path.
+            if !control {
+                let action = match event.keystroke.key.as_str() {
+                    "enter" => self.state.column_focused_open_target().map(
+                        |(column_index, item_id, location, is_container)| {
+                            ExplorerAction::OpenColumnItem {
+                                column_index,
+                                item_id,
+                                location,
+                                is_container,
+                            }
+                        },
+                    ),
+                    "f2" | "delete" => column_keyboard_command(
+                        event.keystroke.key.as_str(),
+                        event.keystroke.modifiers.shift,
+                    ),
+                    "menu" | "f10"
+                        if event.keystroke.key == "menu" || event.keystroke.modifiers.shift =>
+                    {
+                        let (column_index, item_id) = self
+                            .state
+                            .column_keyboard_context_hit()
+                            .unwrap_or((0, None));
+                        let layout = self.tokens.layout;
+                        let position = gpui::point(
+                            px(self.state.navigation_pane_width().value() + 96.0),
+                            px(layout.title_tab_height.value()
+                                + layout.address_bar_height.value()
+                                + layout.command_bar_height.value()
+                                + layout.file_row_height.value()),
+                        );
+                        let (owner_window, x, y) =
+                            chrome::context_menu_coordinates(position, window);
+                        Some(ExplorerAction::ShowContextMenu {
+                            item_id,
+                            column_index: Some(column_index),
+                            owner_window,
+                            x,
+                            y,
+                            client_x: f32::from(position.x),
+                            client_y: f32::from(position.y),
+                            keyboard_invoked: true,
+                            extended_verbs: false,
+                        })
+                    }
+                    _ => None,
+                };
+                if action.is_some() || event.keystroke.key == "enter" {
+                    return action;
+                }
+            }
+        }
         if self.state.rename_editor().is_some() {
             return match event.keystroke.key.as_str() {
                 "enter" => Some(ExplorerAction::CommitInlineRename),
@@ -9521,6 +9888,7 @@ impl ExplorerRoot {
                 let (owner_window, x, y) = chrome::context_menu_coordinates(position, window);
                 return Some(ExplorerAction::ShowContextMenu {
                     item_id: self.state.presentation_item_id(current),
+                    column_index: None,
                     owner_window,
                     x,
                     y,
@@ -9610,13 +9978,16 @@ impl ExplorerRoot {
             "down" => Some(ExplorerAction::MoveAppMenuFocus { direction: 1 }),
             "home" => Some(ExplorerAction::MoveAppMenuFocus { direction: i8::MIN }),
             "end" => Some(ExplorerAction::MoveAppMenuFocus { direction: i8::MAX }),
-            "escape" if self.state.app_menu_page() == actions::AppMenuPage::ClosedWindows => {
-                Some(ExplorerAction::SetAppMenuPage(actions::AppMenuPage::History))
+            "escape" if self.state.app_menu_page() == actions::AppMenuPage::ClosedWindows => Some(
+                ExplorerAction::SetAppMenuPage(actions::AppMenuPage::History),
+            ),
+            "left" if self.state.app_menu_page() == actions::AppMenuPage::ClosedWindows => {
+                self.state.closed_window_tree_key(false).or_else(|| {
+                    Some(ExplorerAction::SetAppMenuPage(
+                        actions::AppMenuPage::History,
+                    ))
+                })
             }
-            "left" if self.state.app_menu_page() == actions::AppMenuPage::ClosedWindows => self
-                .state
-                .closed_window_tree_key(false)
-                .or_else(|| Some(ExplorerAction::SetAppMenuPage(actions::AppMenuPage::History))),
             "right" if self.state.app_menu_page() == actions::AppMenuPage::ClosedWindows => {
                 self.state.closed_window_tree_key(true)
             }
@@ -9736,10 +10107,10 @@ impl ExplorerRoot {
             "home" => Some(ExplorerAction::MoveViewMenuFocus { direction: i8::MIN }),
             "end" => Some(ExplorerAction::MoveViewMenuFocus { direction: i8::MAX }),
             "escape" | "left" => Some(ExplorerAction::CloseViewMenu),
-            "right" if self.state.view_menu_index() == 10 => {
+            "right" if self.state.view_menu_index() == actions::VIEW_MENU_THEME => {
                 Some(ExplorerAction::ToggleViewThemeSubmenu)
             }
-            "right" if self.state.view_menu_index() == 11 => {
+            "right" if self.state.view_menu_index() == actions::VIEW_MENU_SHOW => {
                 Some(ExplorerAction::ToggleViewShowSubmenu)
             }
             "enter" | "space" => Some(match self.state.view_menu_index() {
@@ -9751,11 +10122,20 @@ impl ExplorerRoot {
                 5 => ExplorerAction::SetViewMode(explorer_model::ViewMode::Details),
                 6 => ExplorerAction::SetViewMode(explorer_model::ViewMode::Tiles),
                 7 => ExplorerAction::SetViewMode(explorer_model::ViewMode::Content),
-                8 => ExplorerAction::ToggleDetailsPane,
-                9 => ExplorerAction::TogglePreviewPane,
-                10 => ExplorerAction::ToggleViewThemeSubmenu,
-                11 => ExplorerAction::ToggleViewShowSubmenu,
-                12 => self
+                index if index == actions::VIEW_MENU_COLUMNS => {
+                    ExplorerAction::SetViewMode(explorer_model::ViewMode::Columns)
+                }
+                index if index == actions::VIEW_MENU_DETAILS_PANE => {
+                    ExplorerAction::ToggleDetailsPane
+                }
+                index if index == actions::VIEW_MENU_PREVIEW_PANE => {
+                    ExplorerAction::TogglePreviewPane
+                }
+                index if index == actions::VIEW_MENU_THEME => {
+                    ExplorerAction::ToggleViewThemeSubmenu
+                }
+                index if index == actions::VIEW_MENU_SHOW => ExplorerAction::ToggleViewShowSubmenu,
+                index if index == actions::VIEW_MENU_EXTENSION => self
                     .size_map_runtime
                     .as_ref()
                     .map(|runtime| runtime.config())
@@ -10420,6 +10800,8 @@ impl Render for ExplorerRoot {
         }
         self.file_viewport_width =
             chrome::explorer_file_viewport_width(window, &self.state, self.tokens);
+        self.state
+            .set_column_file_viewport_width(self.file_viewport_width);
         self.apply_pending_file_row_reveal(window);
         let view_settings = self.state.view_settings();
         let rebuilds_before = self.state.presentation_rebuilds();
@@ -10515,27 +10897,31 @@ impl Render for ExplorerRoot {
                 .collect::<Vec<_>>()
             })
             .unwrap_or_default();
-        if !realized_entries.is_empty() {
+        self.state.ensure_column_branch();
+        let column_icon_entries =
+            if self.state.effective_view_mode() == explorer_model::ViewMode::Columns {
+                self.state
+                    .visible_column_entries(f32::from(window.viewport_size().height).max(120.0))
+            } else {
+                Vec::new()
+            };
+        let icon_entries = if column_icon_entries.is_empty() {
+            realized_entries.clone()
+        } else {
+            column_icon_entries
+        };
+        if !icon_entries.is_empty() {
             let tab = self.state.tabs().active_tab();
             let context = explorer_model::RequestContext::new(tab.id, tab.generation);
-            self.submit_file_icon_loads(&context, &realized_entries);
+            self.submit_file_icon_loads(&context, &icon_entries);
         }
         if self.service.is_some() {
             self.submit_bookmark_icon_loads(false);
         }
-        let preview_entry = {
-            let tab = self.state.tabs().active_tab();
-            (tab.selection.len() == 1)
-                .then(|| tab.visible_snapshot())
-                .flatten()
-                .and_then(|snapshot| {
-                    snapshot
-                        .entries()
-                        .iter()
-                        .find(|entry| tab.selection.contains(&entry.id))
-                        .cloned()
-                })
-        };
+        let preview_entry = self.state.integrated_preview_entry();
+        for command in self.state.plan_column_loads() {
+            self.submit_command(command);
+        }
         self.synchronize_preview_thumbnail(preview_entry.as_ref());
         self.synchronize_preview_handler(preview_entry.as_ref());
         self.submit_folder_size_requests();
@@ -10548,7 +10934,7 @@ impl Render for ExplorerRoot {
                 .filter(|context| context.tab_id == tab.id && context.generation == tab.generation)
                 .cloned()
         };
-        let file_icons = self.navigation_icon_snapshot(&realized_entries);
+        let file_icons = self.navigation_icon_snapshot(&icon_entries);
         let safe_mode_offer = self.safe_mode_offers.first().cloned();
         let safe_mode_error = self.safe_mode_confirmation_error.clone();
         let content = chrome::ExplorerWindow::new(self.tokens, self.state.clone())
@@ -10570,6 +10956,9 @@ impl Render for ExplorerRoot {
             .with_breadcrumb_menu_focus(self.breadcrumb_menu_focus.clone())
             .with_command_menu_focus(self.command_menu_focus.clone())
             .with_preview_thumbnail(self.preview_texture.clone(), self.preview_thumbnail_failed)
+            .with_column_handler_phase(column_view::column_handler_phase(
+                self.preview_coordinator.lifecycle(),
+            ))
             .with_folder_size_visuals(self.folder_size_visuals.clone())
             .with_visual_column_runtime(self.visual_column_runtime.clone())
             .with_code_lines_columns(
@@ -13363,6 +13752,76 @@ mod tests {
     }
 
     #[test]
+    fn column_view_keyboard_f2_and_delete_do_not_wait_for_a_details_row() {
+        assert!(matches!(
+            super::column_keyboard_command("f2", false),
+            Some(ExplorerAction::BeginRenameFocused)
+        ));
+        assert!(super::column_keyboard_command("f2", true).is_none());
+        assert!(matches!(
+            super::column_keyboard_command("delete", false),
+            Some(ExplorerAction::RecycleDeleteSelected)
+        ));
+        assert!(matches!(
+            super::column_keyboard_command("delete", true),
+            Some(ExplorerAction::RequestPermanentDelete)
+        ));
+    }
+
+    #[test]
+    fn column_cursor_keys_keep_shift_and_ctrl_on_the_active_column() {
+        assert_eq!(
+            super::column_cursor_key_action("down", true, false),
+            Some(ExplorerAction::MoveColumnCursor {
+                vertical: 1,
+                horizontal: 0,
+                shift: true,
+                control: false,
+            })
+        );
+        assert_eq!(
+            super::column_cursor_key_action("up", true, true),
+            Some(ExplorerAction::MoveColumnCursor {
+                vertical: -1,
+                horizontal: 0,
+                shift: true,
+                control: true,
+            })
+        );
+        assert_eq!(
+            super::column_cursor_key_action("down", false, true),
+            Some(ExplorerAction::MoveColumnCursor {
+                vertical: 1,
+                horizontal: 0,
+                shift: false,
+                control: true,
+            })
+        );
+        assert_eq!(
+            super::column_cursor_key_action("left", false, true),
+            Some(ExplorerAction::MoveColumnCursor {
+                vertical: 0,
+                horizontal: -1,
+                shift: false,
+                control: true,
+            })
+        );
+        assert_eq!(
+            super::column_cursor_key_action("space", false, true),
+            Some(ExplorerAction::MoveColumnCursor {
+                vertical: 0,
+                horizontal: 0,
+                shift: false,
+                control: true,
+            })
+        );
+        assert!(super::column_cursor_key_action("space", false, false).is_none());
+        assert!(super::column_cursor_key_action("space", true, true).is_none());
+        assert!(super::column_cursor_key_action("enter", false, false).is_none());
+        assert!(super::column_cursor_key_action("a", false, true).is_none());
+    }
+
+    #[test]
     fn explorer_file_shortcuts_map_to_typed_actions_even_for_empty_folders() {
         let global = [
             ("a", true, ExplorerAction::SelectAllItems),
@@ -14007,6 +14466,269 @@ mod tests {
     }
 
     #[test]
+    fn column_integrated_image_preview_publishes_a_fitted_texture_and_drops_stale_pixels() {
+        use crate::column_view::{
+            ColumnHandlerPhase, ColumnPreviewRoute, column_handler_phase, integrated_preview_frame,
+            preview_content_slot,
+        };
+
+        let (mut root, entries) = preview_fixture_root();
+        root.state
+            .set_drive_kind('C', explorer_model::DriveKind::Fixed);
+        root.state.set_view_mode(explorer_model::ViewMode::Columns);
+        root.state.ensure_column_branch();
+        let column = root
+            .state
+            .column_strip_model()
+            .expect("column strip")
+            .active;
+        let photo = &entries[0];
+        assert!(
+            root.state
+                .activate_column_item(
+                    column,
+                    photo.id.clone(),
+                    photo.location.clone(),
+                    false,
+                    false,
+                    false,
+                )
+                .is_none()
+        );
+        root.synchronize_preview_thumbnail(Some(photo));
+        let key = root
+            .preview_thumbnail_key
+            .clone()
+            .expect("column jpeg schedules a thumbnail");
+        assert!(root.preview_texture.is_none());
+        root.synchronize_preview_thumbnail(None);
+        let pixels = explorer_model::ThumbnailPixels {
+            width: 400,
+            height: 200,
+            stride: 1600,
+            bytes: vec![255; 400 * 200 * 4],
+        };
+        assert_eq!(
+            root.thumbnail_memory_cache.insert(key, Arc::new(pixels)),
+            explorer_jobs::CacheInsertOutcome::Inserted
+        );
+        root.synchronize_preview_thumbnail(Some(photo));
+        let texture = root
+            .preview_texture
+            .clone()
+            .expect("cached jpeg becomes the integrated preview texture");
+        assert!(!root.preview_thumbnail_failed);
+        let size = texture.size(0);
+        let (slot_width, slot_height) = preview_content_slot(360.0, 480.0);
+        let frame = integrated_preview_frame(
+            ColumnPreviewRoute::ImageThumbnail,
+            u32::from(size.width),
+            u32::from(size.height),
+            true,
+            false,
+            ColumnHandlerPhase::Inactive,
+            slot_width,
+            slot_height,
+        );
+        assert!(frame.show_image);
+        assert!(!frame.host_handler);
+        assert_eq!(frame.status_id, "chrome-preview-image-loaded");
+        assert!(frame.image_width <= slot_width && frame.image_height <= slot_height);
+        assert!((frame.image_width / frame.image_height - 2.0).abs() < 0.02);
+
+        let replacement = &entries[1];
+        assert!(
+            root.state
+                .activate_column_item(
+                    column,
+                    replacement.id.clone(),
+                    replacement.location.clone(),
+                    false,
+                    false,
+                    false,
+                )
+                .is_none()
+        );
+        root.synchronize_preview_thumbnail(Some(replacement));
+        assert!(
+            root.preview_texture.is_none(),
+            "selecting a different image clears the previous texture before its replacement arrives"
+        );
+        assert_eq!(
+            root.preview_thumbnail_key.as_ref().map(|key| &key.item_id),
+            Some(&replacement.id)
+        );
+        let cleared = integrated_preview_frame(
+            ColumnPreviewRoute::ImageThumbnail,
+            400,
+            200,
+            false,
+            false,
+            ColumnHandlerPhase::Inactive,
+            slot_width,
+            slot_height,
+        );
+        assert!(!cleared.show_image);
+        assert_eq!(cleared.status_id, "status-preview-loading");
+
+        let notes = &entries[2];
+        assert!(
+            root.state
+                .activate_column_item(
+                    column,
+                    notes.id.clone(),
+                    notes.location.clone(),
+                    false,
+                    false,
+                    false,
+                )
+                .is_none()
+        );
+        root.synchronize_preview_thumbnail(Some(notes));
+        assert!(root.preview_texture.is_none());
+        assert!(root.preview_thumbnail_key.is_none());
+        root.preview_host_boundary = Some((101, 12, 24, 280, 180, 96));
+        root.synchronize_preview_handler(Some(notes));
+        let handler = integrated_preview_frame(
+            ColumnPreviewRoute::PreviewHandler,
+            0,
+            0,
+            false,
+            root.preview_thumbnail_failed,
+            column_handler_phase(root.preview_coordinator.lifecycle()),
+            slot_width,
+            slot_height,
+        );
+        assert!(!handler.show_image);
+        assert!(handler.host_handler);
+        assert_ne!(
+            handler.status_id, "column-preview-folder",
+            "a document must not be described as a folder"
+        );
+        assert_ne!(handler.status_id, "column-preview-offline");
+    }
+
+    #[test]
+    fn column_view_selection_change_drops_stale_image_and_skips_offline_hydration() {
+        let (mut root, entries) = preview_fixture_root();
+        root.state
+            .set_drive_kind('C', explorer_model::DriveKind::Fixed);
+        root.state.set_view_mode(explorer_model::ViewMode::Columns);
+        root.state.ensure_column_branch();
+        let column = root
+            .state
+            .column_strip_model()
+            .expect("column strip")
+            .active;
+        let photo = entries[0].clone();
+        let second = entries[1].clone();
+        let notes = entries[2].clone();
+        assert!(
+            root.state
+                .activate_column_item(
+                    column,
+                    photo.id.clone(),
+                    photo.location.clone(),
+                    false,
+                    false,
+                    false,
+                )
+                .is_none()
+        );
+        root.synchronize_integrated_preview();
+        let key = root.preview_thumbnail_key.clone().expect("jpeg schedules");
+        root.preview_thumbnail_key = None;
+        let pixels = explorer_model::ThumbnailPixels {
+            width: 4,
+            height: 2,
+            stride: 16,
+            bytes: vec![255; 4 * 2 * 4],
+        };
+        assert_eq!(
+            root.thumbnail_memory_cache.insert(key, Arc::new(pixels)),
+            explorer_jobs::CacheInsertOutcome::Inserted
+        );
+        root.synchronize_integrated_preview();
+        assert!(root.preview_texture.is_some());
+
+        assert!(
+            root.state
+                .activate_column_item(
+                    column,
+                    second.id.clone(),
+                    second.location.clone(),
+                    false,
+                    false,
+                    true,
+                )
+                .is_none()
+        );
+        root.synchronize_integrated_preview();
+        assert!(root.preview_texture.is_none());
+        assert!(root.preview_thumbnail_key.is_none());
+        assert!(matches!(
+            root.preview_coordinator.lifecycle(),
+            explorer_model::PreviewLifecycle::Fallback { .. }
+                | explorer_model::PreviewLifecycle::Idle
+                | explorer_model::PreviewLifecycle::Closed
+        ));
+
+        root.state.clear_selection();
+        root.synchronize_integrated_preview();
+        assert!(root.preview_texture.is_none());
+        assert!(root.state.integrated_preview_entry().is_none());
+
+        assert!(
+            root.state
+                .activate_column_item(
+                    column,
+                    notes.id.clone(),
+                    notes.location.clone(),
+                    false,
+                    false,
+                    false,
+                )
+                .is_none()
+        );
+        root.synchronize_integrated_preview();
+        assert!(root.preview_thumbnail_key.is_none());
+        root.preview_host_boundary = Some((7, 0, 0, 200, 120, 96));
+        root.synchronize_integrated_preview();
+        assert!(
+            root.preview_texture.is_none(),
+            "a document must not keep the previous image"
+        );
+
+        let mut offline = photo.clone();
+        offline.metadata.filesystem_attributes = 0x1000;
+        assert!(
+            root.state
+                .activate_column_item(
+                    column,
+                    offline.id.clone(),
+                    offline.location.clone(),
+                    false,
+                    false,
+                    false,
+                )
+                .is_none()
+        );
+        root.synchronize_preview_thumbnail(Some(&offline));
+        root.synchronize_preview_handler(Some(&offline));
+        assert!(
+            root.preview_thumbnail_key.is_none(),
+            "offline placeholders are not hydrated"
+        );
+        assert!(root.preview_texture.is_none());
+        assert!(matches!(
+            root.preview_coordinator.lifecycle(),
+            explorer_model::PreviewLifecycle::Fallback { .. }
+                | explorer_model::PreviewLifecycle::Idle
+                | explorer_model::PreviewLifecycle::Closed
+        ));
+    }
+
+    #[test]
     fn preview_host_selection_boundary_resize_and_unload_use_typed_generation_commands() {
         let (mut root, entries) = preview_fixture_root();
         let service = Arc::new(RecordingService::default());
@@ -14079,6 +14801,360 @@ mod tests {
         assert_eq!(super::preview_virtual_key("left"), Some(0x25));
         assert_eq!(super::preview_virtual_key("f12"), Some(0x7B));
         assert_eq!(super::preview_virtual_key("unknown"), None);
+    }
+
+    fn preview_key(key: &str, control: bool, alt: bool) -> gpui::KeyDownEvent {
+        gpui::KeyDownEvent {
+            keystroke: gpui::Keystroke {
+                modifiers: gpui::Modifiers {
+                    control,
+                    alt,
+                    ..gpui::Modifiers::default()
+                },
+                key: key.to_owned(),
+                key_char: None,
+            },
+            is_held: false,
+            prefer_character_input: false,
+        }
+    }
+
+    fn recorded_preview_commands(
+        service: &RecordingService,
+    ) -> Vec<explorer_model::ExplorerCommand> {
+        service.0.lock().expect("preview commands").clone()
+    }
+
+    fn latest_preview_start(
+        commands: &[explorer_model::ExplorerCommand],
+    ) -> explorer_model::PreviewHostBounds {
+        commands
+            .iter()
+            .rev()
+            .find_map(|command| match command {
+                explorer_model::ExplorerCommand::PreviewHost {
+                    command: explorer_model::PreviewHostCommand::Start { bounds, .. },
+                    ..
+                } => Some(*bounds),
+                _ => None,
+            })
+            .expect("preview start")
+    }
+
+    fn preview_command_count(
+        commands: &[explorer_model::ExplorerCommand],
+        predicate: impl Fn(&explorer_model::PreviewHostCommand) -> bool,
+    ) -> usize {
+        commands
+            .iter()
+            .filter(|command| match command {
+                explorer_model::ExplorerCommand::PreviewHost { command, .. } => predicate(command),
+                _ => false,
+            })
+            .count()
+    }
+
+    #[test]
+    fn column_preview_handler_bounds_follow_resize_and_dpi_and_accelerators_stay_scoped() {
+        let (mut root, entries) = preview_fixture_root();
+        let service = Arc::new(RecordingService::default());
+        root.service = Some(service.clone());
+        root.preview_coordinator = explorer_jobs::PreviewCoordinator::new(Duration::ZERO);
+        root.state
+            .set_drive_kind('C', explorer_model::DriveKind::Fixed);
+        root.state.set_view_mode(explorer_model::ViewMode::Columns);
+        root.state.ensure_column_branch();
+        let column = root
+            .state
+            .column_strip_model()
+            .expect("column strip")
+            .active;
+        let notes = &entries[2];
+        assert!(
+            root.state
+                .activate_column_item(
+                    column,
+                    notes.id.clone(),
+                    notes.location.clone(),
+                    false,
+                    false,
+                    false,
+                )
+                .is_none()
+        );
+        root.synchronize_preview_handler(Some(notes));
+        assert!(
+            matches!(
+                root.preview_coordinator.lifecycle(),
+                explorer_model::PreviewLifecycle::Debouncing { .. }
+            ),
+            "a missing host rectangle must not fail the preview before layout"
+        );
+        root.poll_preview_handler();
+        assert!(matches!(
+            root.preview_coordinator.lifecycle(),
+            explorer_model::PreviewLifecycle::Debouncing { .. }
+        ));
+        root.preview_host_boundary = Some((101, 40, 80, 280, 360, 96));
+        root.poll_preview_handler();
+        let started = latest_preview_start(&recorded_preview_commands(&service));
+        assert_eq!(started.left_physical, 40);
+        assert_eq!(started.width_physical, 280);
+        assert_eq!(started.dpi, 96);
+        root.apply_preview_host_terminal(&explorer_model::PreviewHostTerminal::Ready {
+            generation: started.generation,
+            mode: explorer_model::PreviewInitializationMode::File,
+        });
+
+        let before_resize = recorded_preview_commands(&service).len();
+        root.apply_preview_host_boundary(101, 20, 80, 360, 340, 96);
+        root.apply_preview_host_boundary(101, 20, 80, 360, 340, 96);
+        root.apply_preview_host_boundary(101, 30, 90, 360, 340, 144);
+        let commands = recorded_preview_commands(&service);
+        let updates = commands[before_resize..]
+            .iter()
+            .filter_map(|command| match command {
+                explorer_model::ExplorerCommand::PreviewHost {
+                    command: explorer_model::PreviewHostCommand::SetBounds(bounds),
+                    ..
+                } => Some(*bounds),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(updates.len(), 2, "an unchanged rectangle is not resent");
+        assert_eq!(updates[0].width_physical, 360);
+        assert_eq!(updates[0].dpi, 96);
+        assert_eq!(updates[1].left_physical, 30);
+        assert_eq!(updates[1].dpi, 144);
+        assert_eq!(updates[1].generation, started.generation);
+
+        root.state.focus(FocusSurface::FileView);
+        assert!(!root.forward_preview_accelerator(&preview_key("a", false, false)));
+        root.state.focus(FocusSurface::PreviewPane);
+        assert!(!root.forward_preview_accelerator(&preview_key("p", false, true)));
+        assert!(!root.forward_preview_accelerator(&preview_key("l", true, false)));
+        assert!(!root.forward_preview_accelerator(&preview_key("tab", false, false)));
+        assert!(root.forward_preview_accelerator(&preview_key("a", false, false)));
+        assert!(
+            recorded_preview_commands(&service)
+                .iter()
+                .any(|command| matches!(
+                    command,
+                    explorer_model::ExplorerCommand::PreviewHost {
+                        command: explorer_model::PreviewHostCommand::Accelerator {
+                            virtual_key: key,
+                            ..
+                        },
+                        ..
+                    } if *key == u32::from(b'A')
+                ))
+        );
+        assert_eq!(
+            preview_command_count(&recorded_preview_commands(&service), |command| {
+                matches!(
+                    command,
+                    explorer_model::PreviewHostCommand::Accelerator { .. }
+                )
+            }),
+            1,
+            "Alt+P, Ctrl+L, and Tab stay with the app"
+        );
+    }
+
+    #[test]
+    fn column_preview_handler_unloads_for_toggle_selection_tab_and_mode_and_recovers_after_timeout()
+    {
+        let (mut root, entries) = preview_fixture_root();
+        let service = Arc::new(RecordingService::default());
+        root.service = Some(service.clone());
+        root.preview_coordinator = explorer_jobs::PreviewCoordinator::new(Duration::ZERO);
+        root.preview_host_boundary = Some((101, 40, 80, 280, 360, 96));
+        root.state
+            .set_drive_kind('C', explorer_model::DriveKind::Fixed);
+        root.state.set_view_mode(explorer_model::ViewMode::Columns);
+        root.state.ensure_column_branch();
+        let column = root
+            .state
+            .column_strip_model()
+            .expect("column strip")
+            .active;
+        let notes = entries[2].clone();
+        let photo = entries[0].clone();
+        let activate = |root: &mut ExplorerRoot, entry: &explorer_model::FileEntry| {
+            assert!(
+                root.state
+                    .activate_column_item(
+                        column,
+                        entry.id.clone(),
+                        entry.location.clone(),
+                        false,
+                        false,
+                        false,
+                    )
+                    .is_none()
+            );
+            root.synchronize_preview_handler(Some(entry));
+        };
+        activate(&mut root, &notes);
+        root.poll_preview_handler();
+        let generation = latest_preview_start(&recorded_preview_commands(&service)).generation;
+        root.apply_preview_host_terminal(&explorer_model::PreviewHostTerminal::Ready {
+            generation,
+            mode: explorer_model::PreviewInitializationMode::File,
+        });
+
+        activate(&mut root, &photo);
+        assert!(
+            preview_command_count(&recorded_preview_commands(&service), |command| {
+                matches!(
+                    command,
+                    explorer_model::PreviewHostCommand::Unload { generation: value }
+                        if *value == generation
+                )
+            }) >= 1,
+            "leaving the document unloads its handler"
+        );
+        root.apply_preview_host_terminal(&explorer_model::PreviewHostTerminal::Unloaded {
+            generation,
+        });
+        assert!(
+            !matches!(
+                root.preview_coordinator.lifecycle(),
+                explorer_model::PreviewLifecycle::Visible { .. }
+                    | explorer_model::PreviewLifecycle::Loading { .. }
+            ),
+            "an image selection must not keep the document handler"
+        );
+
+        service.0.lock().expect("commands").clear();
+        activate(&mut root, &notes);
+        root.poll_preview_handler();
+        let recovered = latest_preview_start(&recorded_preview_commands(&service)).generation;
+        assert_ne!(recovered, generation);
+        root.apply_preview_host_terminal(&explorer_model::PreviewHostTerminal::Failed {
+            generation: recovered,
+            error: explorer_model::PreviewHostError::Timeout(
+                explorer_model::PreviewOperation::Render,
+            ),
+        });
+        assert!(root.preview_thumbnail_failed);
+        assert!(matches!(
+            root.preview_coordinator.lifecycle(),
+            explorer_model::PreviewLifecycle::Failed { .. }
+        ));
+
+        activate(&mut root, &photo);
+        service.0.lock().expect("commands").clear();
+        activate(&mut root, &notes);
+        root.poll_preview_handler();
+        let after_timeout = latest_preview_start(&recorded_preview_commands(&service)).generation;
+        assert_ne!(after_timeout, recovered);
+        root.apply_preview_host_terminal(&explorer_model::PreviewHostTerminal::Ready {
+            generation: after_timeout,
+            mode: explorer_model::PreviewInitializationMode::File,
+        });
+        assert!(!root.preview_thumbnail_failed);
+
+        let before_toggle = recorded_preview_commands(&service).len();
+        root.state.toggle_preview_pane();
+        root.synchronize_preview_handler(Some(&notes));
+        assert!(root.preview_host_boundary.is_none());
+        assert!(
+            recorded_preview_commands(&service)[before_toggle..]
+                .iter()
+                .any(|command| matches!(
+                    command,
+                    explorer_model::ExplorerCommand::PreviewHost {
+                        command: explorer_model::PreviewHostCommand::Unload {
+                            generation: value
+                        },
+                        ..
+                    } if *value == after_timeout
+                ))
+        );
+        root.apply_preview_host_terminal(&explorer_model::PreviewHostTerminal::Unloaded {
+            generation: after_timeout,
+        });
+        assert!(matches!(
+            root.preview_coordinator.lifecycle(),
+            explorer_model::PreviewLifecycle::Closed
+        ));
+        root.state.toggle_preview_pane();
+        root.preview_host_boundary = Some((101, 48, 88, 300, 320, 120));
+        root.synchronize_preview_handler(Some(&notes));
+        root.poll_preview_handler();
+        let reopened = latest_preview_start(&recorded_preview_commands(&service));
+        assert_eq!(reopened.width_physical, 300);
+        assert_eq!(reopened.dpi, 120);
+        assert_ne!(reopened.generation, after_timeout);
+        root.apply_preview_host_terminal(&explorer_model::PreviewHostTerminal::Ready {
+            generation: reopened.generation,
+            mode: explorer_model::PreviewInitializationMode::File,
+        });
+
+        let first = root.state.tabs().active_tab_id();
+        let _second = root.state.new_tab();
+        root.synchronize_preview_handler(None);
+        assert!(
+            recorded_preview_commands(&service)
+                .iter()
+                .any(|command| matches!(
+                    command,
+                    explorer_model::ExplorerCommand::PreviewHost {
+                        command: explorer_model::PreviewHostCommand::Unload {
+                            generation: value
+                        },
+                        ..
+                    } if *value == reopened.generation
+                )),
+            "switching tabs unloads the integrated handler"
+        );
+        root.apply_preview_host_terminal(&explorer_model::PreviewHostTerminal::Unloaded {
+            generation: reopened.generation,
+        });
+        assert!(root.state.activate_tab(first));
+        root.preview_host_boundary = Some((101, 48, 88, 300, 320, 120));
+        root.synchronize_preview_handler(Some(&notes));
+        root.poll_preview_handler();
+        let restored = latest_preview_start(&recorded_preview_commands(&service)).generation;
+        assert_ne!(restored, reopened.generation);
+        root.apply_preview_host_terminal(&explorer_model::PreviewHostTerminal::Ready {
+            generation: restored,
+            mode: explorer_model::PreviewInitializationMode::File,
+        });
+
+        root.state.toggle_details_pane();
+        root.state.set_view_mode(explorer_model::ViewMode::Details);
+        assert!(!root.state.column_preview_open());
+        root.synchronize_preview_handler(Some(&notes));
+        assert!(root.preview_host_boundary.is_none());
+        assert!(
+            recorded_preview_commands(&service)
+                .iter()
+                .any(|command| matches!(
+                    command,
+                    explorer_model::ExplorerCommand::PreviewHost {
+                        command: explorer_model::PreviewHostCommand::Unload {
+                            generation: value
+                        },
+                        ..
+                    } if *value == restored
+                )),
+            "leaving Columns when the ordinary preview pane is closed unloads the handler"
+        );
+        root.apply_preview_host_terminal(&explorer_model::PreviewHostTerminal::Failed {
+            generation: restored,
+            error: explorer_model::PreviewHostError::Crash,
+        });
+        assert!(
+            matches!(
+                root.preview_coordinator.lifecycle(),
+                explorer_model::PreviewLifecycle::Closed
+                    | explorer_model::PreviewLifecycle::Failed { .. }
+                    | explorer_model::PreviewLifecycle::Unloading { .. }
+            ),
+            "a crash terminal cannot revive a closed preview"
+        );
     }
 
     #[test]

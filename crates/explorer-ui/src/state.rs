@@ -21,6 +21,53 @@ const DIRECTORY_CACHE_MAX_LOCATIONS: usize = 64;
 const DIRECTORY_CACHE_MAX_ROWS: usize = 100_000;
 const APK_INSTALL_NOTICE_CAPACITY: usize = 8;
 
+fn materialize_column_window(
+    presentation: &crate::file_view::DirectoryPresentation,
+    row_count: usize,
+    vertical_offset: f32,
+    viewport: f32,
+    selected: &[ShellItemId],
+    branch_child: Option<&ShellItemId>,
+    rename_index: Option<usize>,
+    realize_window: bool,
+) -> (
+    usize,
+    Vec<crate::column_view::ColumnRowModel>,
+    Option<(usize, crate::column_view::ColumnRowModel)>,
+) {
+    let pinned_at = |index: usize| {
+        crate::column_view::rows_from_presentation(
+            presentation,
+            index..index.saturating_add(1),
+            selected,
+            branch_child,
+        )
+        .into_iter()
+        .next()
+        .map(|row| (index, row))
+    };
+    if !realize_window {
+        return (0, Vec::new(), rename_index.and_then(pinned_at));
+    }
+    let range = crate::file_view::fixed_virtual_range(
+        row_count,
+        crate::column_view::COLUMN_ROW_HEIGHT,
+        viewport,
+        vertical_offset,
+        crate::column_view::COLUMN_ROW_OVERSCAN_VIEWPORTS,
+    );
+    let rows = crate::column_view::rows_from_presentation(
+        presentation,
+        range.items.clone(),
+        selected,
+        branch_child,
+    );
+    let pinned_row = rename_index
+        .filter(|index| !range.items.contains(index))
+        .and_then(pinned_at);
+    (range.items.start, rows, pinned_row)
+}
+
 #[derive(Clone, Debug)]
 pub struct ApkInstallNotice {
     pub context: RequestContext,
@@ -258,6 +305,22 @@ impl DirectorySnapshotCache {
             max_locations,
             max_rows,
             ..Self::default()
+        }
+    }
+
+    fn peek(&self, location: &LocationDescriptor) -> Option<DirectorySnapshot> {
+        let key = DirectoryCacheKey::for_location(location)?;
+        self.entries.get(&key).map(|entry| entry.snapshot.clone())
+    }
+
+    fn forget(&mut self, location: &LocationDescriptor) {
+        let Some(key) = DirectoryCacheKey::for_location(location) else {
+            return;
+        };
+        if let Some(previous) = self.entries.remove(&key) {
+            self.total_rows = self
+                .total_rows
+                .saturating_sub(previous.snapshot.entries().len());
         }
     }
 
@@ -921,6 +984,19 @@ struct PendingClickSelection {
     item_id: ShellItemId,
 }
 
+/// Left press on a column row. Navigation waits for release so a drag can carry this column's
+/// real items instead of the rightmost tab selection.
+#[derive(Clone, Debug)]
+struct PendingColumnPress {
+    column_index: usize,
+    item_id: ShellItemId,
+    location: LocationDescriptor,
+    is_container: bool,
+    shift: bool,
+    control: bool,
+    activate_on_release: bool,
+}
+
 #[derive(Clone, Debug)]
 #[allow(
     clippy::struct_excessive_bools,
@@ -958,6 +1034,8 @@ pub struct AppViewState {
     clipboard: explorer_model::ClipboardState,
     drag_session: explorer_model::DragSession,
     pending_click_selection: Option<PendingClickSelection>,
+    pending_column_press: Option<PendingColumnPress>,
+    pending_column_repair: Option<ExplorerCommand>,
     pending_drag_command: Option<ExplorerCommand>,
     pending_new_tab_command: Option<ExplorerCommand>,
     drop_target_row: Option<usize>,
@@ -1061,6 +1139,19 @@ pub struct AppViewState {
     builtin_count_sort_values: HashMap<explorer_model::ColumnId, HashMap<ShellItemId, Option<u64>>>,
     code_lines_sort_values: HashMap<explorer_model::ColumnId, HashMap<ShellItemId, Option<u64>>>,
     presentation_cache: Arc<Mutex<crate::file_view::DirectoryPresentationCache>>,
+    /// Filtered order for each Columns directory. Independent from the one-slot file-surface cache.
+    column_projection_cache: Arc<Mutex<crate::file_view::ColumnProjectionCache>>,
+    column_branches: explorer_model::ColumnBranchStore,
+    column_loads: explorer_model::ColumnLoadCoordinator,
+    /// Last measured file-surface width, in logical pixels. Column reveal uses this
+    /// instead of a fixed viewport.
+    column_file_viewport_width: f32,
+    /// Measured column-list height, in logical pixels. Zero until the strip is laid out.
+    column_list_viewport_height: f32,
+    column_reveal_stamp: Option<ColumnRevealStamp>,
+    column_preview_resize: Option<ColumnPreviewResizeSession>,
+    column_hscroll_drag: Option<ColumnStripScrollDrag>,
+    drive_kinds: HashMap<char, explorer_model::DriveKind>,
 }
 
 const FILE_VIEW_TYPEAHEAD_TIMEOUT: Duration = Duration::from_secs(1);
@@ -1245,6 +1336,33 @@ struct SidePaneResizeSession {
     details: bool,
 }
 
+#[derive(Clone, Copy, Debug)]
+struct ColumnPreviewResizeSession {
+    tab_id: TabId,
+    pointer_x: f32,
+    width: u16,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct ColumnStripScrollDrag {
+    track_left: f32,
+    track_width: f32,
+    grab_offset: f32,
+    minimum_thumb: f32,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+struct ColumnRevealStamp {
+    tab_id: TabId,
+    active: usize,
+    levels: usize,
+    navigated: String,
+    preview_width: u16,
+    preview_visible: bool,
+    viewport_milli: i32,
+    columns: bool,
+}
+
 #[derive(Clone, Debug)]
 struct PendingBreadcrumbMenu {
     context: RequestContext,
@@ -1406,13 +1524,15 @@ impl AppMenuSlot {
 
     pub(crate) fn activation(&self) -> Option<crate::actions::ExplorerAction> {
         match self {
-            Self::Action { action, enabled, .. } if *enabled => Some(action.clone()),
+            Self::Action {
+                action, enabled, ..
+            } if *enabled => Some(action.clone()),
             Self::Zoom => Some(crate::actions::ExplorerAction::AppMenuZoom { direction: 1 }),
-            Self::Recent { location, .. } => Some(
-                crate::actions::ExplorerAction::ActivateNavigationItem {
+            Self::Recent { location, .. } => {
+                Some(crate::actions::ExplorerAction::ActivateNavigationItem {
                     location: location.clone(),
-                },
-            ),
+                })
+            }
             Self::Bookmark { id, .. } => {
                 Some(crate::actions::ExplorerAction::ActivateBookmark { id: *id })
             }
@@ -1498,6 +1618,8 @@ impl AppViewState {
             clipboard: explorer_model::ClipboardState::default(),
             drag_session: explorer_model::DragSession::new(drag_threshold.0, drag_threshold.1),
             pending_click_selection: None,
+            pending_column_press: None,
+            pending_column_repair: None,
             pending_drag_command: None,
             pending_new_tab_command: None,
             drop_target_row: None,
@@ -1603,6 +1725,19 @@ impl AppViewState {
             presentation_cache: Arc::new(Mutex::new(
                 crate::file_view::DirectoryPresentationCache::default(),
             )),
+            column_projection_cache: Arc::new(Mutex::new(
+                crate::file_view::ColumnProjectionCache::default(),
+            )),
+            column_branches: explorer_model::ColumnBranchStore::default(),
+            column_loads: explorer_model::ColumnLoadCoordinator::new(
+                explorer_model::COLUMN_LOAD_CONCURRENCY,
+            ),
+            column_file_viewport_width: 0.0,
+            column_list_viewport_height: 0.0,
+            column_reveal_stamp: None,
+            column_preview_resize: None,
+            column_hscroll_drag: None,
+            drive_kinds: HashMap::new(),
         }
     }
 
@@ -1675,10 +1810,7 @@ impl AppViewState {
             return false;
         }
         self.folder_size_sort_values = values;
-        self.presentation_cache
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .clear();
+        self.invalidate_directory_projections();
         true
     }
 
@@ -1691,10 +1823,7 @@ impl AppViewState {
             return false;
         }
         self.code_lines_sort_values.insert(column_id, values);
-        self.presentation_cache
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .clear();
+        self.invalidate_directory_projections();
         true
     }
 
@@ -1707,10 +1836,7 @@ impl AppViewState {
             return false;
         }
         self.builtin_count_sort_values.insert(column_id, values);
-        self.presentation_cache
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .clear();
+        self.invalidate_directory_projections();
         true
     }
 
@@ -2591,10 +2717,7 @@ impl AppViewState {
             LocaleChoice::FollowWindows => self.windows_negotiated_locale,
             LocaleChoice::Explicit(locale) => locale,
         };
-        self.presentation_cache
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .clear();
+        self.invalidate_directory_projections();
     }
 
     pub const fn navigation_pane_width(&self) -> LogicalPx {
@@ -3408,10 +3531,7 @@ impl AppViewState {
         let removed = self.column_registry.unregister_package(package_id) != 0;
         if removed {
             self.code_lines_sort_values.remove(&descriptor.id);
-            self.presentation_cache
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .clear();
+            self.invalidate_directory_projections();
         }
         removed
     }
@@ -3534,10 +3654,7 @@ impl AppViewState {
                 self.code_lines_sort_values.retain(|column_id, _| {
                     !matches!(column_id, explorer_model::ColumnId::Extension { package_id, .. } if package_id == "rust-lock-owner")
                 });
-                self.presentation_cache
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .clear();
+                self.invalidate_directory_projections();
             }
             if !self.extension_enabled("rust-folder-size-visual-column") {
                 self.column_registry
@@ -3777,7 +3894,10 @@ impl AppViewState {
         self.clamp_app_menu_focus();
     }
 
-    pub(crate) fn closed_window_tree_key(&self, expand: bool) -> Option<crate::actions::ExplorerAction> {
+    pub(crate) fn closed_window_tree_key(
+        &self,
+        expand: bool,
+    ) -> Option<crate::actions::ExplorerAction> {
         match self.app_menu_focused_slot()? {
             AppMenuSlot::ClosedWindow {
                 id,
@@ -3903,13 +4023,21 @@ impl AppViewState {
 
     pub(crate) fn app_menu_activation(&self) -> Option<crate::actions::ExplorerAction> {
         if self.app_menu_page == AppMenuPage::History
-            && self
-                .app_menu_focused_slot()
-                .is_some_and(|slot| matches!(slot, AppMenuSlot::Action { id: "app-menu-search-history", .. }))
-            && !self.app_menu_history_query.trim().is_empty()
-            && let Some(location) = self.app_menu_history_entries().into_iter().next().map(|entry| {
-                entry.identity.descriptor
+            && self.app_menu_focused_slot().is_some_and(|slot| {
+                matches!(
+                    slot,
+                    AppMenuSlot::Action {
+                        id: "app-menu-search-history",
+                        ..
+                    }
+                )
             })
+            && !self.app_menu_history_query.trim().is_empty()
+            && let Some(location) = self
+                .app_menu_history_entries()
+                .into_iter()
+                .next()
+                .map(|entry| entry.identity.descriptor)
         {
             return Some(crate::actions::ExplorerAction::ActivateNavigationItem { location });
         }
@@ -4215,7 +4343,9 @@ impl AppViewState {
             .bookmarks
             .entries()
             .iter()
-            .filter(|bookmark| !matches!(bookmark.target, explorer_model::BookmarkTarget::Separator))
+            .filter(|bookmark| {
+                !matches!(bookmark.target, explorer_model::BookmarkTarget::Separator)
+            })
             .cloned()
             .collect::<Vec<_>>();
         entries.sort_by_key(|bookmark| (bookmark.parent_id.is_some(), bookmark.order));
@@ -4235,16 +4365,23 @@ impl AppViewState {
     }
 
     pub(crate) fn move_view_menu_focus(&mut self, direction: i8) {
-        self.view_menu_index = move_bounded_menu_index(self.view_menu_index, direction, 12);
+        self.view_menu_index = move_bounded_menu_index(
+            self.view_menu_index,
+            direction,
+            crate::actions::VIEW_MENU_LAST,
+        );
     }
 
     pub(crate) fn set_view_menu_focus(&mut self, index: usize) -> bool {
-        if !self.view_menu_open || index > 12 || self.view_menu_index == index {
+        if !self.view_menu_open
+            || index > crate::actions::VIEW_MENU_LAST
+            || self.view_menu_index == index
+        {
             return false;
         }
         self.view_menu_index = index;
-        self.view_theme_submenu_open = index == 10;
-        self.view_show_submenu_open = index == 11;
+        self.view_theme_submenu_open = index == crate::actions::VIEW_MENU_THEME;
+        self.view_show_submenu_open = index == crate::actions::VIEW_MENU_SHOW;
         true
     }
 
@@ -4275,6 +4412,7 @@ impl AppViewState {
         settings.extension_view_id = None;
         settings.icon_size = explorer_model::default_icon_size_for_mode(mode);
         self.close_view_menu();
+        self.release_closed_preview_focus();
     }
 
     /// Stores the extension view identity while retaining the last built-in
@@ -4319,6 +4457,9 @@ impl AppViewState {
             (explorer_model::ViewMode::ExtraLargeIcons, 384),
             (explorer_model::ViewMode::ExtraLargeIcons, 512),
         ];
+        if self.tabs.active_tab().view.settings.mode == explorer_model::ViewMode::Columns {
+            return;
+        }
         let current = self.tabs.active_tab().view.settings.clone();
         let index = LEVELS
             .iter()
@@ -4924,12 +5065,33 @@ impl AppViewState {
     }
 
     pub(crate) fn toggle_preview_pane(&mut self) {
-        let settings = &mut self.tabs.active_tab_mut().view.settings;
-        settings.preview_pane = !settings.preview_pane;
-        if settings.preview_pane {
-            settings.details_pane = false;
+        if self.effective_view_mode() == explorer_model::ViewMode::Columns {
+            let settings = &mut self.tabs.active_tab_mut().view.settings;
+            settings.column_preview_visible = !settings.column_preview_visible;
+            self.sync_column_horizontal_reveal();
+        } else {
+            let settings = &mut self.tabs.active_tab_mut().view.settings;
+            settings.preview_pane = !settings.preview_pane;
+            if settings.preview_pane {
+                settings.details_pane = false;
+            }
+            self.side_pane_resize = None;
         }
-        self.side_pane_resize = None;
+        self.release_closed_preview_focus();
+    }
+
+    fn release_closed_preview_focus(&mut self) {
+        if self.focus.current() == FocusSurface::PreviewPane && !self.column_preview_open() {
+            self.focus(FocusSurface::FileView);
+        }
+    }
+
+    fn preview_focus_or_file_view(&self, surface: FocusSurface) -> FocusSurface {
+        if surface == FocusSurface::PreviewPane && !self.column_preview_open() {
+            FocusSurface::FileView
+        } else {
+            surface
+        }
     }
 
     pub(crate) fn begin_side_pane_resize(&mut self, pointer_x: f32) -> bool {
@@ -5666,6 +5828,15 @@ impl AppViewState {
         location: LocationDescriptor,
         refresh: bool,
     ) -> Option<ExplorerCommand> {
+        let tab_id = self.tabs.active_tab_id();
+        let stale_column_target = self.column_branches.get(tab_id).is_some_and(|branch| {
+            branch
+                .pending_navigation()
+                .is_some_and(|pending| pending != &location)
+        });
+        if stale_column_target && let Some(branch) = self.column_branches.get_mut(tab_id) {
+            branch.clear_pending_navigation();
+        }
         self.reveal_favorites_navigation(&location);
         self.dismiss_bookmark_browse_menus();
         self.clear_file_view_typeahead();
@@ -6188,6 +6359,17 @@ impl AppViewState {
         reason = "the correlated window reducer keeps all mutually exclusive service terminals in one audited dispatch"
     )]
     pub(crate) fn apply_service_event(&mut self, event: ExplorerEvent) -> WindowEventOutcome {
+        if matches!(
+            event,
+            ExplorerEvent::ColumnDirectoryBatch { .. }
+                | ExplorerEvent::ColumnDirectoryFinished { .. }
+        ) {
+            return if self.apply_column_event(&event) {
+                WindowEventOutcome::Applied
+            } else {
+                WindowEventOutcome::IgnoredStale
+            };
+        }
         if let ExplorerEvent::ChildContainersFinished {
             context,
             segment_id,
@@ -6660,6 +6842,7 @@ impl AppViewState {
                     })
             {
                 self.directory_cache.insert(&location, snapshot);
+                self.finish_column_pending_selection(tab_id);
             }
             if let Some(tab_id) = resolved_tab {
                 self.details_filters.entry(tab_id).or_default().clear_all();
@@ -6898,19 +7081,14 @@ impl AppViewState {
         if !self.active_presentation().can_write {
             return None;
         }
-        let parent = self.tabs.active_tab().history.current()?.location.clone();
-        let existing = self
-            .tabs
-            .active_tab()
-            .visible_snapshot()
-            .map(|snapshot| {
-                snapshot
-                    .entries()
-                    .iter()
-                    .map(|entry| entry.display_name.to_lowercase())
-                    .collect::<HashSet<_>>()
-            })
-            .unwrap_or_default();
+        let parent = self.column_command_parent().or_else(|| {
+            self.tabs
+                .active_tab()
+                .history
+                .current()
+                .map(|entry| entry.location.clone())
+        })?;
+        let existing = self.command_parent_names();
         let mut name = "New folder".to_owned();
         for ordinal in 2..=10_000_u32 {
             if !existing.contains(&name.to_lowercase()) {
@@ -6932,20 +7110,15 @@ impl AppViewState {
             return None;
         }
         let descriptor = self.new_items.get(index)?;
-        let parent = self.tabs.active_tab().history.current()?.location.clone();
+        let parent = self.column_command_parent().or_else(|| {
+            self.tabs
+                .active_tab()
+                .history
+                .current()
+                .map(|entry| entry.location.clone())
+        })?;
         let extension = descriptor.extension.as_deref().unwrap_or("");
-        let existing = self
-            .tabs
-            .active_tab()
-            .visible_snapshot()
-            .map(|snapshot| {
-                snapshot
-                    .entries()
-                    .iter()
-                    .map(|entry| entry.display_name.to_lowercase())
-                    .collect::<HashSet<_>>()
-            })
-            .unwrap_or_default();
+        let existing = self.command_parent_names();
         let mut name = format!("{}{}", descriptor.default_stem, extension);
         for ordinal in 2..=10_000_u32 {
             if !existing.contains(&name.to_lowercase()) {
@@ -6990,6 +7163,9 @@ impl AppViewState {
     /// the first visible row as current. Establish that same row as the selection before opening
     /// the editor so F2 remains deterministic immediately after switching directories.
     pub(crate) fn begin_focused_inline_rename(&mut self) -> bool {
+        if self.effective_view_mode() == explorer_model::ViewMode::Columns {
+            return self.begin_active_column_rename();
+        }
         let row_index = self
             .focused_row_index()
             .or_else(|| (self.visible_row_count() > 0).then_some(0));
@@ -7233,6 +7409,17 @@ impl AppViewState {
         Some((parent, name, entry.display_name))
     }
 
+    fn invalidate_directory_projections(&self) {
+        self.presentation_cache
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clear();
+        self.column_projection_cache
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .invalidate();
+    }
+
     pub(crate) fn directory_presentation(&self) -> Option<crate::file_view::DirectoryPresentation> {
         let tab = self.tabs.active_tab();
         let snapshot = tab.visible_snapshot()?;
@@ -7249,15 +7436,34 @@ impl AppViewState {
                     .cloned()
                     .unwrap_or_default(),
             );
-        if tab.view.settings.sort.column
-            == crate::folder_size_column::folder_size_column_descriptor().id
-        {
-            Some(presentation.sorted_by_extension_bytes(
-                &self.folder_size_sort_values,
-                tab.view.settings.sort.direction,
-            ))
-        } else if tab.view.settings.sort.column == explorer_model::ColumnId::Size {
-            let mut values = self.folder_size_sort_values.clone();
+        Some(Self::finish_directory_presentation(
+            snapshot,
+            presentation,
+            &tab.view.settings.sort,
+            &self.folder_size_sort_values,
+            &self.builtin_count_sort_values,
+            &self.code_lines_sort_values,
+        ))
+    }
+
+    fn finish_directory_presentation(
+        snapshot: &DirectorySnapshot,
+        presentation: crate::file_view::DirectoryPresentation,
+        sort: &explorer_model::SortDescriptor,
+        folder_size_sort_values: &HashMap<ShellItemId, Option<u64>>,
+        builtin_count_sort_values: &HashMap<
+            explorer_model::ColumnId,
+            HashMap<ShellItemId, Option<u64>>,
+        >,
+        code_lines_sort_values: &HashMap<
+            explorer_model::ColumnId,
+            HashMap<ShellItemId, Option<u64>>,
+        >,
+    ) -> crate::file_view::DirectoryPresentation {
+        if sort.column == crate::folder_size_column::folder_size_column_descriptor().id {
+            presentation.sorted_by_extension_bytes(folder_size_sort_values, sort.direction)
+        } else if sort.column == explorer_model::ColumnId::Size {
+            let mut values = folder_size_sort_values.clone();
             for entry in snapshot.entries() {
                 if !crate::folder_size_column::applies_to_shell_entry(
                     entry.is_container,
@@ -7266,19 +7472,13 @@ impl AppViewState {
                     values.insert(entry.id.clone(), entry.metadata.size_bytes);
                 }
             }
-            Some(presentation.sorted_by_extension_bytes(&values, tab.view.settings.sort.direction))
-        } else if let Some(values) = self
-            .builtin_count_sort_values
-            .get(&tab.view.settings.sort.column)
-        {
-            Some(presentation.sorted_by_extension_bytes(values, tab.view.settings.sort.direction))
-        } else if let Some(values) = self
-            .code_lines_sort_values
-            .get(&tab.view.settings.sort.column)
-        {
-            Some(presentation.sorted_by_extension_bytes(values, tab.view.settings.sort.direction))
+            presentation.sorted_by_extension_bytes(&values, sort.direction)
+        } else if let Some(values) = builtin_count_sort_values.get(&sort.column) {
+            presentation.sorted_by_extension_bytes(values, sort.direction)
+        } else if let Some(values) = code_lines_sort_values.get(&sort.column) {
+            presentation.sorted_by_extension_bytes(values, sort.direction)
         } else {
-            Some(presentation)
+            presentation
         }
     }
 
@@ -7331,6 +7531,7 @@ impl AppViewState {
     pub(crate) fn clear_selection(&mut self) {
         self.pending_leave_selection = None;
         self.tabs.active_tab_mut().selection.clear();
+        self.clear_column_branch_selection();
     }
 
     pub(crate) fn focused_row_index(&self) -> Option<usize> {
@@ -7368,11 +7569,15 @@ impl AppViewState {
 
     pub(crate) fn begin_context_item_gesture(
         &mut self,
+        column_index: Option<usize>,
         item_id: ShellItemId,
         x: f32,
         y: f32,
         extended_verbs: bool,
     ) -> bool {
+        if let Some(column_index) = column_index {
+            return self.begin_column_context_gesture(column_index, item_id, x, y, extended_verbs);
+        }
         if !self.presentation_ids().iter().any(|id| id == &item_id) {
             return false;
         }
@@ -7430,7 +7635,9 @@ impl AppViewState {
             return None;
         }
         let tab = self.tabs.active_tab();
-        let parent = tab.history.current()?.location.clone();
+        let parent = self
+            .column_command_parent()
+            .or_else(|| tab.history.current().map(|entry| entry.location.clone()))?;
         let context = RequestContext::new(tab.id, tab.generation);
         let item_id = if item_id.is_some() && !keyboard_invoked {
             let item_id = self.pending_context_hit.take().or(item_id);
@@ -7440,7 +7647,14 @@ impl AppViewState {
             item_id
         };
         let target = if let Some(item_id) = item_id {
-            if !tab.selection.contains(&item_id) {
+            let contains = if self.effective_view_mode() == explorer_model::ViewMode::Columns {
+                self.column_branches
+                    .get(tab.id)
+                    .is_some_and(|branch| branch.selected_ids().contains(&item_id))
+            } else {
+                tab.selection.contains(&item_id)
+            };
+            if !contains {
                 return None;
             }
             let items = self.selected_items();
@@ -7802,11 +8016,11 @@ impl AppViewState {
             return None;
         }
         let context = RequestContext::new(tab.id, tab.generation);
+        let parent = self
+            .column_command_parent()
+            .or_else(|| tab.history.current().map(|entry| entry.location.clone()))?;
         let request = explorer_model::ContextMenuRequest {
-            target: explorer_model::ShellContextMenuTarget::Items {
-                parent: tab.history.current()?.location.clone(),
-                items,
-            },
+            target: explorer_model::ShellContextMenuTarget::Items { parent, items },
             owner_window,
             point: explorer_model::MenuPoint { x: 0, y: 0 },
             keyboard_invoked: true,
@@ -7822,6 +8036,9 @@ impl AppViewState {
     }
 
     fn selected_items(&self) -> Vec<ItemDescriptor> {
+        if let Some(items) = self.column_operation_items() {
+            return items;
+        }
         let tab = self.tabs.active_tab();
         let Some(snapshot) = tab.visible_snapshot() else {
             return Vec::new();
@@ -7881,6 +8098,17 @@ impl AppViewState {
         &self,
         command: explorer_model::NamespaceCommand,
     ) -> bool {
+        if self.effective_view_mode() == explorer_model::ViewMode::Columns {
+            let entries = self.column_bridge_entries();
+            return !entries.is_empty()
+                && entries.iter().all(|entry| {
+                    explorer_model::namespace_command_enabled(
+                        &explorer_model::NamespaceAvailability::Available,
+                        entry.metadata.namespace_capabilities,
+                        command,
+                    )
+                });
+        }
         let tab = self.tabs.active_tab();
         let directory = tab.visible_directory_state();
         let Some(snapshot) = directory.snapshot() else {
@@ -8021,6 +8249,7 @@ impl AppViewState {
         }
         // The gesture is a drag, not a click. Keep every selected item in the payload.
         self.pending_click_selection = None;
+        self.commit_column_drag_source();
         let items = self.selected_items();
         if items.is_empty() {
             let _ = self
@@ -8083,6 +8312,25 @@ impl AppViewState {
         right_button: bool,
         allowed: explorer_model::TransferEffects,
     ) {
+        self.queue_external_drop_resolved(
+            paths,
+            destination_row,
+            None,
+            effect,
+            right_button,
+            allowed,
+        );
+    }
+
+    fn queue_external_drop_resolved(
+        &mut self,
+        paths: Vec<std::path::PathBuf>,
+        destination_row: Option<usize>,
+        explicit_destination: Option<LocationDescriptor>,
+        effect: explorer_model::DragEffect,
+        right_button: bool,
+        allowed: explorer_model::TransferEffects,
+    ) {
         self.drop_target_row = None;
         self.drag_session.reset();
         let item_destination = destination_row
@@ -8090,8 +8338,9 @@ impl AppViewState {
             .filter(|entry| entry.is_container)
             .map(|entry| entry.location);
         let tab = self.tabs.active_tab();
-        let destination =
-            item_destination.or_else(|| tab.history.current().map(|entry| entry.location.clone()));
+        let destination = explicit_destination
+            .or(item_destination)
+            .or_else(|| tab.history.current().map(|entry| entry.location.clone()));
         let Some(destination) = destination else {
             tracing::warn!(
                 target = ?explorer_model::DropTargetKind::FileView,
@@ -8295,7 +8544,13 @@ impl AppViewState {
         if !self.active_presentation().can_write {
             return None;
         }
-        let destination = self.tabs.active_tab().history.current()?.location.clone();
+        let destination = self.column_paste_destination().or_else(|| {
+            self.tabs
+                .active_tab()
+                .history
+                .current()
+                .map(|entry| entry.location.clone())
+        })?;
         let (items, total_items, mode) = match &self.clipboard {
             explorer_model::ClipboardState::Owned { items, mode, .. } => {
                 (items.clone(), items.len(), *mode)
@@ -8480,15 +8735,7 @@ impl AppViewState {
         let edited_name = editor.buffer.clone();
         let invalid_folder_name = self.catalog().t("status-invalid-folder-name");
         let name_conflict = self.catalog().t("status-name-conflict");
-        let collision = self
-            .tabs
-            .active_tab()
-            .visible_snapshot()
-            .is_some_and(|snapshot| {
-                snapshot.entries().iter().any(|entry| {
-                    entry.id != edited_id && entry.display_name.eq_ignore_ascii_case(&edited_name)
-                })
-            });
+        let collision = self.rename_name_collides(&edited_id, &edited_name);
         let Some(editor) = self.rename_editor.as_mut() else {
             return Ok(None);
         };
@@ -8669,7 +8916,13 @@ impl AppViewState {
     }
 
     pub fn active_presentation(&self) -> TabPresentationSnapshot {
-        self.tabs.active_presentation()
+        let mut presentation = self.tabs.active_presentation();
+        if self.effective_view_mode() == explorer_model::ViewMode::Columns
+            && let Some(count) = self.column_selection_count()
+        {
+            presentation.selected_count = count;
+        }
+        presentation
     }
 
     pub fn command_availability(&self) -> CommandAvailability {
@@ -8716,9 +8969,9 @@ impl AppViewState {
     }
 
     pub(crate) fn traverse_focus(&mut self, direction: FocusDirection) -> bool {
-        let preview_pane = self.view_settings().preview_pane;
+        let preview_open = self.column_preview_open();
         let moved = self.focus.traverse(direction, |surface| {
-            surface != FocusSurface::PreviewPane || preview_pane
+            surface != FocusSurface::PreviewPane || preview_open
         });
         if moved {
             if self.focus.current() != FocusSurface::FileView {
@@ -8793,7 +9046,8 @@ impl AppViewState {
             .get(&id)
             .copied()
             .unwrap_or(FocusSurface::FileView);
-        self.focus.restore_context(target);
+        self.focus
+            .restore_context(self.preview_focus_or_file_view(target));
         true
     }
 
@@ -8832,7 +9086,8 @@ impl AppViewState {
                     .get(&active)
                     .copied()
                     .unwrap_or(FocusSurface::FileView);
-                self.focus.restore_context(target);
+                self.focus
+                    .restore_context(self.preview_focus_or_file_view(target));
             }
         }
         if outcome == TabCloseOutcome::CloseWindow {
@@ -9262,19 +9517,2150 @@ fn navigation_locations_for_operation(request: &FileOperationRequest) -> Vec<Loc
     }
 }
 
+impl AppViewState {
+    #[cfg(test)]
+    pub(crate) fn set_drive_kind(&mut self, letter: char, kind: explorer_model::DriveKind) {
+        self.drive_kinds.insert(letter.to_ascii_uppercase(), kind);
+    }
+
+    pub(crate) fn drive_kind_for(
+        &self,
+        location: &LocationDescriptor,
+    ) -> explorer_model::DriveKind {
+        let Some(path) = location.path() else {
+            return explorer_model::DriveKind::Unknown;
+        };
+        let letter = path
+            .to_string_lossy()
+            .chars()
+            .find(|character| character.is_ascii_alphabetic())
+            .map(|character| character.to_ascii_uppercase());
+        if let Some(letter) = letter
+            && let Some(kind) = self.drive_kinds.get(&letter)
+        {
+            return *kind;
+        }
+        crate::column_view::probe_drive_kind(path)
+    }
+
+    pub(crate) fn columns_menu_enabled(&self) -> bool {
+        self.tabs
+            .active_tab()
+            .history
+            .current()
+            .is_some_and(|entry| {
+                explorer_model::columns_location_eligible(
+                    &entry.location,
+                    self.drive_kind_for(&entry.location),
+                )
+            })
+    }
+
+    pub(crate) fn effective_view_mode(&self) -> explorer_model::ViewMode {
+        let tab = self.tabs.active_tab();
+        let location = tab.history.current().map(|entry| &entry.location);
+        let media = location
+            .map(|location| self.drive_kind_for(location))
+            .unwrap_or(explorer_model::DriveKind::Unknown);
+        explorer_model::effective_view_mode(tab.view.settings.mode, location, media)
+    }
+
+    pub(crate) fn column_preview_open(&self) -> bool {
+        if self.effective_view_mode() == explorer_model::ViewMode::Columns {
+            self.view_settings().column_preview_visible
+        } else {
+            self.view_settings().preview_pane
+        }
+    }
+
+    pub(crate) fn ensure_column_branch(&mut self) {
+        if self.effective_view_mode() != explorer_model::ViewMode::Columns {
+            self.sync_column_horizontal_reveal();
+            return;
+        }
+        let tab = self.tabs.active_tab();
+        let Some(current) = tab.history.current() else {
+            self.sync_column_horizontal_reveal();
+            return;
+        };
+        let tab_id = tab.id;
+        let location = current.location.clone();
+        let width = self.view_settings().column_width;
+        let saved = self.view_settings().column_widths.clone();
+        let aligned = self
+            .column_branches
+            .get(tab_id)
+            .is_some_and(|branch| branch.navigated_location() == Some(&location));
+        // A column click moves the branch before history commits. Hold that branch
+        // while its own load or failure is still the directory result. Other
+        // navigations realign, and a removed descendant must not be rebuilt.
+        let hold_column_click = matches!(
+            tab.directory,
+            DirectoryState::Loading { .. } | DirectoryState::Error { .. }
+        ) && self.column_branches.get(tab_id).is_some_and(|branch| {
+            branch.pending_navigation() == branch.navigated_location()
+                && branch
+                    .pending_navigation()
+                    .is_some_and(|pending| pending != &location)
+        });
+        if aligned {
+            if let Some(branch) = self.column_branches.get_mut(tab_id) {
+                branch.clear_pending_navigation();
+            }
+        } else if !hold_column_click {
+            let mut branch = self
+                .column_branches
+                .get(tab_id)
+                .cloned()
+                .unwrap_or_else(|| {
+                    explorer_model::ColumnBranch::from_location(location.clone(), width)
+                });
+            branch.align_to_location(location, width, Some(&saved));
+            branch.clear_pending_navigation();
+            self.column_branches.insert(tab_id, branch);
+        }
+        self.sync_column_horizontal_reveal();
+    }
+
+    #[cfg(test)]
+    pub(crate) fn column_strip_model(&self) -> Option<crate::column_view::ColumnStripModel> {
+        self.column_strip_model_for_viewport(0.0)
+    }
+
+    /// `fallback_viewport` is the window height used before the list has been measured.
+    pub(crate) fn column_strip_model_for_viewport(
+        &self,
+        fallback_viewport: f32,
+    ) -> Option<crate::column_view::ColumnStripModel> {
+        if self.effective_view_mode() != explorer_model::ViewMode::Columns {
+            return None;
+        }
+        let (tab_id, preview_visible, preview_width) = {
+            let tab = self.tabs.active_tab();
+            (
+                tab.id,
+                tab.view.settings.column_preview_visible,
+                tab.view.settings.column_preview_width,
+            )
+        };
+        let (level_count, active, horizontal_offset, selected_ids, widths) = {
+            let branch = self.column_branches.get(tab_id)?;
+            (
+                branch.levels().len(),
+                branch.active_index(),
+                branch.horizontal_offset(),
+                branch.selected_ids().to_vec(),
+                branch
+                    .levels()
+                    .iter()
+                    .map(|level| f32::from(level.width))
+                    .collect::<Vec<_>>(),
+            )
+        };
+        let viewport = self.column_row_viewport(fallback_viewport);
+        let visible_columns = self.column_horizontal_row_targets(&widths);
+        let mut panes = Vec::with_capacity(level_count);
+        for index in 0..level_count {
+            let (
+                title,
+                width,
+                vertical_offset,
+                branch_child,
+                auxiliary_status,
+                structural_fault,
+                location,
+            ) = {
+                let level = &self.column_branches.get(tab_id)?.levels()[index];
+                let structural_fault = match &level.phase {
+                    explorer_model::ColumnPhase::Error(
+                        fault @ (explorer_model::ColumnFault::Cycle
+                        | explorer_model::ColumnFault::Unsupported),
+                    ) => Some(*fault),
+                    _ => None,
+                };
+                (
+                    level
+                        .location
+                        .path()
+                        .and_then(|path| {
+                            path.file_name()
+                                .map(|name| name.to_string_lossy().into_owned())
+                        })
+                        .unwrap_or_else(|| level.location.editable_text()),
+                    f32::from(level.width),
+                    level.vertical_offset,
+                    level.branch_child.clone(),
+                    crate::column_view::auxiliary_column_status(
+                        &level.phase,
+                        level.request_id.is_some(),
+                    ),
+                    structural_fault,
+                    level.location.clone(),
+                )
+            };
+            let snapshot = self.column_directory_snapshot(index);
+            let presentation = snapshot
+                .as_ref()
+                .map(|snapshot| self.project_column_snapshot(snapshot));
+            let (status, status_detail) =
+                self.column_pane_status(&location, auxiliary_status, structural_fault);
+            let row_count = presentation
+                .as_ref()
+                .map_or(0, |presentation| presentation.len());
+            let rename_index = presentation
+                .as_ref()
+                .and_then(|presentation| self.column_rename_row_index(&location, presentation));
+            let selected: &[ShellItemId] = if index == active {
+                selected_ids.as_slice()
+            } else {
+                &[]
+            };
+            let (row_origin, rows, pinned_row) = presentation.as_ref().map_or_else(
+                || (0, Vec::new(), None),
+                |presentation| {
+                    materialize_column_window(
+                        presentation,
+                        row_count,
+                        vertical_offset,
+                        viewport,
+                        selected,
+                        branch_child.as_ref(),
+                        rename_index,
+                        visible_columns.contains(&index),
+                    )
+                },
+            );
+            panes.push(crate::column_view::ColumnPaneModel {
+                index,
+                title,
+                directory: location,
+                width,
+                vertical_offset,
+                row_count,
+                row_origin,
+                rows,
+                pinned_row,
+                status,
+                status_detail,
+            });
+        }
+        let (preview_title, preview_detail, preview_status, preview_route) =
+            self.column_preview_text();
+        Some(crate::column_view::ColumnStripModel {
+            panes,
+            active,
+            horizontal_offset,
+            preview_visible,
+            preview_width: f32::from(preview_width),
+            file_surface_width: self.column_file_viewport_width,
+            list_viewport_height: self.column_list_viewport_height,
+            preview_title,
+            preview_detail,
+            preview_status,
+            preview_route,
+        })
+    }
+
+    fn column_row_viewport(&self, fallback: f32) -> f32 {
+        if self.column_list_viewport_height > 1.0 {
+            self.column_list_viewport_height
+        } else if fallback.is_finite() && fallback > 1.0 {
+            fallback
+        } else {
+            32.0 * crate::column_view::COLUMN_ROW_HEIGHT
+        }
+    }
+
+    /// Columns whose rows are built. An unmeasured strip keeps every column's
+    /// vertical window so the first frame is not blank.
+    fn column_horizontal_row_targets(&self, widths: &[f32]) -> std::ops::Range<usize> {
+        if widths.is_empty() {
+            return 0..0;
+        }
+        let span = self.column_strip_span();
+        if span <= 1.0 {
+            return 0..widths.len();
+        }
+        let offset = self
+            .column_branches
+            .get(self.tabs.active_tab_id())
+            .map(|branch| branch.horizontal_offset())
+            .unwrap_or(0.0);
+        explorer_model::visible_column_range(widths, offset, span)
+    }
+
+    fn column_rename_row_index(
+        &self,
+        column_location: &LocationDescriptor,
+        presentation: &crate::file_view::DirectoryPresentation,
+    ) -> Option<usize> {
+        let editor = self.rename_editor.as_ref()?;
+        let parent = editor.item.location.path().and_then(|path| path.parent())?;
+        if column_location.path()? != parent {
+            return None;
+        }
+        presentation.visible_position(&editor.item.id)
+    }
+
+    fn column_pane_status(
+        &self,
+        location: &LocationDescriptor,
+        auxiliary_status: crate::column_view::ColumnPaneStatus,
+        structural_fault: Option<explorer_model::ColumnFault>,
+    ) -> (crate::column_view::ColumnPaneStatus, Option<String>) {
+        if self.column_live_directory_location().as_ref() == Some(location) {
+            // Cycle and unsupported are column-structure faults, not directory results.
+            if let Some(fault) = structural_fault {
+                return (crate::column_view::ColumnPaneStatus::Error(fault), None);
+            }
+            return crate::column_view::directory_column_status(&self.tabs.active_tab().directory);
+        }
+        // A cached or partial listing must not hide Pending, Loading, Empty, or Error.
+        (auxiliary_status, None)
+    }
+
+    pub(crate) fn column_selected_entries(&self) -> Vec<explorer_model::FileEntry> {
+        self.column_bridge_entries()
+    }
+
+    /// One selected file, folder, or nothing. Multiple and empty selections are not a preview target.
+    pub(crate) fn integrated_preview_entry(&self) -> Option<explorer_model::FileEntry> {
+        if self.effective_view_mode() == explorer_model::ViewMode::Columns {
+            let selected = self.column_selected_entries();
+            return (selected.len() == 1)
+                .then(|| selected.into_iter().next())
+                .flatten();
+        }
+        let tab = self.tabs.active_tab();
+        (tab.selection.len() == 1)
+            .then(|| tab.visible_snapshot())
+            .flatten()
+            .and_then(|snapshot| {
+                snapshot
+                    .entries()
+                    .iter()
+                    .find(|entry| tab.selection.contains(&entry.id))
+                    .cloned()
+            })
+    }
+
+    fn column_selection_count(&self) -> Option<usize> {
+        self.column_branches.get(self.tabs.active_tab_id())?;
+        Some(self.column_bridge_entries().len())
+    }
+
+    fn column_bridge_entries(&self) -> Vec<explorer_model::FileEntry> {
+        if self.effective_view_mode() != explorer_model::ViewMode::Columns {
+            return Vec::new();
+        }
+        let tab_id = self.tabs.active_tab_id();
+        let Some((active, selected)) = self
+            .column_branches
+            .get(tab_id)
+            .map(|branch| (branch.active_index(), branch.selected_ids().to_vec()))
+        else {
+            return Vec::new();
+        };
+        if selected.is_empty() {
+            return Vec::new();
+        }
+        let Some(presentation) = self.column_visible_projection(active) else {
+            return Vec::new();
+        };
+        selected
+            .iter()
+            .filter_map(|id| presentation.visible_entry(id).cloned())
+            .collect()
+    }
+
+    pub(crate) fn preview_target_matches(&self, item_id: &ShellItemId) -> bool {
+        if self.effective_view_mode() == explorer_model::ViewMode::Columns {
+            let selected = self.column_selected_entries();
+            return selected.len() == 1 && selected[0].id == *item_id;
+        }
+        let tab = self.tabs.active_tab();
+        tab.selection.len() == 1 && tab.selection.contains(item_id)
+    }
+
+    pub(crate) fn visible_column_entries(
+        &self,
+        viewport_height: f32,
+    ) -> Vec<explorer_model::FileEntry> {
+        if self.effective_view_mode() != explorer_model::ViewMode::Columns {
+            return Vec::new();
+        }
+        let tab_id = self.tabs.active_tab_id();
+        let Some((widths, offsets)) = self.column_branches.get(tab_id).map(|branch| {
+            let widths = branch
+                .levels()
+                .iter()
+                .map(|level| f32::from(level.width))
+                .collect::<Vec<_>>();
+            let offsets = branch
+                .levels()
+                .iter()
+                .map(|level| level.vertical_offset)
+                .collect::<Vec<_>>();
+            (widths, offsets)
+        }) else {
+            return Vec::new();
+        };
+        let viewport = self.column_row_viewport(viewport_height);
+        let targets = self.column_horizontal_row_targets(&widths);
+        let mut on_screen = Vec::new();
+        let mut overscan = Vec::new();
+        for index in targets {
+            let Some(presentation) = self.column_visible_projection(index) else {
+                continue;
+            };
+            let offset = offsets.get(index).copied().unwrap_or(0.0);
+            let realized = crate::file_view::fixed_virtual_range(
+                presentation.len(),
+                crate::column_view::COLUMN_ROW_HEIGHT,
+                viewport,
+                offset,
+                crate::column_view::COLUMN_ROW_OVERSCAN_VIEWPORTS,
+            );
+            let visible = crate::file_view::fixed_virtual_range(
+                presentation.len(),
+                crate::column_view::COLUMN_ROW_HEIGHT,
+                viewport,
+                offset,
+                0,
+            );
+            for ordinal in realized.items {
+                let Some((_, entry)) = presentation.entry(ordinal) else {
+                    continue;
+                };
+                if visible.items.contains(&ordinal) {
+                    on_screen.push(entry.clone());
+                } else {
+                    overscan.push(entry.clone());
+                }
+            }
+        }
+        on_screen.append(&mut overscan);
+        on_screen.truncate(crate::column_view::COLUMN_ICON_CANDIDATE_LIMIT);
+        on_screen
+    }
+
+    pub(crate) fn column_ancestors_should_wait(&self) -> bool {
+        matches!(
+            &self.tabs.active_tab().directory,
+            DirectoryState::Loading { snapshot, .. } if snapshot.entries().is_empty()
+        )
+    }
+
+    fn column_preview_text(
+        &self,
+    ) -> (
+        String,
+        String,
+        String,
+        crate::column_view::ColumnPreviewRoute,
+    ) {
+        let catalog = self.catalog();
+        let entries = self.column_selected_entries();
+        let route = crate::column_view::column_preview_route(&entries);
+        let status = catalog.t(crate::column_view::column_preview_chrome(
+            route,
+            false,
+            false,
+            crate::column_view::ColumnHandlerPhase::Inactive,
+        )
+        .status_id);
+        let named = |entry: &explorer_model::FileEntry| -> (String, String) {
+            let name = if entry.display_name.is_empty() {
+                entry
+                    .location
+                    .path()
+                    .and_then(|path| path.file_name())
+                    .map(|name| name.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| entry.location.editable_text())
+            } else {
+                entry.display_name.clone()
+            };
+            (name, entry.location.editable_text())
+        };
+        match (&route, entries.as_slice()) {
+            (crate::column_view::ColumnPreviewRoute::None, _) => (
+                catalog.t("column-preview-empty"),
+                String::new(),
+                status,
+                route,
+            ),
+            (crate::column_view::ColumnPreviewRoute::Multiple, _) => (
+                catalog.t("column-preview-multiple"),
+                String::new(),
+                status,
+                route,
+            ),
+            (_, [entry]) => {
+                let (name, detail) = named(entry);
+                (name, detail, status, route)
+            }
+            _ => (
+                catalog.t("column-preview-empty"),
+                String::new(),
+                status,
+                route,
+            ),
+        }
+    }
+
+    fn column_operation_items(&self) -> Option<Vec<ItemDescriptor>> {
+        if self.effective_view_mode() != explorer_model::ViewMode::Columns {
+            return None;
+        }
+        if self
+            .column_branches
+            .get(self.tabs.active_tab_id())
+            .is_none()
+        {
+            return None;
+        }
+        Some(
+            self.column_bridge_entries()
+                .into_iter()
+                .map(|entry| ItemDescriptor {
+                    id: entry.id,
+                    location: entry.location,
+                })
+                .collect(),
+        )
+    }
+
+    pub(crate) fn column_keyboard_context_hit(&self) -> Option<(usize, Option<ShellItemId>)> {
+        if self.effective_view_mode() != explorer_model::ViewMode::Columns {
+            return None;
+        }
+        let branch = self.column_branches.get(self.tabs.active_tab_id())?;
+        Some((branch.active_index(), branch.selected_ids().last().cloned()))
+    }
+
+    pub(crate) fn column_command_parent(&self) -> Option<LocationDescriptor> {
+        if self.effective_view_mode() != explorer_model::ViewMode::Columns {
+            return None;
+        }
+        self.column_branches
+            .get(self.tabs.active_tab_id())
+            .and_then(|branch| branch.active_location().cloned())
+    }
+
+    /// Paste target for the active column. One selected folder receives the files;
+    /// a file, a multi-selection, or an empty column uses that column's directory.
+    pub(crate) fn column_paste_destination(&self) -> Option<LocationDescriptor> {
+        if self.effective_view_mode() != explorer_model::ViewMode::Columns {
+            return None;
+        }
+        let selected = self.column_bridge_entries();
+        if let [entry] = selected.as_slice()
+            && entry.is_container
+        {
+            return Some(entry.location.clone());
+        }
+        self.column_command_parent()
+    }
+
+    fn command_parent_names(&self) -> HashSet<String> {
+        if let Some(parent) = self.column_command_parent() {
+            let tab_id = self.tabs.active_tab_id();
+            let column = self.column_branches.get(tab_id).and_then(|branch| {
+                branch
+                    .levels()
+                    .iter()
+                    .position(|level| level.location == parent)
+            });
+            if let Some(column) = column
+                && let Some(presentation) = self.column_visible_projection(column)
+            {
+                return (0..presentation.len())
+                    .filter_map(|index| {
+                        presentation
+                            .entry(index)
+                            .map(|(_, entry)| entry.display_name.to_lowercase())
+                    })
+                    .collect();
+            }
+        }
+        self.tabs
+            .active_tab()
+            .visible_snapshot()
+            .map(|snapshot| {
+                snapshot
+                    .entries()
+                    .iter()
+                    .map(|entry| entry.display_name.to_lowercase())
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    fn begin_active_column_rename(&mut self) -> bool {
+        if !self.active_presentation().can_write {
+            return false;
+        }
+        let tab_id = self.tabs.active_tab_id();
+        let Some((column, item_id)) = self.column_branches.get(tab_id).and_then(|branch| {
+            Some((
+                branch.active_index(),
+                branch.selected_ids().last().cloned()?,
+            ))
+        }) else {
+            return false;
+        };
+        let Some(entry) = self.column_visible_entry(column, &item_id) else {
+            return false;
+        };
+        self.rename_editor = Some(explorer_model::RenameEditorState::begin(
+            ItemDescriptor {
+                id: entry.id,
+                location: entry.location,
+            },
+            entry.display_name,
+            entry.is_container,
+        ));
+        true
+    }
+
+    fn rename_name_collides(&self, edited_id: &ShellItemId, edited_name: &str) -> bool {
+        if self.effective_view_mode() == explorer_model::ViewMode::Columns {
+            let len = self
+                .column_branches
+                .get(self.tabs.active_tab_id())
+                .map(|branch| branch.levels().len())
+                .unwrap_or(0);
+            for column in 0..len {
+                let Some(presentation) = self.column_visible_projection(column) else {
+                    continue;
+                };
+                let in_column = (0..presentation.len()).any(|index| {
+                    presentation
+                        .entry(index)
+                        .is_some_and(|(_, entry)| &entry.id == edited_id)
+                });
+                if !in_column {
+                    continue;
+                }
+                return (0..presentation.len()).any(|index| {
+                    presentation.entry(index).is_some_and(|(_, entry)| {
+                        &entry.id != edited_id
+                            && entry.display_name.eq_ignore_ascii_case(edited_name)
+                    })
+                });
+            }
+        }
+        self.tabs
+            .active_tab()
+            .visible_snapshot()
+            .is_some_and(|snapshot| {
+                snapshot.entries().iter().any(|entry| {
+                    &entry.id != edited_id && entry.display_name.eq_ignore_ascii_case(edited_name)
+                })
+            })
+    }
+
+    pub(crate) fn column_item_command_enabled(
+        &self,
+        item_id: &ShellItemId,
+        command: explorer_model::NamespaceCommand,
+    ) -> bool {
+        if self.effective_view_mode() != explorer_model::ViewMode::Columns {
+            return false;
+        }
+        let len = self
+            .column_branches
+            .get(self.tabs.active_tab_id())
+            .map(|branch| branch.levels().len())
+            .unwrap_or(0);
+        (0..len).any(|column| {
+            self.column_visible_entry(column, item_id)
+                .is_some_and(|entry| {
+                    explorer_model::namespace_command_enabled(
+                        &explorer_model::NamespaceAvailability::Available,
+                        entry.metadata.namespace_capabilities,
+                        command,
+                    )
+                })
+        })
+    }
+
+    /// Selects the hit column item, or makes a background click that column's paste/menu parent.
+    /// Does not truncate descendant columns.
+    pub(crate) fn prepare_column_context_target(
+        &mut self,
+        column_index: usize,
+        item_id: Option<&ShellItemId>,
+    ) {
+        if self.effective_view_mode() != explorer_model::ViewMode::Columns {
+            return;
+        }
+        let tab_id = self.tabs.active_tab_id();
+        if let Some(item_id) = item_id {
+            if self.column_hides_entry(column_index, item_id) {
+                return;
+            }
+            let kept = self
+                .column_branches
+                .get_mut(tab_id)
+                .is_some_and(|branch| branch.focus_selected_member(column_index, item_id));
+            if !kept && let Some(branch) = self.column_branches.get_mut(tab_id) {
+                branch.select_only(column_index, item_id.clone());
+            }
+        } else if let Some(branch) = self.column_branches.get_mut(tab_id) {
+            if !branch.focus_column(column_index) {
+                return;
+            }
+            branch.clear_selection();
+        }
+        self.mirror_current_column_selection();
+    }
+
+    fn begin_column_context_gesture(
+        &mut self,
+        column_index: usize,
+        item_id: ShellItemId,
+        x: f32,
+        y: f32,
+        extended_verbs: bool,
+    ) -> bool {
+        if self.effective_view_mode() != explorer_model::ViewMode::Columns {
+            return false;
+        }
+        if self.column_hides_entry(column_index, &item_id) {
+            return false;
+        }
+        self.prepare_column_context_target(column_index, Some(&item_id));
+        let selected = self
+            .column_branches
+            .get(self.tabs.active_tab_id())
+            .is_some_and(|branch| branch.selected_ids().contains(&item_id));
+        if !selected {
+            return false;
+        }
+        self.pending_click_selection = None;
+        self.pending_context_hit = Some(item_id);
+        self.pending_context_extended_verbs = extended_verbs;
+        self.begin_drag_candidate(x, y, explorer_model::DragButton::Right)
+    }
+
+    pub(crate) fn press_column_row(
+        &mut self,
+        column_index: usize,
+        item_id: ShellItemId,
+        location: LocationDescriptor,
+        is_container: bool,
+        x: f32,
+        y: f32,
+        shift: bool,
+        control: bool,
+    ) -> bool {
+        if self.effective_view_mode() != explorer_model::ViewMode::Columns {
+            return false;
+        }
+        if self.column_hides_entry(column_index, &item_id) {
+            return false;
+        }
+        let modified = shift || control;
+        if modified {
+            let _ = self.activate_column_item(
+                column_index,
+                item_id.clone(),
+                location.clone(),
+                is_container,
+                shift,
+                control,
+            );
+        }
+        self.pending_column_press = Some(PendingColumnPress {
+            column_index,
+            item_id,
+            location,
+            is_container,
+            shift,
+            control,
+            activate_on_release: !modified,
+        });
+        self.begin_drag_candidate(x, y, explorer_model::DragButton::Left)
+    }
+
+    pub(crate) fn finish_column_press(&mut self) -> Option<ExplorerCommand> {
+        let Some(press) = self.pending_column_press.take() else {
+            return None;
+        };
+        let dragging = matches!(
+            self.drag_session.state(),
+            explorer_model::DragSessionState::Dragging { .. }
+        );
+        if dragging || !press.activate_on_release {
+            return None;
+        }
+        let _ = self.cancel_drag();
+        self.activate_column_item(
+            press.column_index,
+            press.item_id,
+            press.location,
+            press.is_container,
+            press.shift,
+            press.control,
+        )
+    }
+
+    fn commit_column_drag_source(&mut self) {
+        let Some(press) = self.pending_column_press.clone() else {
+            return;
+        };
+        let tab_id = self.tabs.active_tab_id();
+        let keep = self.column_branches.get(tab_id).is_some_and(|branch| {
+            branch.active_index() == press.column_index
+                && branch.selected_ids().contains(&press.item_id)
+        });
+        if !keep && let Some(branch) = self.column_branches.get_mut(tab_id) {
+            branch.select_only(press.column_index, press.item_id);
+        }
+        self.pending_column_press = None;
+        self.mirror_current_column_selection();
+    }
+
+    pub(crate) fn column_drop_destination(
+        &self,
+        column_index: usize,
+        folder_id: Option<&ShellItemId>,
+    ) -> Option<LocationDescriptor> {
+        if self.effective_view_mode() != explorer_model::ViewMode::Columns {
+            return None;
+        }
+        if let Some(folder_id) = folder_id {
+            let entry = self.column_visible_entry(column_index, folder_id)?;
+            if !entry.is_container {
+                return None;
+            }
+            return Some(entry.location);
+        }
+        self.column_branches
+            .get(self.tabs.active_tab_id())
+            .and_then(|branch| branch.levels().get(column_index))
+            .map(|level| level.location.clone())
+    }
+
+    /// Internal column drop keeps the active column's real item ids. Anything else is an
+    /// external path drop onto that same column directory, never the stale navigated folder.
+    pub(crate) fn column_drop_transfer(
+        &mut self,
+        column_index: usize,
+        folder_id: Option<&ShellItemId>,
+        paths: &[std::path::PathBuf],
+        effect: explorer_model::DragEffect,
+        right_button: bool,
+        allowed: explorer_model::TransferEffects,
+    ) -> Option<ExplorerCommand> {
+        if effect == explorer_model::DragEffect::None {
+            return None;
+        }
+        let destination = self.column_drop_destination(column_index, folder_id)?;
+        let selected = self.selected_items();
+        let internal = !selected.is_empty()
+            && selected.len() == paths.len()
+            && paths.iter().all(|path| {
+                selected.iter().any(|item| {
+                    item.location
+                        .path()
+                        .is_some_and(|item_path| item_path == path.as_path())
+                })
+            });
+        if internal && !right_button {
+            if selected.iter().any(|item| item.location == destination) {
+                return None;
+            }
+            let same_parent = selected.iter().all(|item| {
+                item.location
+                    .path()
+                    .and_then(|path| path.parent())
+                    .is_some_and(|parent| {
+                        destination
+                            .path()
+                            .is_some_and(|directory| directory == parent)
+                    })
+            });
+            if same_parent && effect == explorer_model::DragEffect::Move {
+                return None;
+            }
+            let kind = match effect {
+                explorer_model::DragEffect::Copy => FileOperationKind::Copy {
+                    items: selected,
+                    destination,
+                },
+                explorer_model::DragEffect::Move => FileOperationKind::Move {
+                    items: selected,
+                    destination,
+                },
+                explorer_model::DragEffect::None | explorer_model::DragEffect::Link => {
+                    return None;
+                }
+            };
+            return Some(self.queue_file_operation(FileOperationRequest {
+                kind,
+                flags: explorer_model::FileOperationFlags::default(),
+            }));
+        }
+        self.queue_external_drop_resolved(
+            paths.to_vec(),
+            None,
+            Some(destination),
+            effect,
+            right_button,
+            allowed,
+        );
+        self.pending_drag_command.take()
+    }
+
+    pub(crate) fn plan_column_refresh_after_mutation(&mut self) -> Vec<ExplorerCommand> {
+        if self.effective_view_mode() != explorer_model::ViewMode::Columns {
+            return Vec::new();
+        }
+        let tab_id = self.tabs.active_tab_id();
+        let Some(branch) = self.column_branches.get(tab_id) else {
+            return Vec::new();
+        };
+        let last = branch.levels().len().saturating_sub(1);
+        let locations = branch
+            .levels()
+            .iter()
+            .take(last)
+            .map(|level| level.location.clone())
+            .collect::<Vec<_>>();
+        if locations.is_empty() {
+            return Vec::new();
+        }
+        for location in &locations {
+            self.directory_cache.forget(location);
+        }
+        if let Some(branch) = self.column_branches.get_mut(tab_id) {
+            for location in &locations {
+                branch.invalidate_location(location);
+            }
+        }
+        self.plan_column_loads()
+    }
+
+    pub(crate) fn take_pending_column_repair(&mut self) -> Option<ExplorerCommand> {
+        self.pending_column_repair.take()
+    }
+
+    fn reconcile_column_after_load(&mut self, location: &LocationDescriptor) {
+        let tab_id = self.tabs.active_tab_id();
+        let Some(index) = self.column_branches.get(tab_id).and_then(|branch| {
+            branch
+                .levels()
+                .iter()
+                .position(|level| &level.location == location)
+        }) else {
+            return;
+        };
+        let before = self
+            .column_branches
+            .get(tab_id)
+            .map(|branch| branch.levels().len())
+            .unwrap_or(0);
+        let present = self
+            .column_directory_snapshot(index)
+            .map(|snapshot| {
+                snapshot
+                    .entries()
+                    .iter()
+                    .map(|entry| entry.id.clone())
+                    .collect::<HashSet<_>>()
+            })
+            .unwrap_or_default();
+        let (active_before, selected_before) = self
+            .column_branches
+            .get(tab_id)
+            .map(|branch| (branch.active_index(), branch.selected_ids().to_vec()))
+            .unwrap_or((0, Vec::new()));
+        if let Some(branch) = self.column_branches.get_mut(tab_id) {
+            branch.drop_missing_branch_child(index, |id| present.contains(id));
+        }
+        let after = self
+            .column_branches
+            .get(tab_id)
+            .map(|branch| branch.levels().len())
+            .unwrap_or(0);
+        let truncated = after < before;
+        if !truncated
+            && active_before == index
+            && let Some(branch) = self.column_branches.get_mut(tab_id)
+        {
+            let remaining = selected_before
+                .iter()
+                .filter(|id| present.contains(id))
+                .cloned()
+                .collect::<Vec<_>>();
+            if remaining.len() != selected_before.len() {
+                branch.replace_selection(index, remaining);
+            }
+        }
+        self.mirror_current_column_selection();
+        if !truncated {
+            return;
+        }
+        let Some(parent) = self.column_command_parent() else {
+            return;
+        };
+        let history = self
+            .tabs
+            .active_tab()
+            .history
+            .current()
+            .map(|entry| entry.location.clone());
+        if history.as_ref() == Some(&parent) {
+            return;
+        }
+        if let Some(branch) = self.column_branches.get_mut(tab_id) {
+            branch.hold_pending_navigation(parent.clone());
+        }
+        self.pending_column_repair = self.begin_active_navigation(parent, false);
+    }
+
+    pub(crate) fn activate_column_item(
+        &mut self,
+        column_index: usize,
+        item_id: ShellItemId,
+        location: LocationDescriptor,
+        is_container: bool,
+        shift: bool,
+        control: bool,
+    ) -> Option<ExplorerCommand> {
+        self.ensure_column_branch();
+        if self.column_hides_entry(column_index, &item_id) {
+            return None;
+        }
+        let tab_id = self.tabs.active_tab().id;
+        let width = self.view_settings().column_width;
+        let entry = explorer_model::FileEntry {
+            id: item_id,
+            display_name: location
+                .path()
+                .and_then(|path| path.file_name())
+                .map(|name| name.to_string_lossy().into_owned())
+                .unwrap_or_else(|| location.editable_text()),
+            location: location.clone(),
+            is_container,
+            metadata: explorer_model::FileEntryMetadata::default(),
+        };
+        let visual = self.column_visual_row(column_index, &entry.id);
+        let shift_order = if shift && !control {
+            self.column_visible_projection(column_index)
+                .map(|presentation| presentation.visible_ids())
+                .unwrap_or_default()
+        } else {
+            Vec::new()
+        };
+        let handled_modifier = {
+            let branch = self.column_branches.get_mut(tab_id)?;
+            if control {
+                branch.toggle_additional(column_index, entry.id.clone());
+                true
+            } else if shift {
+                branch.select_range(column_index, entry.id.clone(), &shift_order);
+                true
+            } else {
+                false
+            }
+        };
+        if handled_modifier {
+            self.reveal_column_row(column_index, visual);
+            self.mirror_current_column_selection();
+            return None;
+        }
+        let effect = {
+            let branch = self.column_branches.get_mut(tab_id)?;
+            branch.select_child(column_index, &entry, None, width)
+        };
+        if !is_container
+            && effect.navigate_to.is_none()
+            && let Some((row, _)) = visual
+        {
+            let _ = self.select_row(row);
+        }
+        self.reveal_column_row(column_index, visual);
+        if let Some(location) = effect.navigate_to.clone() {
+            self.preserve_outgoing_column_listing();
+            if let Some(branch) = self.column_branches.get_mut(tab_id) {
+                branch.hold_pending_navigation(location.clone());
+            }
+        }
+        let command = effect
+            .navigate_to
+            .and_then(|location| self.begin_active_navigation(location, false));
+        self.mirror_current_column_selection();
+        self.sync_column_horizontal_reveal();
+        command
+    }
+
+    pub(crate) fn open_column_item(
+        &mut self,
+        column_index: usize,
+        item_id: ShellItemId,
+        location: LocationDescriptor,
+        is_container: bool,
+    ) -> Option<ExplorerCommand> {
+        if self.effective_view_mode() != explorer_model::ViewMode::Columns {
+            return None;
+        }
+        self.ensure_column_branch();
+        if self.column_hides_entry(column_index, &item_id) {
+            return None;
+        }
+        let tab_id = self.tabs.active_tab().id;
+        let branch = self.column_branches.get(tab_id)?;
+        if column_index >= branch.levels().len() {
+            return None;
+        }
+        let is_active_column = column_index == branch.active_index();
+        if is_container {
+            return self.activate_column_item(column_index, item_id, location, true, false, false);
+        }
+        if is_active_column {
+            let _ = self.activate_column_item(
+                column_index,
+                item_id.clone(),
+                location.clone(),
+                false,
+                false,
+                false,
+            );
+        } else {
+            // An ancestor file opens in place. Selecting it must not truncate the open branch
+            // or borrow the rightmost tab's selection.
+            if let Some(branch) = self.column_branches.get_mut(tab_id) {
+                branch.select_only(column_index, item_id.clone());
+            }
+            self.mirror_current_column_selection();
+        }
+        let tab = self.tabs.active_tab();
+        Some(ExplorerCommand::OpenItem {
+            context: RequestContext::new(tab.id, tab.generation),
+            item: ItemDescriptor {
+                id: item_id,
+                location,
+            },
+            disposition: OpenDisposition::DefaultApplication,
+        })
+    }
+
+    pub(crate) fn column_focused_open_target(
+        &self,
+    ) -> Option<(usize, ShellItemId, LocationDescriptor, bool)> {
+        if self.effective_view_mode() != explorer_model::ViewMode::Columns {
+            return None;
+        }
+        let tab = self.tabs.active_tab();
+        let (active, selected) = {
+            let branch = self.column_branches.get(tab.id)?;
+            (
+                branch.active_index(),
+                branch.selected_ids().last().cloned()?,
+            )
+        };
+        let entry = self.column_visible_entry(active, &selected)?;
+        Some((active, entry.id, entry.location, entry.is_container))
+    }
+
+    #[cfg(test)]
+    pub(crate) fn move_column_cursor(
+        &mut self,
+        vertical: i8,
+        horizontal: i8,
+    ) -> Option<ExplorerCommand> {
+        self.move_column_cursor_modified(vertical, horizontal, false, false)
+    }
+
+    /// Moves inside the active column. Shift extends that column's range.
+    /// Ctrl without Shift does not import rows from the navigated folder.
+    pub(crate) fn move_column_cursor_modified(
+        &mut self,
+        vertical: i8,
+        horizontal: i8,
+        shift: bool,
+        control: bool,
+    ) -> Option<ExplorerCommand> {
+        self.ensure_column_branch();
+        let tab_id = self.tabs.active_tab().id;
+        if horizontal < 0 {
+            let moved = self.column_branches.get_mut(tab_id)?.focus_parent();
+            if moved {
+                self.reveal_active_column_selection();
+            }
+            self.mirror_current_column_selection();
+            self.sync_column_horizontal_reveal();
+            return None;
+        }
+        if horizontal > 0 {
+            let (column, focused) = {
+                let branch = self.column_branches.get(tab_id)?;
+                (branch.active_index(), branch.selected_ids().last().cloned())
+            };
+            let visual = focused
+                .as_ref()
+                .and_then(|id| self.column_visual_row(column, id));
+            let focused_entry = focused
+                .as_ref()
+                .and_then(|id| self.column_visible_entry(column, id));
+            let width = self.view_settings().column_width;
+            let effect = {
+                let branch = self.column_branches.get_mut(tab_id)?;
+                match focused_entry.as_ref() {
+                    Some(entry) => branch.reveal_focused_child(std::slice::from_ref(entry), width),
+                    None => branch.reveal_focused_child(&[], width),
+                }
+            };
+            self.reveal_column_row(column, visual);
+            if let Some(location) = effect.navigate_to.clone() {
+                self.preserve_outgoing_column_listing();
+                if let Some(branch) = self.column_branches.get_mut(tab_id) {
+                    branch.hold_pending_navigation(location);
+                }
+            }
+            let command = effect
+                .navigate_to
+                .and_then(|location| self.begin_active_navigation(location, false));
+            self.reveal_active_column_selection();
+            self.mirror_current_column_selection();
+            self.sync_column_horizontal_reveal();
+            return command;
+        }
+        if vertical != 0 && shift {
+            let column = self.column_branches.get(tab_id)?.active_index();
+            let presentation = self.column_visible_projection(column);
+            let len = presentation
+                .as_ref()
+                .map(|presentation| presentation.len())
+                .unwrap_or(0);
+            if len == 0 {
+                self.sync_column_horizontal_reveal();
+                return None;
+            }
+            let current = self
+                .column_branches
+                .get(tab_id)?
+                .selected_ids()
+                .last()
+                .and_then(|id| {
+                    presentation.as_ref().and_then(|presentation| {
+                        (0..len).find(|index| {
+                            presentation
+                                .entry(*index)
+                                .is_some_and(|(_, entry)| &entry.id == id)
+                        })
+                    })
+                })
+                .unwrap_or(0);
+            let next = if vertical < 0 {
+                current.saturating_sub(1)
+            } else {
+                current.saturating_add(1).min(len - 1)
+            };
+            let Some(id) = presentation.as_ref().and_then(|presentation| {
+                presentation.entry(next).map(|(_, entry)| entry.id.clone())
+            }) else {
+                self.sync_column_horizontal_reveal();
+                return None;
+            };
+            let order = presentation
+                .as_ref()
+                .map(|presentation| presentation.visible_ids())
+                .unwrap_or_default();
+            let visual = self.column_visual_row(column, &id);
+            if let Some(branch) = self.column_branches.get_mut(tab_id) {
+                branch.select_range(column, id, &order);
+            }
+            self.reveal_column_row(column, visual);
+            self.mirror_current_column_selection();
+            self.sync_column_horizontal_reveal();
+            return None;
+        }
+        if vertical != 0 && control {
+            self.mirror_current_column_selection();
+            self.sync_column_horizontal_reveal();
+            return None;
+        }
+        if vertical != 0 {
+            let column = self.column_branches.get(tab_id)?.active_index();
+            let presentation = self.column_visible_projection(column);
+            let len = presentation
+                .as_ref()
+                .map_or(0, |presentation| presentation.len());
+            let moved = self.column_branches.get_mut(tab_id)?.move_vertical_with(
+                vertical,
+                len,
+                |index, id| {
+                    presentation.as_ref().is_some_and(|presentation| {
+                        presentation
+                            .entry(index)
+                            .is_some_and(|(_, entry)| &entry.id == id)
+                    })
+                },
+                |index| {
+                    presentation
+                        .as_ref()
+                        .and_then(|presentation| presentation.entry(index))
+                        .map(|(_, entry)| entry.id.clone())
+                },
+            );
+            if moved {
+                self.reveal_active_column_selection_in(column);
+            }
+            self.mirror_current_column_selection();
+        }
+        self.sync_column_horizontal_reveal();
+        None
+    }
+
+    /// Toggles the focused item in the active column. Other columns are left alone.
+    pub(crate) fn toggle_focused_column_selection(&mut self) -> bool {
+        if self.effective_view_mode() != explorer_model::ViewMode::Columns {
+            return false;
+        }
+        self.ensure_column_branch();
+        let tab_id = self.tabs.active_tab().id;
+        let Some((column, item_id)) = self.column_branches.get(tab_id).and_then(|branch| {
+            Some((
+                branch.active_index(),
+                branch.selected_ids().last().cloned()?,
+            ))
+        }) else {
+            return false;
+        };
+        if self.column_hides_entry(column, &item_id) {
+            return false;
+        }
+        if let Some(branch) = self.column_branches.get_mut(tab_id) {
+            branch.toggle_additional(column, item_id.clone());
+        } else {
+            return false;
+        }
+        let visual = self.column_visual_row(column, &item_id);
+        self.reveal_column_row(column, visual);
+        self.mirror_current_column_selection();
+        true
+    }
+
+    pub(crate) fn set_column_width(&mut self, column_index: usize, width: u16) {
+        let tab_id = self.tabs.active_tab().id;
+        if let Some(branch) = self.column_branches.get_mut(tab_id) {
+            branch.set_width(column_index, width);
+            let widths = branch.widths();
+            let settings = &mut self.tabs.active_tab_mut().view.settings;
+            settings.column_widths = explorer_model::normalized_column_widths(&widths);
+            if let Some(width) = settings.column_widths.first().copied() {
+                settings.column_width = width;
+            }
+        }
+        self.clamp_column_horizontal_offset();
+    }
+
+    pub(crate) fn set_column_preview_width(&mut self, width: u16) {
+        self.tabs
+            .active_tab_mut()
+            .view
+            .settings
+            .column_preview_width = explorer_model::normalized_column_preview_width(width);
+        self.sync_column_horizontal_reveal();
+    }
+
+    /// Folder whose listing is `DirectoryState`. A column click targets the pending
+    /// child until history commits, so that load or failure must not replace the parent.
+    fn column_live_directory_location(&self) -> Option<LocationDescriptor> {
+        let tab = self.tabs.active_tab();
+        let history = tab.history.current()?.location.clone();
+        let pending = self
+            .column_branches
+            .get(tab.id)
+            .and_then(|branch| branch.pending_navigation().cloned());
+        let directory_targets_pending =
+            matches!(
+                tab.directory,
+                DirectoryState::Loading { .. } | DirectoryState::Error { .. }
+            ) && pending.as_ref().is_some_and(|pending| pending != &history);
+        if directory_targets_pending {
+            pending
+        } else {
+            Some(history)
+        }
+    }
+
+    /// Listing for one column. The live directory reads the tab snapshot.
+    /// Any other column, including a just-truncated ancestor, reads its own listing.
+    fn column_directory_snapshot(&self, column_index: usize) -> Option<DirectorySnapshot> {
+        let tab_id = self.tabs.active_tab_id();
+        let location = self
+            .column_branches
+            .get(tab_id)
+            .and_then(|branch| branch.levels().get(column_index))
+            .map(|level| level.location.clone())?;
+        if self.column_live_directory_location().as_ref() == Some(&location) {
+            // A finished directory is authoritative, including an empty one. Loading and
+            // error keep rows they already hold; otherwise the column's previous listing.
+            let (finished, held_rows) = {
+                let directory = &self.tabs.active_tab().directory;
+                if matches!(directory, DirectoryState::Ready(_)) {
+                    (true, directory.snapshot().cloned())
+                } else if let Some(snapshot) = directory.snapshot()
+                    && !snapshot.entries().is_empty()
+                {
+                    (false, Some(snapshot.clone()))
+                } else {
+                    (false, None)
+                }
+            };
+            if finished || held_rows.is_some() {
+                return held_rows;
+            }
+            if let Some(level) = self
+                .column_branches
+                .get(tab_id)
+                .and_then(|branch| branch.levels().get(column_index))
+                && let explorer_model::ColumnPhase::Ready(snapshot) = &level.phase
+                && !snapshot.entries().is_empty()
+            {
+                return Some(snapshot.clone());
+            }
+            if let Some(cached) = self.directory_cache.peek(&location)
+                && !cached.entries().is_empty()
+            {
+                return Some(cached);
+            }
+            return self.tabs.active_tab().directory.snapshot().cloned();
+        }
+        if let Some(level) = self
+            .column_branches
+            .get(tab_id)
+            .and_then(|branch| branch.levels().get(column_index))
+        {
+            match &level.phase {
+                explorer_model::ColumnPhase::Ready(snapshot) => {
+                    return Some(snapshot.clone());
+                }
+                // Empty is authoritative. A cached listing must not paint a ready folder.
+                explorer_model::ColumnPhase::Empty => {
+                    return Some(DirectorySnapshot::default());
+                }
+                explorer_model::ColumnPhase::Pending
+                | explorer_model::ColumnPhase::Loading
+                | explorer_model::ColumnPhase::Error(_) => {}
+            }
+        }
+        self.directory_cache.peek(&location)
+    }
+
+    /// Hidden, system, sort, folder-first, and details-filter projection for one column.
+    ///
+    /// Repeated calls reuse the cached index vector. A wheel event only asks for
+    /// the length, so it does not clone `FileEntry` values.
+    fn project_column_snapshot(
+        &self,
+        snapshot: &DirectorySnapshot,
+    ) -> crate::file_view::DirectoryPresentation {
+        let (hidden_items, sort) = {
+            let settings = &self.tabs.active_tab().view.settings;
+            (settings.hidden_items, settings.sort.clone())
+        };
+        let filters = self.active_details_filters();
+        if let Some(presentation) = self
+            .column_projection_cache
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .recall(snapshot, hidden_items, &sort, &filters)
+        {
+            return presentation;
+        }
+        let built = crate::file_view::DirectoryPresentation::build_filtered(
+            snapshot,
+            hidden_items,
+            sort.clone(),
+            filters,
+        );
+        let presentation = Self::finish_directory_presentation(
+            snapshot,
+            built,
+            &sort,
+            &self.folder_size_sort_values,
+            &self.builtin_count_sort_values,
+            &self.code_lines_sort_values,
+        );
+        self.column_projection_cache
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .store(presentation.clone());
+        presentation
+    }
+
+    fn column_visible_projection(
+        &self,
+        column_index: usize,
+    ) -> Option<crate::file_view::DirectoryPresentation> {
+        self.column_directory_snapshot(column_index)
+            .as_ref()
+            .map(|snapshot| self.project_column_snapshot(snapshot))
+    }
+
+    fn column_visible_entry(
+        &self,
+        column_index: usize,
+        item_id: &ShellItemId,
+    ) -> Option<explorer_model::FileEntry> {
+        self.column_visible_projection(column_index)
+            .and_then(|presentation| presentation.visible_entry(item_id).cloned())
+    }
+
+    fn column_hides_entry(&self, column_index: usize, item_id: &ShellItemId) -> bool {
+        self.column_visible_projection(column_index)
+            .is_some_and(|presentation| presentation.hides_entry(item_id))
+    }
+
+    fn column_displayed_row_count(&self, column_index: usize) -> usize {
+        self.column_visible_projection(column_index)
+            .map_or(0, |presentation| presentation.len())
+    }
+
+    fn column_visual_row(
+        &self,
+        column_index: usize,
+        item_id: &ShellItemId,
+    ) -> Option<(usize, usize)> {
+        let presentation = self.column_visible_projection(column_index)?;
+        let row = presentation.visible_position(item_id)?;
+        Some((row, presentation.len()))
+    }
+
+    #[cfg(test)]
+    pub(crate) fn column_projection_rebuilds(&self) -> u64 {
+        self.column_projection_cache
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .rebuilds()
+    }
+
+    fn reveal_column_row(&mut self, column_index: usize, visual: Option<(usize, usize)>) {
+        let Some((row, count)) = visual else {
+            return;
+        };
+        let tab_id = self.tabs.active_tab().id;
+        let current = self
+            .column_branches
+            .get(tab_id)
+            .and_then(|branch| branch.levels().get(column_index))
+            .map(|level| level.vertical_offset)
+            .unwrap_or(0.0);
+        let next = explorer_model::ColumnBranch::reveal_row_offset(
+            row,
+            count,
+            crate::column_view::COLUMN_ROW_HEIGHT,
+            self.column_list_viewport_height,
+            current,
+        );
+        if let Some(branch) = self.column_branches.get_mut(tab_id) {
+            branch.set_vertical_offset(column_index, next);
+        }
+    }
+
+    fn reveal_active_column_selection_in(&mut self, column_index: usize) {
+        let selected = self
+            .column_branches
+            .get(self.tabs.active_tab().id)
+            .and_then(|branch| branch.selected_ids().last().cloned());
+        let Some(id) = selected else {
+            return;
+        };
+        let visual = self.column_visual_row(column_index, &id);
+        self.reveal_column_row(column_index, visual);
+    }
+
+    fn reveal_active_column_selection(&mut self) {
+        let Some(column) = self
+            .column_branches
+            .get(self.tabs.active_tab().id)
+            .map(|branch| branch.active_index())
+        else {
+            return;
+        };
+        self.reveal_active_column_selection_in(column);
+    }
+
+    fn clamp_column_vertical_offsets(&mut self) {
+        let viewport = self.column_list_viewport_height;
+        let tab_id = self.tabs.active_tab().id;
+        let Some(branch) = self.column_branches.get(tab_id) else {
+            return;
+        };
+        let currents: Vec<f32> = branch
+            .levels()
+            .iter()
+            .map(|level| level.vertical_offset)
+            .collect();
+        let mut next = Vec::with_capacity(currents.len());
+        for (index, current) in currents.into_iter().enumerate() {
+            let rows = self.column_displayed_row_count(index);
+            next.push(explorer_model::ColumnBranch::clamp_vertical_offset(
+                current,
+                rows,
+                crate::column_view::COLUMN_ROW_HEIGHT,
+                viewport,
+            ));
+        }
+        if let Some(branch) = self.column_branches.get_mut(tab_id) {
+            for (index, offset) in next.into_iter().enumerate() {
+                branch.set_vertical_offset(index, offset);
+            }
+        }
+    }
+
+    pub(crate) fn set_column_scroll(&mut self, column_index: usize, offset: f32) {
+        if column_index == crate::column_view::COLUMN_LIST_VIEWPORT_SLOT {
+            self.set_column_list_viewport_height(offset);
+            return;
+        }
+        let rows = self.column_displayed_row_count(column_index);
+        let clamped = explorer_model::ColumnBranch::clamp_vertical_offset(
+            offset,
+            rows,
+            crate::column_view::COLUMN_ROW_HEIGHT,
+            self.column_list_viewport_height,
+        );
+        let tab_id = self.tabs.active_tab().id;
+        if let Some(branch) = self.column_branches.get_mut(tab_id) {
+            branch.set_vertical_offset(column_index, clamped);
+        }
+    }
+
+    pub(crate) fn set_column_list_viewport_height(&mut self, height: f32) {
+        let height = if height.is_finite() {
+            height.max(0.0)
+        } else {
+            0.0
+        };
+        if (self.column_list_viewport_height - height).abs() <= 0.5 {
+            return;
+        }
+        self.column_list_viewport_height = height;
+        self.clamp_column_vertical_offsets();
+    }
+
+    pub(crate) fn set_column_horizontal_offset(&mut self, offset: f32) {
+        let tab_id = self.tabs.active_tab().id;
+        let span = self.column_strip_span();
+        if let Some(branch) = self.column_branches.get_mut(tab_id) {
+            let total = branch
+                .widths()
+                .iter()
+                .map(|width| f32::from(*width))
+                .sum::<f32>();
+            branch.set_horizontal_offset(explorer_model::clamp_column_horizontal_offset(
+                offset, total, span,
+            ));
+        }
+    }
+
+    pub(crate) fn set_column_file_viewport_width(&mut self, width: f32) {
+        self.column_file_viewport_width = if width.is_finite() {
+            width.max(0.0)
+        } else {
+            0.0
+        };
+        self.sync_column_horizontal_reveal();
+    }
+
+    pub(crate) fn reveal_active_column(&mut self, viewport_width: f32) {
+        if self.effective_view_mode() != explorer_model::ViewMode::Columns {
+            return;
+        }
+        let settings = self.view_settings();
+        let (_, drawn_preview) = explorer_model::column_layout_spans(
+            viewport_width,
+            f32::from(settings.column_preview_width),
+            settings.column_preview_visible,
+        );
+        let tab_id = self.tabs.active_tab().id;
+        if let Some(branch) = self.column_branches.get_mut(tab_id) {
+            let offset = branch.reveal_offset(viewport_width, drawn_preview);
+            branch.set_horizontal_offset(offset);
+        }
+    }
+
+    pub(crate) fn begin_column_preview_resize(&mut self, pointer_x: f32) -> bool {
+        if !pointer_x.is_finite()
+            || self.effective_view_mode() != explorer_model::ViewMode::Columns
+            || !self.view_settings().column_preview_visible
+        {
+            return false;
+        }
+        self.column_preview_resize = Some(ColumnPreviewResizeSession {
+            tab_id: self.tabs.active_tab_id(),
+            pointer_x,
+            width: self.view_settings().column_preview_width,
+        });
+        true
+    }
+
+    pub(crate) fn update_column_preview_resize(&mut self, pointer_x: f32) -> bool {
+        let Some(session) = self.column_preview_resize else {
+            return false;
+        };
+        if !pointer_x.is_finite() || session.tab_id != self.tabs.active_tab_id() {
+            self.column_preview_resize = None;
+            return false;
+        }
+        let next = f32::from(session.width) - (pointer_x - session.pointer_x);
+        if !next.is_finite() {
+            return false;
+        }
+        let width = explorer_model::normalized_column_preview_width(
+            next.clamp(0.0, f32::from(u16::MAX)).round() as u16,
+        );
+        self.set_column_preview_width(width);
+        true
+    }
+
+    pub(crate) fn end_column_preview_resize(&mut self) {
+        self.column_preview_resize = None;
+    }
+
+    pub(crate) const fn column_preview_resize_active(&self) -> bool {
+        self.column_preview_resize.is_some()
+    }
+
+    pub(crate) fn begin_column_horizontal_scroll(
+        &mut self,
+        track_left: f32,
+        track_width: f32,
+        grab_offset: f32,
+        minimum_thumb: f32,
+    ) -> bool {
+        if self.effective_view_mode() != explorer_model::ViewMode::Columns
+            || !track_left.is_finite()
+            || !track_width.is_finite()
+            || track_width <= 0.0
+            || !grab_offset.is_finite()
+            || grab_offset < 0.0
+            || !minimum_thumb.is_finite()
+        {
+            return false;
+        }
+        self.column_hscroll_drag = Some(ColumnStripScrollDrag {
+            track_left,
+            track_width,
+            grab_offset,
+            minimum_thumb: minimum_thumb.max(1.0),
+        });
+        true
+    }
+
+    pub(crate) fn update_column_horizontal_scroll(&mut self, pointer_x: f32) -> bool {
+        let Some(session) = self.column_hscroll_drag else {
+            return false;
+        };
+        if !pointer_x.is_finite() {
+            return false;
+        }
+        let tab_id = self.tabs.active_tab().id;
+        let Some(branch) = self.column_branches.get(tab_id) else {
+            return false;
+        };
+        let content = branch
+            .widths()
+            .iter()
+            .map(|width| f32::from(*width))
+            .sum::<f32>();
+        let maximum = (content - session.track_width).max(0.0);
+        let Some(target) = crate::interaction::scrollbar_target_offset(
+            session.track_width,
+            maximum,
+            session.minimum_thumb,
+            pointer_x - session.track_left,
+            session.grab_offset,
+        ) else {
+            return false;
+        };
+        self.set_column_horizontal_offset(target);
+        true
+    }
+
+    pub(crate) fn end_column_horizontal_scroll(&mut self) {
+        self.column_hscroll_drag = None;
+    }
+
+    pub(crate) const fn column_horizontal_scroll_active(&self) -> bool {
+        self.column_hscroll_drag.is_some()
+    }
+
+    fn column_strip_span(&self) -> f32 {
+        self.column_layout_spans().0
+    }
+
+    fn column_layout_spans(&self) -> (f32, f32) {
+        let settings = self.view_settings();
+        explorer_model::column_layout_spans(
+            self.column_file_viewport_width,
+            f32::from(settings.column_preview_width),
+            settings.column_preview_visible,
+        )
+    }
+
+    fn clamp_column_horizontal_offset(&mut self) {
+        let span = self.column_strip_span();
+        let tab_id = self.tabs.active_tab().id;
+        if let Some(branch) = self.column_branches.get_mut(tab_id) {
+            let total = branch
+                .widths()
+                .iter()
+                .map(|width| f32::from(*width))
+                .sum::<f32>();
+            let clamped = explorer_model::clamp_column_horizontal_offset(
+                branch.horizontal_offset(),
+                total,
+                span,
+            );
+            branch.set_horizontal_offset(clamped);
+        }
+    }
+
+    fn sync_column_horizontal_reveal(&mut self) {
+        let stamp = self.column_reveal_stamp();
+        if self.column_reveal_stamp.as_ref() == Some(&stamp) {
+            return;
+        }
+        let reveal = stamp.columns && self.column_file_viewport_width > 1.0;
+        let viewport = self.column_file_viewport_width;
+        self.column_reveal_stamp = Some(stamp);
+        if reveal {
+            self.reveal_active_column(viewport);
+        }
+    }
+
+    fn column_reveal_stamp(&self) -> ColumnRevealStamp {
+        let tab = self.tabs.active_tab();
+        let settings = &tab.view.settings;
+        let branch = self.column_branches.get(tab.id);
+        let viewport = self.column_file_viewport_width;
+        ColumnRevealStamp {
+            tab_id: tab.id,
+            active: branch.map(|branch| branch.active_index()).unwrap_or(0),
+            levels: branch.map(|branch| branch.levels().len()).unwrap_or(0),
+            navigated: branch
+                .and_then(|branch| branch.navigated_location())
+                .map(|location| location.editable_text())
+                .unwrap_or_default(),
+            preview_width: settings.column_preview_width,
+            preview_visible: settings.column_preview_visible,
+            viewport_milli: if viewport.is_finite() {
+                (viewport * 1_000.0).round() as i32
+            } else {
+                0
+            },
+            columns: self.effective_view_mode() == explorer_model::ViewMode::Columns,
+        }
+    }
+
+    pub(crate) fn invalidate_column_branch(&mut self) {
+        let tab_id = self.tabs.active_tab().id;
+        let Some(branch) = self.column_branches.get(tab_id) else {
+            return;
+        };
+        let last = branch.levels().len().saturating_sub(1);
+        // Forget ancestor caches before marking them pending. A cache hit would skip
+        // enumeration and put a removed folder's descendants back on screen.
+        let ancestors = branch
+            .levels()
+            .iter()
+            .take(last)
+            .map(|level| level.location.clone())
+            .collect::<Vec<_>>();
+        let current = branch
+            .levels()
+            .get(last)
+            .map(|level| level.location.clone());
+        for location in &ancestors {
+            self.directory_cache.forget(location);
+        }
+        let Some(branch) = self.column_branches.get_mut(tab_id) else {
+            return;
+        };
+        for location in ancestors {
+            branch.invalidate_location(&location);
+        }
+        if let Some(current) = current {
+            branch.invalidate_location(&current);
+        }
+    }
+
+    /// Copies the settled directory onto its column before a child navigation replaces it.
+    fn preserve_outgoing_column_listing(&mut self) {
+        let tab_id = self.tabs.active_tab_id();
+        let Some(history) = self
+            .tabs
+            .active_tab()
+            .history
+            .current()
+            .map(|entry| entry.location.clone())
+        else {
+            return;
+        };
+        let pending_elsewhere = self.column_branches.get(tab_id).is_some_and(|branch| {
+            branch
+                .pending_navigation()
+                .is_some_and(|pending| pending != &history)
+        });
+        if pending_elsewhere {
+            return;
+        }
+        let Some(snapshot) = self.tabs.active_tab().directory.snapshot().cloned() else {
+            return;
+        };
+        let Some(index) = self.column_branches.get(tab_id).and_then(|branch| {
+            branch
+                .levels()
+                .iter()
+                .position(|level| level.location == history)
+        }) else {
+            return;
+        };
+        if let Some(branch) = self.column_branches.get_mut(tab_id) {
+            let _ = branch.apply_cached_snapshot(index, snapshot.clone());
+        }
+        self.directory_cache.insert(&history, snapshot);
+    }
+
+    pub(crate) fn plan_column_loads(&mut self) -> Vec<ExplorerCommand> {
+        if self.effective_view_mode() != explorer_model::ViewMode::Columns {
+            return self.cancel_auxiliary_column_loads();
+        }
+        self.ensure_column_branch();
+        if self.column_ancestors_should_wait() {
+            return self.supersede_inactive_column_loads();
+        }
+        let tab = self.tabs.active_tab();
+        let tab_id = tab.id;
+        let generation = tab.generation;
+        let strip_span = self.column_strip_span();
+        let locations = self
+            .column_branches
+            .get(tab_id)
+            .map(|branch| {
+                branch
+                    .levels()
+                    .iter()
+                    .map(|level| level.location.clone())
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        let mut cached = HashMap::new();
+        for location in locations {
+            if let Some(snapshot) = self.directory_cache.get(&location) {
+                cached.insert(location, snapshot);
+            }
+        }
+        let mut loads = std::mem::take(&mut self.column_loads);
+        let Some(branch) = self.column_branches.get_mut(tab_id) else {
+            self.column_loads = loads;
+            return Vec::new();
+        };
+        let widths = branch
+            .levels()
+            .iter()
+            .map(|level| f32::from(level.width))
+            .collect::<Vec<_>>();
+        let visible =
+            explorer_model::visible_column_range(&widths, branch.horizontal_offset(), strip_span);
+        let (cancel, requests) = loads.plan(tab_id, generation, branch, visible, |location| {
+            cached.get(location).cloned()
+        });
+        self.column_loads = loads;
+        self.column_branches.abandon_loads(&cancel);
+        let mut commands = cancel
+            .into_iter()
+            .map(|request_id| ExplorerCommand::Cancel { request_id })
+            .collect::<Vec<_>>();
+        commands.extend(
+            requests
+                .into_iter()
+                .map(|request| ExplorerCommand::EnumerateColumn {
+                    context: request.context,
+                    location: request.location,
+                    branch_revision: request.branch_revision,
+                }),
+        );
+        commands
+    }
+
+    fn cancel_auxiliary_column_loads(&mut self) -> Vec<ExplorerCommand> {
+        let cancel = self.column_loads.supersede_all();
+        self.column_branches.abandon_loads(&cancel);
+        Self::column_cancel_commands(cancel)
+    }
+
+    fn supersede_inactive_column_loads(&mut self) -> Vec<ExplorerCommand> {
+        let tab_id = self.tabs.active_tab_id();
+        let Some(revision) = self
+            .column_branches
+            .get(tab_id)
+            .map(|branch| branch.revision())
+        else {
+            return self.cancel_auxiliary_column_loads();
+        };
+        let cancel = self.column_loads.supersede_stale(tab_id, revision);
+        self.column_branches.abandon_loads(&cancel);
+        Self::column_cancel_commands(cancel)
+    }
+
+    fn column_cancel_commands(cancel: Vec<explorer_model::RequestId>) -> Vec<ExplorerCommand> {
+        cancel
+            .into_iter()
+            .map(|request_id| ExplorerCommand::Cancel { request_id })
+            .collect()
+    }
+
+    pub(crate) fn apply_column_event(&mut self, event: &ExplorerEvent) -> bool {
+        match event {
+            ExplorerEvent::ColumnDirectoryBatch {
+                context,
+                branch_revision,
+                location,
+                entries,
+            } => {
+                let Some(branch) = self.column_branches.get_mut(context.tab_id) else {
+                    return false;
+                };
+                // A batch is not terminal. The slot stays occupied until exactly one finish,
+                // cancel, or failure event so a multi-batch folder cannot exceed the cap.
+                branch.apply_batch(
+                    *branch_revision,
+                    context.request_id,
+                    location,
+                    entries.clone(),
+                )
+            }
+            ExplorerEvent::ColumnDirectoryFinished {
+                context,
+                branch_revision,
+                location,
+                outcome,
+            } => {
+                let applied = self
+                    .column_branches
+                    .get_mut(context.tab_id)
+                    .is_some_and(|branch| {
+                        branch.apply_terminal(
+                            *branch_revision,
+                            context.request_id,
+                            location,
+                            outcome,
+                        )
+                    });
+                let released = self.column_loads.complete(context.request_id);
+                if applied
+                    && matches!(
+                        outcome,
+                        explorer_model::ColumnListingTerminal::Finished
+                            | explorer_model::ColumnListingTerminal::Empty
+                    )
+                {
+                    self.reconcile_column_after_load(location);
+                }
+                applied || released
+            }
+            _ => false,
+        }
+    }
+
+    pub(crate) fn finish_column_pending_selection(&mut self, tab_id: TabId) {
+        let Some(file_id) = self
+            .column_branches
+            .get_mut(tab_id)
+            .and_then(|branch| branch.take_pending_file())
+        else {
+            return;
+        };
+        if self.tabs.active_tab_id() == tab_id {
+            let column = self
+                .column_branches
+                .get(tab_id)
+                .map(|branch| branch.active_index())
+                .unwrap_or(0);
+            let selection_empty = self
+                .column_branches
+                .get(tab_id)
+                .is_some_and(|branch| branch.selected_ids().is_empty());
+            let listed = selection_empty && self.column_visible_entry(column, &file_id).is_some();
+            if listed && let Some(branch) = self.column_branches.get_mut(tab_id) {
+                branch.select_only(column, file_id.clone());
+            }
+        }
+        if self.tabs.active_tab_id() == tab_id
+            && let Some(index) = self
+                .directory_presentation()
+                .and_then(|presentation| presentation.visible_position(&file_id))
+        {
+            self.select_row(index);
+        }
+    }
+
+    fn clear_column_branch_selection(&mut self) {
+        if self.effective_view_mode() != explorer_model::ViewMode::Columns {
+            return;
+        }
+        let tab_id = self.tabs.active_tab_id();
+        if let Some(branch) = self.column_branches.get_mut(tab_id) {
+            branch.clear_selection();
+        }
+    }
+
+    fn mirror_current_column_selection(&mut self) {
+        if self.effective_view_mode() != explorer_model::ViewMode::Columns {
+            return;
+        }
+        let tab_id = self.tabs.active_tab_id();
+        let Some(branch) = self.column_branches.get(tab_id) else {
+            return;
+        };
+        let last = branch.levels().len().saturating_sub(1);
+        if branch.active_index() != last {
+            // Ancestor focus must not leave the navigated folder's selection in place.
+            // Command builders that still read the tab would otherwise rename or delete
+            // the stale rightmost row.
+            self.tabs.active_tab_mut().selection.clear();
+            return;
+        }
+        let Some((active, mut ids)) = self.column_branches.get(tab_id).and_then(|branch| {
+            (branch.active_index() == last)
+                .then(|| (branch.active_index(), branch.selected_ids().to_vec()))
+        }) else {
+            return;
+        };
+        if let Some(presentation) = self.column_visible_projection(active) {
+            ids.retain(|id| !presentation.hides_entry(id));
+        }
+        let selection = &mut self.tabs.active_tab_mut().selection;
+        selection.clear();
+        let Some((first, rest)) = ids.split_first() else {
+            return;
+        };
+        selection.select_only(first.clone());
+        for id in rest {
+            selection.select_additive(id.clone());
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use explorer_i18n::{AppLocale, Catalog};
 
     use super::{
         AppMenuSlot, AppViewState, BookmarkDropCue, BookmarkInsertEdge, ClosedWindowRecord,
-        ClosedWindowTab,
-        CommandKind,
-        DirectoryCacheKey,
-        DirectorySnapshotCache, FolderOptionsApplyResultV1, NetworkLoginRetry,
-        bookmark_reorder_destination, bookmark_target_for_current_location,
-        resolve_bookmark_insert_edge, resolve_details_column_insertion,
-        unique_remote_folder_symlink_name,
+        ClosedWindowTab, CommandKind, DirectoryCacheKey, DirectorySnapshotCache,
+        FolderOptionsApplyResultV1, NetworkLoginRetry, bookmark_reorder_destination,
+        bookmark_target_for_current_location, resolve_bookmark_insert_edge,
+        resolve_details_column_insertion, unique_remote_folder_symlink_name,
     };
 
     #[test]
@@ -9763,6 +12149,34 @@ mod tests {
         assert!(state.bookmarks().entries().is_empty());
         state.rollback_bookmark(remove);
         assert_eq!(state.bookmarks().entries()[0].parent_id, Some(folder_id));
+    }
+
+    fn preview_entry(
+        name: &str,
+        id: u8,
+        container: bool,
+        attributes: u32,
+    ) -> explorer_model::FileEntry {
+        explorer_model::FileEntry {
+            id: explorer_model::ShellItemId::from_provider_bytes([id]).expect("preview id"),
+            display_name: name.to_owned(),
+            location: explorer_model::LocationDescriptor::file_system(format!(
+                r"C:\fixture\{name}"
+            )),
+            is_container: container,
+            metadata: explorer_model::FileEntryMetadata {
+                filesystem_attributes: attributes,
+                ..explorer_model::FileEntryMetadata::default()
+            },
+        }
+    }
+
+    fn install_column_entries(state: &mut AppViewState, entries: Vec<explorer_model::FileEntry>) {
+        let mut snapshot = explorer_model::DirectorySnapshot::default();
+        for entry in entries {
+            let _ = snapshot.upsert(entry);
+        }
+        state.tabs.active_tab_mut().directory = explorer_model::DirectoryState::Ready(snapshot);
     }
 
     fn state_with_rows() -> AppViewState {
@@ -12045,7 +14459,7 @@ mod tests {
         assert!(state.select_row(0));
         let first = state.presentation_item_id(0).expect("first identity");
         let clicked = state.presentation_item_id(1).expect("clicked identity");
-        assert!(state.begin_context_item_gesture(clicked.clone(), 3.0, 4.0, true));
+        assert!(state.begin_context_item_gesture(None, clicked.clone(), 3.0, 4.0, true));
         assert!(state.pending_context_extended_verbs());
         assert_eq!(
             state.tabs().active_tab().selection.focused(),
@@ -14628,6 +17042,3549 @@ mod tests {
     }
 
     #[test]
+    fn column_view_preference_survives_unsupported_locations_and_alt_p_is_independent() {
+        let mut local = AppViewState::default();
+        local.set_drive_kind('C', explorer_model::DriveKind::Fixed);
+        local.set_view_mode(explorer_model::ViewMode::Columns);
+        assert_eq!(
+            local.effective_view_mode(),
+            explorer_model::ViewMode::Columns
+        );
+        assert!(local.view_settings().column_preview_visible);
+        assert!(!local.view_settings().preview_pane);
+        local.toggle_preview_pane();
+        assert!(!local.view_settings().column_preview_visible);
+        assert!(!local.view_settings().preview_pane);
+        local.toggle_preview_pane();
+        assert!(local.view_settings().column_preview_visible);
+
+        let mut network = AppViewState::with_initial_location(explorer_model::HistoryEntry::new(
+            explorer_model::LocationDescriptor::file_system(r"Z:\share"),
+            "share",
+        ));
+        network.set_drive_kind('Z', explorer_model::DriveKind::Network);
+        network.set_view_mode(explorer_model::ViewMode::Columns);
+        assert_eq!(
+            network.view_settings().mode,
+            explorer_model::ViewMode::Columns
+        );
+        assert_eq!(
+            network.effective_view_mode(),
+            explorer_model::ViewMode::Details
+        );
+        let mut unc = AppViewState::with_initial_location(explorer_model::HistoryEntry::new(
+            explorer_model::LocationDescriptor::file_system(r"\\server\share"),
+            "share",
+        ));
+        unc.set_view_mode(explorer_model::ViewMode::Columns);
+        assert_eq!(unc.effective_view_mode(), explorer_model::ViewMode::Details);
+        assert_eq!(unc.view_settings().mode, explorer_model::ViewMode::Columns);
+    }
+
+    #[test]
+    fn column_view_folder_click_navigates_without_treating_ancestors_as_the_current_folder() {
+        let mut state = AppViewState::default();
+        state.set_drive_kind('C', explorer_model::DriveKind::Fixed);
+        state.set_view_mode(explorer_model::ViewMode::Columns);
+        let folder = explorer_model::ShellItemId::from_provider_bytes([7]).expect("id");
+        let command = state.activate_column_item(
+            0,
+            folder,
+            explorer_model::LocationDescriptor::file_system(r"C:\fixture-column"),
+            true,
+            false,
+            false,
+        );
+        assert!(matches!(
+            command,
+            Some(explorer_model::ExplorerCommand::Navigate { location, .. })
+                if location == explorer_model::LocationDescriptor::file_system(r"C:\fixture-column")
+        ));
+        let same = state.activate_column_item(
+            0,
+            explorer_model::ShellItemId::from_provider_bytes([7]).expect("id"),
+            explorer_model::LocationDescriptor::file_system(r"C:\"),
+            true,
+            false,
+            false,
+        );
+        assert!(same.is_none());
+    }
+
+    #[test]
+    fn column_view_file_open_uses_the_selected_item_and_default_application() {
+        let mut state = state_with_rows();
+        state.set_drive_kind('C', explorer_model::DriveKind::Fixed);
+        state.set_view_mode(explorer_model::ViewMode::Columns);
+        let file_id = explorer_model::ShellItemId::from_provider_bytes([2]).expect("file id");
+        let location = explorer_model::LocationDescriptor::file_system(r"C:\fixture\file.txt");
+        state.ensure_column_branch();
+        let column_index = state
+            .column_branches
+            .get(state.tabs().active_tab_id())
+            .expect("column branch")
+            .active_index();
+        assert!(
+            state
+                .activate_column_item(
+                    column_index,
+                    file_id.clone(),
+                    location.clone(),
+                    false,
+                    false,
+                    false,
+                )
+                .is_none()
+        );
+        assert_eq!(
+            state.column_focused_open_target(),
+            Some((column_index, file_id.clone(), location.clone(), false)),
+            "Enter must target the focused column item"
+        );
+        let tab = state.tabs().active_tab();
+        let tab_id = tab.id;
+        let generation = tab.generation;
+        let command = state
+            .open_column_item(column_index, file_id.clone(), location.clone(), false)
+            .expect("double click opens a file");
+        assert!(matches!(
+            command,
+            explorer_model::ExplorerCommand::OpenItem {
+                context,
+                item,
+                disposition: explorer_model::OpenDisposition::DefaultApplication,
+            } if context.tab_id == tab_id
+                && context.generation == generation
+                && item.id == file_id
+                && item.location == location
+        ));
+    }
+
+    #[test]
+    fn column_view_reveals_the_active_folder_when_entering_a_deep_path() {
+        let mut state = AppViewState::with_initial_location(explorer_model::HistoryEntry::new(
+            explorer_model::LocationDescriptor::file_system(r"C:\a\b\c\d\e\f"),
+            "f",
+        ));
+        state.set_drive_kind('C', explorer_model::DriveKind::Fixed);
+        state.set_view_mode(explorer_model::ViewMode::Columns);
+        state.ensure_column_branch();
+        state.reveal_active_column(900.0);
+        let branch = state
+            .column_branches
+            .get(state.tabs().active_tab_id())
+            .expect("column branch");
+        assert!(branch.horizontal_offset() > 0.0);
+        assert_eq!(
+            state
+                .column_strip_model()
+                .expect("column strip")
+                .horizontal_offset,
+            branch.horizontal_offset()
+        );
+    }
+
+    #[test]
+    fn column_view_horizontal_navigation_uses_the_measured_file_surface() {
+        let mut state = AppViewState::with_initial_location(explorer_model::HistoryEntry::new(
+            explorer_model::LocationDescriptor::file_system(r"C:\a\b\c\d"),
+            "d",
+        ));
+        state.set_drive_kind('C', explorer_model::DriveKind::Fixed);
+        state.set_view_mode(explorer_model::ViewMode::Columns);
+        state.set_column_file_viewport_width(420.0);
+        state.ensure_column_branch();
+        let preview = f32::from(state.view_settings().column_preview_width);
+        let (strip, drawn) = explorer_model::column_layout_spans(420.0, preview, true);
+        assert!(
+            strip + 1.0 < 420.0,
+            "the preview must remain on the surface"
+        );
+        let (navigated, before_active, total) = {
+            let branch = state
+                .column_branches
+                .get(state.tabs().active_tab_id())
+                .expect("column branch");
+            let widths = branch
+                .widths()
+                .iter()
+                .map(|width| f32::from(*width))
+                .collect::<Vec<_>>();
+            let expected = explorer_model::reveal_column_offset(
+                branch.active_index(),
+                &widths,
+                420.0,
+                drawn,
+                0.0,
+            );
+            assert!((branch.horizontal_offset() - expected).abs() < 0.5);
+            let fixed = explorer_model::reveal_column_offset(
+                branch.active_index(),
+                &widths,
+                960.0,
+                drawn,
+                0.0,
+            );
+            assert!(
+                (branch.horizontal_offset() - fixed).abs() > 1.0,
+                "reveal must follow the measured 420px file surface"
+            );
+            (
+                branch.navigated_location().cloned(),
+                branch.active_index(),
+                widths.iter().sum::<f32>(),
+            )
+        };
+        let production = include_str!("state.rs")
+            .split("#[cfg(test)]")
+            .next()
+            .unwrap_or("");
+        assert!(
+            !production.contains("let viewport = 960.0"),
+            "column reveal must not keep a hard-coded viewport"
+        );
+        assert!(state.move_column_cursor(0, -1).is_none());
+        state.ensure_column_branch();
+        let branch = state
+            .column_branches
+            .get(state.tabs().active_tab_id())
+            .expect("column branch");
+        assert!(branch.active_index() < before_active);
+        assert_eq!(branch.navigated_location().cloned(), navigated);
+        let parent_start = branch
+            .widths()
+            .iter()
+            .take(branch.active_index())
+            .map(|width| f32::from(*width))
+            .sum::<f32>();
+        let parent_offset = branch.horizontal_offset();
+        assert!(parent_start + 0.5 >= parent_offset);
+        assert!(parent_start < parent_offset + strip + 1.0);
+
+        state.set_column_horizontal_offset(-40.0);
+        assert_eq!(
+            state
+                .column_branches
+                .get(state.tabs().active_tab_id())
+                .expect("branch")
+                .horizontal_offset(),
+            0.0,
+            "the first ancestor stays reachable"
+        );
+        let maximum = (total - strip).max(0.0);
+        state.set_column_horizontal_offset(1_000_000.0);
+        let reached = state
+            .column_branches
+            .get(state.tabs().active_tab_id())
+            .expect("branch")
+            .horizontal_offset();
+        assert!((reached - maximum).abs() < 0.5);
+        assert!(reached > 0.0, "the final column stays reachable");
+
+        let active = state
+            .column_branches
+            .get(state.tabs().active_tab_id())
+            .expect("branch")
+            .active_index();
+        let child = explorer_model::ShellItemId::from_provider_bytes([42]).expect("id");
+        let _ = state.activate_column_item(
+            active,
+            child,
+            explorer_model::LocationDescriptor::file_system(r"C:\a\b\c\d\e"),
+            true,
+            false,
+            false,
+        );
+        let opened = state
+            .column_branches
+            .get(state.tabs().active_tab_id())
+            .expect("branch")
+            .horizontal_offset();
+        assert!(opened > 0.0, "opening a child reveals the new column");
+
+        let before = state.view_settings().column_preview_width;
+        assert!(state.begin_column_preview_resize(100.0));
+        assert!(state.update_column_preview_resize(20.0));
+        assert_eq!(
+            state.view_settings().column_preview_width,
+            explorer_model::normalized_column_preview_width(before.saturating_add(80))
+        );
+        state.end_column_preview_resize();
+        assert!(state.begin_column_preview_resize(100.0));
+        assert!(state.update_column_preview_resize(10_100.0));
+        assert_eq!(
+            state.view_settings().column_preview_width,
+            explorer_model::COLUMN_PREVIEW_WIDTH_MIN
+        );
+        state.end_column_preview_resize();
+        assert!(!state.column_preview_resize_active());
+
+        let span = explorer_model::column_layout_spans(
+            420.0,
+            f32::from(state.view_settings().column_preview_width),
+            true,
+        )
+        .0;
+        state.set_column_horizontal_offset(0.0);
+        assert!(state.begin_column_horizontal_scroll(8.0, span, 0.0, 16.0));
+        assert!(state.update_column_horizontal_scroll(8.0 + span));
+        let dragged = state
+            .column_branches
+            .get(state.tabs().active_tab_id())
+            .expect("branch")
+            .horizontal_offset();
+        assert!(dragged > 0.0);
+        state.end_column_horizontal_scroll();
+        assert!(!state.column_horizontal_scroll_active());
+        assert!(!state.update_column_horizontal_scroll(0.0));
+    }
+
+    fn column_file(id: u8, name: &str) -> explorer_model::FileEntry {
+        explorer_model::FileEntry {
+            id: explorer_model::ShellItemId::from_provider_bytes([id]).expect("column id"),
+            display_name: name.to_owned(),
+            location: explorer_model::LocationDescriptor::file_system(format!(
+                r"C:\alpha\beta\{name}"
+            )),
+            is_container: false,
+            metadata: explorer_model::FileEntryMetadata::default(),
+        }
+    }
+
+    fn column_level_offset(state: &AppViewState, column: usize) -> f32 {
+        state
+            .column_branches
+            .get(state.tabs().active_tab_id())
+            .and_then(|branch| branch.levels().get(column))
+            .map(|level| level.vertical_offset)
+            .unwrap_or(f32::NAN)
+    }
+
+    fn install_ready_entries(state: &mut AppViewState, entries: Vec<explorer_model::FileEntry>) {
+        let mut snapshot = explorer_model::DirectorySnapshot::default();
+        for entry in entries {
+            let _ = snapshot.upsert(entry);
+        }
+        state.tabs.active_tab_mut().directory = explorer_model::DirectoryState::Ready(snapshot);
+    }
+
+    fn prepared_column_scroll_state() -> AppViewState {
+        let mut state = AppViewState::with_initial_location(explorer_model::HistoryEntry::new(
+            explorer_model::LocationDescriptor::file_system(r"C:\alpha\beta"),
+            "beta",
+        ));
+        state.set_drive_kind('C', explorer_model::DriveKind::Fixed);
+        state.set_view_mode(explorer_model::ViewMode::Columns);
+        state.ensure_column_branch();
+        let parent: Vec<_> = (0..20)
+            .map(|index| column_file((index + 1) as u8, &format!("parent-{index:02}")))
+            .collect();
+        let parent_last = parent.last().expect("parent row").id.clone();
+        let tab_id = state.tabs().active_tab_id();
+        let mut snapshot = explorer_model::DirectorySnapshot::default();
+        for entry in parent {
+            let _ = snapshot.upsert(entry);
+        }
+        assert!(
+            state
+                .column_branches
+                .get_mut(tab_id)
+                .expect("branch")
+                .apply_cached_snapshot(1, snapshot),
+            "ancestor column must keep its own rows"
+        );
+        state
+            .column_branches
+            .get_mut(tab_id)
+            .expect("branch")
+            .remember_branch_child(1, parent_last);
+        install_ready_entries(&mut state, vec![column_file(200, "only.txt")]);
+        let levels = state
+            .column_branches
+            .get(state.tabs().active_tab_id())
+            .expect("branch")
+            .levels()
+            .len();
+        assert_eq!(levels, 3);
+        state
+    }
+
+    #[test]
+    fn column_view_vertical_offsets_clamp_to_each_columns_rows() {
+        let mut state = prepared_column_scroll_state();
+        let row = crate::column_view::COLUMN_ROW_HEIGHT;
+        state.set_column_horizontal_offset(15.0);
+        let horizontal = state
+            .column_branches
+            .get(state.tabs().active_tab_id())
+            .expect("branch")
+            .horizontal_offset();
+
+        state.set_column_scroll(0, 9_000.0);
+        assert_eq!(
+            column_level_offset(&state, 0),
+            0.0,
+            "an empty column cannot scroll into blank space"
+        );
+
+        state.set_column_scroll(crate::column_view::COLUMN_LIST_VIEWPORT_SLOT, 8.0);
+        state.set_column_scroll(1, 9_000.0);
+        assert_eq!(column_level_offset(&state, 1), 20.0 * row - 8.0);
+        state.set_column_scroll(2, 9_000.0);
+        assert_eq!(
+            column_level_offset(&state, 2),
+            row - 8.0,
+            "a viewport shorter than one row still keeps the row reachable"
+        );
+        assert_eq!(column_level_offset(&state, 0), 0.0);
+
+        state.set_column_scroll(crate::column_view::COLUMN_LIST_VIEWPORT_SLOT, 48.0);
+        assert_eq!(
+            column_level_offset(&state, 1),
+            20.0 * row - 48.0,
+            "growing the measured viewport reclamps that column only"
+        );
+        state.set_column_scroll(2, 9_000.0);
+        assert_eq!(
+            column_level_offset(&state, 2),
+            0.0,
+            "one row inside a taller viewport cannot scroll"
+        );
+        assert_eq!(column_level_offset(&state, 0), 0.0);
+        state.set_column_scroll(1, 10.0);
+        assert_eq!(column_level_offset(&state, 1), 10.0);
+        assert_eq!(column_level_offset(&state, 2), 0.0);
+        assert_eq!(
+            state
+                .column_branches
+                .get(state.tabs().active_tab_id())
+                .expect("branch")
+                .horizontal_offset(),
+            horizontal,
+            "vertical scrolling leaves the horizontal strip alone"
+        );
+
+        let strip = state.column_strip_model().expect("column strip");
+        let parent_window = crate::file_view::fixed_virtual_range(
+            20,
+            row,
+            48.0,
+            10.0,
+            crate::column_view::COLUMN_ROW_OVERSCAN_VIEWPORTS,
+        );
+        assert_eq!(strip.panes[0].row_count, 0);
+        assert_eq!(strip.panes[0].rows.len(), 0);
+        assert_eq!(strip.panes[1].row_count, 20);
+        assert_eq!(strip.panes[1].row_origin, parent_window.items.start);
+        assert_eq!(strip.panes[1].rows.len(), parent_window.items.len());
+        assert!(
+            strip.panes[1].rows.len() < 20,
+            "a short viewport must not build every parent row"
+        );
+        assert_eq!(strip.panes[2].row_count, 1);
+        assert_eq!(strip.panes[2].rows.len(), 1);
+        assert!(strip.preview_visible);
+        assert_eq!(strip.panes[1].vertical_offset, 10.0);
+        assert_eq!(strip.panes[2].vertical_offset, 0.0);
+    }
+
+    fn large_column_name(index: u32) -> String {
+        format!("n{index:06}.txt")
+    }
+
+    fn large_column_id(index: u32) -> explorer_model::ShellItemId {
+        explorer_model::ShellItemId::from_provider_bytes(index.to_le_bytes()).expect("row id")
+    }
+
+    fn large_column_entry(index: u32) -> explorer_model::FileEntry {
+        let name = large_column_name(index);
+        explorer_model::FileEntry {
+            id: large_column_id(index),
+            display_name: name.clone(),
+            location: explorer_model::LocationDescriptor::file_system(format!(
+                r"C:\a\b\c\d\{name}"
+            )),
+            is_container: false,
+            metadata: explorer_model::FileEntryMetadata::default(),
+        }
+    }
+
+    fn large_column_index(name: &str) -> Option<u32> {
+        name.strip_prefix('n')?.strip_suffix(".txt")?.parse().ok()
+    }
+
+    fn realized_column_count(strip: &crate::column_view::ColumnStripModel) -> usize {
+        strip
+            .panes
+            .iter()
+            .filter(|pane| !pane.rows.is_empty() || pane.pinned_row.is_some())
+            .count()
+    }
+
+    fn materialized_name_bytes(strip: &crate::column_view::ColumnStripModel) -> usize {
+        strip
+            .panes
+            .iter()
+            .map(|pane| {
+                pane.rows.iter().map(|row| row.name.len()).sum::<usize>()
+                    + pane
+                        .pinned_row
+                        .as_ref()
+                        .map(|(_, row)| row.name.len())
+                        .unwrap_or(0)
+            })
+            .sum()
+    }
+
+    #[test]
+    fn column_view_large_directory_materializes_only_the_visible_window() {
+        const ENTRY_COUNT: usize = 100_000;
+        const VIEWPORT: f32 = 240.0;
+        const STEADY_BUDGET: Duration = Duration::from_millis(100);
+        let row_height = crate::column_view::COLUMN_ROW_HEIGHT;
+        let location = explorer_model::LocationDescriptor::file_system(r"C:\a\b\c\d");
+        let mut state = AppViewState::with_initial_location(explorer_model::HistoryEntry::new(
+            location.clone(),
+            "d",
+        ));
+        state.set_drive_kind('C', explorer_model::DriveKind::Fixed);
+        state.set_view_mode(explorer_model::ViewMode::Columns);
+        mark_column_location_writable(&mut state, location.clone(), "d");
+        state.ensure_column_branch();
+        let level_count = state
+            .column_branches
+            .get(state.tabs().active_tab_id())
+            .expect("branch")
+            .levels()
+            .len();
+        assert!(
+            level_count >= 5,
+            "the fixture needs five branch levels, got {level_count}"
+        );
+        for column in 0..level_count.saturating_sub(1) {
+            let mut snapshot = explorer_model::DirectorySnapshot::default();
+            for index in 0..3u8 {
+                let name = format!("c{column}-{index}");
+                let _ = snapshot.upsert(explorer_model::FileEntry {
+                    id: explorer_model::ShellItemId::from_provider_bytes([column as u8, index])
+                        .expect("ancestor id"),
+                    display_name: name.clone(),
+                    location: explorer_model::LocationDescriptor::file_system(format!(
+                        r"C:\ancestor\{name}"
+                    )),
+                    is_container: false,
+                    metadata: explorer_model::FileEntryMetadata::default(),
+                });
+            }
+            assert!(
+                state
+                    .column_branches
+                    .get_mut(state.tabs().active_tab_id())
+                    .expect("branch")
+                    .apply_cached_snapshot(column, snapshot),
+                "ancestor {column} must keep its own listing"
+            );
+        }
+        let mut entries = Vec::with_capacity(ENTRY_COUNT);
+        for index in 0..ENTRY_COUNT as u32 {
+            entries.push(large_column_entry(index));
+        }
+        let mut current = explorer_model::DirectorySnapshot::default();
+        let _ = current.upsert_batch(entries);
+        state.tabs.active_tab_mut().directory = explorer_model::DirectoryState::Ready(current);
+        state.set_column_file_viewport_width(VIEWPORT);
+        state.toggle_preview_pane();
+        let current_column = level_count - 1;
+        assert_eq!(
+            state
+                .column_branches
+                .get(state.tabs().active_tab_id())
+                .expect("branch")
+                .horizontal_offset(),
+            (level_count - 1) as f32 * VIEWPORT,
+            "reveal must park the current column in the strip"
+        );
+
+        let rebuilds_before = state.column_projection_rebuilds();
+        let initial_started = Instant::now();
+        let initial = state
+            .column_strip_model_for_viewport(VIEWPORT)
+            .expect("initial strip");
+        let initial_icons = state.visible_column_entries(VIEWPORT);
+        let initial_elapsed = initial_started.elapsed();
+        let initial_window = crate::file_view::fixed_virtual_range(
+            ENTRY_COUNT,
+            row_height,
+            VIEWPORT,
+            0.0,
+            crate::column_view::COLUMN_ROW_OVERSCAN_VIEWPORTS,
+        );
+        let (initial_row_count, initial_origin, initial_len, initial_first, initial_pinned) = {
+            let pane = &initial.panes[current_column];
+            (
+                pane.row_count,
+                pane.row_origin,
+                pane.rows.len(),
+                pane.rows.first().map(|row| row.name.clone()),
+                pane.pinned_row.is_some(),
+            )
+        };
+        assert_eq!(initial_row_count, ENTRY_COUNT);
+        assert_eq!(initial_origin, initial_window.items.start);
+        assert_eq!(initial_len, initial_window.items.len());
+        assert!(!initial_pinned);
+        let first_name = large_column_name(0);
+        assert_eq!(initial_first.as_deref(), Some(first_name.as_str()));
+        assert_eq!(realized_column_count(&initial), 1);
+        assert!(initial.panes[0].rows.is_empty());
+        let name_bytes = materialized_name_bytes(&initial);
+        assert!(
+            name_bytes.saturating_mul(20) < ENTRY_COUNT * large_column_name(0).len(),
+            "materialized name bytes {name_bytes} scale with the directory"
+        );
+        assert!(
+            initial_len * 100 < ENTRY_COUNT,
+            "initial render built {initial_len} rows"
+        );
+        assert_eq!(initial_icons.len(), initial_len);
+        assert!(initial_icons.len() <= crate::column_view::COLUMN_ICON_CANDIDATE_LIMIT);
+        assert!(initial_icons.iter().all(|entry| {
+            initial_window.items.contains(
+                &usize::try_from(large_column_index(&entry.display_name).unwrap()).unwrap(),
+            )
+        }));
+        let rebuilds = state.column_projection_rebuilds();
+        assert!(rebuilds > rebuilds_before);
+        eprintln!(
+            "column-window initial={initial_elapsed:?} rows={} icons={} rebuilds={}",
+            initial_len,
+            initial_icons.len(),
+            rebuilds - rebuilds_before
+        );
+
+        state.set_column_scroll(crate::column_view::COLUMN_LIST_VIEWPORT_SLOT, VIEWPORT);
+        let mut steady = Vec::new();
+        for _ in 0..4 {
+            let started = Instant::now();
+            let strip = state.column_strip_model().expect("steady strip");
+            let icons = state.visible_column_entries(VIEWPORT);
+            let elapsed = started.elapsed();
+            assert_eq!(
+                strip.panes[current_column].rows.len(),
+                initial_window.items.len()
+            );
+            assert_eq!(icons.len(), initial_window.items.len());
+            assert_eq!(state.column_projection_rebuilds(), rebuilds);
+            steady.push(elapsed);
+        }
+        let steady_max = steady.iter().copied().max().unwrap_or_default();
+        assert!(
+            steady_max < STEADY_BUDGET,
+            "steady render {steady_max:?} is too slow for a bounded window; times={steady:?}"
+        );
+
+        let scrolled_offset = 200.0 * row_height;
+        state.set_column_scroll(current_column, scrolled_offset);
+        let scroll_started = Instant::now();
+        let scrolled = state.column_strip_model().expect("scrolled strip");
+        let scrolled_icons = state.visible_column_entries(VIEWPORT);
+        let scroll_elapsed = scroll_started.elapsed();
+        let scrolled_window = crate::file_view::fixed_virtual_range(
+            ENTRY_COUNT,
+            row_height,
+            VIEWPORT,
+            scrolled_offset,
+            crate::column_view::COLUMN_ROW_OVERSCAN_VIEWPORTS,
+        );
+        let scrolled_rows = &scrolled.panes[current_column];
+        assert_eq!(scrolled_rows.row_count, ENTRY_COUNT);
+        assert_eq!(scrolled_rows.row_origin, scrolled_window.items.start);
+        assert_eq!(scrolled_rows.rows.len(), scrolled_window.items.len());
+        assert!(
+            scrolled_window.items.end <= initial_window.items.start
+                || initial_window.items.end <= scrolled_window.items.start
+        );
+        assert_eq!(
+            scrolled_rows.rows[0].name,
+            large_column_name(scrolled_window.items.start as u32)
+        );
+        assert!(scrolled_icons.iter().all(|entry| {
+            scrolled_window.items.contains(
+                &usize::try_from(large_column_index(&entry.display_name).unwrap()).unwrap(),
+            )
+        }));
+        assert!(scrolled_icons.iter().any(|entry| {
+            !initial_window.items.contains(
+                &usize::try_from(large_column_index(&entry.display_name).unwrap()).unwrap(),
+            )
+        }));
+        assert_eq!(
+            large_column_index(&scrolled_icons[0].display_name),
+            Some(200),
+            "icon requests must prefer the newly visible rows over overscan"
+        );
+        assert_eq!(state.column_projection_rebuilds(), rebuilds);
+        assert!(
+            scroll_elapsed < STEADY_BUDGET,
+            "vertical scroll {scroll_elapsed:?}"
+        );
+        eprintln!(
+            "column-window vertical={scroll_elapsed:?} rows={} icons={} origin={}",
+            scrolled_rows.rows.len(),
+            scrolled_icons.len(),
+            scrolled_rows.row_origin
+        );
+
+        state.set_column_horizontal_offset(0.0);
+        let horizontal_started = Instant::now();
+        let ancestor_strip = state.column_strip_model().expect("ancestor strip");
+        let ancestor_icons = state.visible_column_entries(VIEWPORT);
+        let horizontal_elapsed = horizontal_started.elapsed();
+        assert_eq!(ancestor_strip.panes[current_column].row_count, ENTRY_COUNT);
+        assert!(ancestor_strip.panes[current_column].rows.is_empty());
+        assert!(ancestor_strip.panes[current_column].pinned_row.is_none());
+        assert_eq!(ancestor_strip.panes[0].rows.len(), 3);
+        assert_eq!(realized_column_count(&ancestor_strip), 1);
+        assert!(
+            ancestor_icons
+                .iter()
+                .all(|entry| entry.display_name.starts_with('c'))
+        );
+        assert_eq!(ancestor_icons.len(), 3);
+        assert!(
+            horizontal_elapsed < STEADY_BUDGET,
+            "horizontal scroll {horizontal_elapsed:?}"
+        );
+        assert_eq!(state.column_projection_rebuilds(), rebuilds);
+        eprintln!(
+            "column-window horizontal={horizontal_elapsed:?} rows={} icons={}",
+            ancestor_strip.panes[0].rows.len(),
+            ancestor_icons.len()
+        );
+
+        state.set_column_horizontal_offset(10_000.0);
+        state.set_column_scroll(current_column, 1.0e12);
+        assert_eq!(
+            state
+                .column_branches
+                .get(state.tabs().active_tab_id())
+                .expect("branch")
+                .levels()[current_column]
+                .vertical_offset,
+            ENTRY_COUNT as f32 * row_height - VIEWPORT,
+            "scroll clamp must use the full filtered count"
+        );
+
+        let far_index = 50_000u32;
+        let far = large_column_entry(far_index);
+        assert!(
+            state
+                .activate_column_item(
+                    current_column,
+                    far.id.clone(),
+                    far.location.clone(),
+                    false,
+                    false,
+                    false,
+                )
+                .is_none()
+        );
+        let selected_started = Instant::now();
+        let selected_strip = state.column_strip_model().expect("selected strip");
+        let selected_icons = state.visible_column_entries(VIEWPORT);
+        let selected_elapsed = selected_started.elapsed();
+        let selected_preview = selected_strip.preview_route;
+        let selected_rows = &selected_strip.panes[current_column];
+        assert_eq!(selected_rows.row_count, ENTRY_COUNT);
+        assert!(selected_rows.rows.len() * 100 < ENTRY_COUNT);
+        assert!(
+            selected_rows
+                .rows
+                .iter()
+                .any(|row| row.id == far.id && row.selected)
+        );
+        assert_eq!(state.selected_items()[0].id, far.id);
+        assert_eq!(state.selected_items()[0].location, far.location);
+        assert_eq!(
+            state.integrated_preview_entry().expect("preview").id,
+            far.id
+        );
+        assert_eq!(
+            selected_preview,
+            crate::column_view::ColumnPreviewRoute::PreviewHandler
+        );
+        assert!(selected_icons.iter().any(|entry| entry.id == far.id));
+        assert!(selected_icons.len() <= crate::column_view::COLUMN_ICON_CANDIDATE_LIMIT);
+        assert_eq!(state.column_projection_rebuilds(), rebuilds);
+        assert!(
+            selected_elapsed < STEADY_BUDGET,
+            "selection render {selected_elapsed:?}"
+        );
+        eprintln!(
+            "column-window selection={selected_elapsed:?} rows={} icons={}",
+            selected_rows.rows.len(),
+            selected_icons.len()
+        );
+
+        let renamed = large_column_entry(0);
+        assert!(
+            state
+                .activate_column_item(
+                    current_column,
+                    renamed.id.clone(),
+                    renamed.location.clone(),
+                    false,
+                    false,
+                    false,
+                )
+                .is_none()
+        );
+        assert!(state.begin_focused_inline_rename());
+        state.set_column_scroll(current_column, 1.0e12);
+        let rename_started = Instant::now();
+        let rename_strip = state.column_strip_model().expect("rename strip");
+        let rename_icons = state.visible_column_entries(VIEWPORT);
+        let rename_elapsed = rename_started.elapsed();
+        let rename_rows = &rename_strip.panes[current_column];
+        let rename_window = crate::file_view::fixed_virtual_range(
+            ENTRY_COUNT,
+            row_height,
+            VIEWPORT,
+            rename_rows.vertical_offset,
+            crate::column_view::COLUMN_ROW_OVERSCAN_VIEWPORTS,
+        );
+        assert_eq!(rename_rows.row_count, ENTRY_COUNT);
+        assert_eq!(rename_rows.rows.len(), rename_window.items.len());
+        assert!(!rename_window.items.contains(&0));
+        let pinned = rename_rows.pinned_row.as_ref().expect("rename row");
+        assert_eq!(pinned.0, 0);
+        assert_eq!(pinned.1.id, renamed.id);
+        assert_eq!(pinned.1.name, large_column_name(0));
+        assert!(rename_rows.rows.iter().all(|row| row.id != renamed.id));
+        assert!(rename_rows.rows.len() + 1 < 1_000);
+        assert!(rename_icons.iter().all(|entry| entry.id != renamed.id));
+        assert_eq!(state.rename_editor().expect("editor").item.id, renamed.id);
+        assert_eq!(
+            state.rename_editor().expect("editor").item.location,
+            renamed.location
+        );
+        assert_eq!(state.selected_items()[0].id, renamed.id);
+        assert_eq!(state.selected_items()[0].location, renamed.location);
+        assert_eq!(
+            state.integrated_preview_entry().expect("preview").id,
+            renamed.id
+        );
+        assert_eq!(state.column_projection_rebuilds(), rebuilds);
+        assert!(
+            rename_elapsed < STEADY_BUDGET,
+            "rename render {rename_elapsed:?}"
+        );
+        eprintln!(
+            "column-window rename={rename_elapsed:?} rows={} pinned=1 icons={} steady_max={steady_max:?}",
+            rename_rows.rows.len(),
+            rename_icons.len()
+        );
+    }
+
+    #[test]
+    fn column_view_vertical_navigation_reveals_the_focused_row() {
+        let mut state = prepared_column_scroll_state();
+        let row = crate::column_view::COLUMN_ROW_HEIGHT;
+        state.set_column_scroll(crate::column_view::COLUMN_LIST_VIEWPORT_SLOT, 48.0);
+        let files: Vec<_> = (0..12)
+            .map(|index| column_file((30 + index) as u8, &format!("file-{index:02}")))
+            .collect();
+        let first = files[0].id.clone();
+        let last = files[11].id.clone();
+        let first_location = files[0].location.clone();
+        let last_location = files[11].location.clone();
+        install_ready_entries(&mut state, files);
+        state.set_column_file_viewport_width(420.0);
+        state.ensure_column_branch();
+        let horizontal = state
+            .column_branches
+            .get(state.tabs().active_tab_id())
+            .expect("branch")
+            .horizontal_offset();
+
+        let _ = state.activate_column_item(2, first.clone(), first_location, false, false, false);
+        assert_eq!(column_level_offset(&state, 2), 0.0);
+        for _ in 0..11 {
+            assert!(state.move_column_cursor(1, 0).is_none());
+        }
+        assert_eq!(column_level_offset(&state, 2), 12.0 * row - 48.0);
+        assert_eq!(
+            state
+                .column_branches
+                .get(state.tabs().active_tab_id())
+                .expect("branch")
+                .selected_ids(),
+            std::slice::from_ref(&last)
+        );
+        for _ in 0..11 {
+            assert!(state.move_column_cursor(-1, 0).is_none());
+        }
+        assert_eq!(column_level_offset(&state, 2), 0.0);
+        assert_eq!(
+            state
+                .column_branches
+                .get(state.tabs().active_tab_id())
+                .expect("branch")
+                .selected_ids(),
+            std::slice::from_ref(&first)
+        );
+
+        state.set_column_scroll(2, 0.0);
+        let _ = state.activate_column_item(2, last.clone(), last_location, false, false, false);
+        assert_eq!(column_level_offset(&state, 2), 12.0 * row - 48.0);
+        let _ = state.activate_column_item(
+            2,
+            first,
+            explorer_model::LocationDescriptor::file_system(r"C:\alpha\beta\file-00"),
+            false,
+            false,
+            false,
+        );
+        assert_eq!(column_level_offset(&state, 2), 0.0);
+        assert_eq!(column_level_offset(&state, 1), 0.0);
+        assert!(state.move_column_cursor(0, 1).is_none());
+        assert_eq!(column_level_offset(&state, 2), 0.0);
+        assert_eq!(column_level_offset(&state, 1), 0.0);
+        assert_eq!(
+            state
+                .column_branches
+                .get(state.tabs().active_tab_id())
+                .expect("branch")
+                .horizontal_offset(),
+            horizontal
+        );
+
+        state.set_column_scroll(1, 0.0);
+        assert!(state.move_column_cursor(0, -1).is_none());
+        assert_eq!(column_level_offset(&state, 1), 20.0 * row - 48.0);
+        assert_eq!(
+            column_level_offset(&state, 2),
+            0.0,
+            "revealing the parent does not scroll the child column"
+        );
+        assert_eq!(column_level_offset(&state, 0), 0.0);
+    }
+
+    #[test]
+    fn column_preview_routes_image_folder_offline_and_multiple_without_false_loading() {
+        let mut state = state_with_rows();
+        state.set_drive_kind('C', explorer_model::DriveKind::Fixed);
+        state.set_view_mode(explorer_model::ViewMode::Columns);
+        state.ensure_column_branch();
+        let photo = preview_entry("photo.jpg", 11, false, 0);
+        let offline = preview_entry("cloud.docx", 12, false, 0x1000);
+        let notes = preview_entry("notes.txt", 13, false, 0);
+        let mut folder = preview_entry("folder", 14, true, 0);
+        folder.location = explorer_model::LocationDescriptor::file_system(r"C:\fixture");
+        install_column_entries(
+            &mut state,
+            vec![
+                photo.clone(),
+                offline.clone(),
+                notes.clone(),
+                folder.clone(),
+            ],
+        );
+
+        let column = state
+            .column_branches
+            .get(state.tabs().active_tab_id())
+            .expect("branch")
+            .active_index();
+        let _ = state.activate_column_item(
+            column,
+            photo.id.clone(),
+            photo.location.clone(),
+            false,
+            false,
+            false,
+        );
+        let image = state.column_strip_model().expect("image model");
+        assert_eq!(
+            image.preview_route,
+            crate::column_view::ColumnPreviewRoute::ImageThumbnail
+        );
+        assert_eq!(
+            image.preview_status,
+            state.catalog().t("status-preview-loading")
+        );
+        let ready = crate::column_view::column_preview_chrome(
+            image.preview_route,
+            true,
+            false,
+            crate::column_view::ColumnHandlerPhase::Inactive,
+        );
+        assert!(ready.show_image);
+        assert_eq!(ready.status_id, "chrome-preview-image-loaded");
+        assert!(state.preview_target_matches(&photo.id));
+
+        let _ = state.activate_column_item(
+            column,
+            offline.id.clone(),
+            offline.location.clone(),
+            false,
+            false,
+            false,
+        );
+        let blocked = state.column_strip_model().expect("offline model");
+        assert_eq!(
+            blocked.preview_route,
+            crate::column_view::ColumnPreviewRoute::OfflineBlocked
+        );
+        assert_eq!(
+            blocked.preview_status,
+            state.catalog().t("column-preview-offline")
+        );
+        assert_ne!(
+            blocked.preview_status,
+            state.catalog().t("status-preview-loading")
+        );
+
+        let _ = state.activate_column_item(
+            column,
+            notes.id.clone(),
+            notes.location.clone(),
+            false,
+            false,
+            false,
+        );
+        let _ = state.activate_column_item(
+            column,
+            photo.id.clone(),
+            photo.location.clone(),
+            false,
+            false,
+            true,
+        );
+        let multiple = state.column_strip_model().expect("multiple model");
+        assert_eq!(
+            multiple.preview_route,
+            crate::column_view::ColumnPreviewRoute::Multiple
+        );
+        assert_ne!(
+            multiple.preview_status,
+            state.catalog().t("status-preview-loading")
+        );
+
+        let _ = state.activate_column_item(
+            column,
+            folder.id.clone(),
+            folder.location.clone(),
+            true,
+            false,
+            false,
+        );
+        let summary = state.column_strip_model().expect("folder model");
+        assert_eq!(
+            summary.preview_route,
+            crate::column_view::ColumnPreviewRoute::FolderSummary
+        );
+        assert_eq!(
+            summary.preview_status,
+            state.catalog().t("column-preview-folder")
+        );
+        assert!(state.traverse_focus(crate::focus::FocusDirection::Forward));
+        assert_eq!(state.focused_surface(), FocusSurface::PreviewPane);
+    }
+
+    #[test]
+    fn column_preview_tab_order_follows_the_integrated_preview_and_leaves_the_ordinary_pane_alone()
+    {
+        use crate::focus::{FocusDirection, FocusSurface};
+
+        let columns_at = |path: &str| {
+            let mut state = AppViewState::with_initial_location(explorer_model::HistoryEntry::new(
+                explorer_model::LocationDescriptor::file_system(path),
+                "letters",
+            ));
+            state.set_drive_kind('C', explorer_model::DriveKind::Fixed);
+            state.set_view_mode(explorer_model::ViewMode::Columns);
+            state
+        };
+
+        let mut columns = columns_at(r"C:\letters");
+        assert!(columns.column_preview_open());
+        assert!(!columns.view_settings().preview_pane);
+        assert_eq!(columns.focused_surface(), FocusSurface::FileView);
+        assert!(columns.traverse_focus(FocusDirection::Forward));
+        assert_eq!(columns.focused_surface(), FocusSurface::PreviewPane);
+        assert!(columns.traverse_focus(FocusDirection::Forward));
+        assert_eq!(columns.focused_surface(), FocusSurface::StatusBar);
+        assert!(columns.traverse_focus(FocusDirection::Backward));
+        assert_eq!(columns.focused_surface(), FocusSurface::PreviewPane);
+        assert!(columns.traverse_focus(FocusDirection::Backward));
+        assert_eq!(columns.focused_surface(), FocusSurface::FileView);
+
+        columns.focus(FocusSurface::PreviewPane);
+        columns.toggle_preview_pane();
+        assert!(!columns.column_preview_open());
+        assert!(!columns.view_settings().preview_pane);
+        assert_eq!(
+            columns.focused_surface(),
+            FocusSurface::FileView,
+            "closing the integrated preview returns focus to the files"
+        );
+        assert!(columns.traverse_focus(FocusDirection::Forward));
+        assert_eq!(columns.focused_surface(), FocusSurface::StatusBar);
+
+        let mut mode = columns_at(r"C:\letters-mode");
+        mode.focus(FocusSurface::PreviewPane);
+        mode.set_view_mode(explorer_model::ViewMode::Details);
+        assert!(!mode.column_preview_open());
+        assert_eq!(mode.focused_surface(), FocusSurface::FileView);
+        assert!(mode.view_settings().column_preview_visible);
+
+        let mut open_tab = columns_at(r"C:\letters-tabs");
+        open_tab.focus(FocusSurface::PreviewPane);
+        let open_first = open_tab.tabs().active_tab_id();
+        let _open_second = open_tab.new_tab();
+        assert!(open_tab.activate_tab(open_first));
+        assert_eq!(
+            open_tab.focused_surface(),
+            FocusSurface::PreviewPane,
+            "a tab whose integrated preview is still open restores that focus"
+        );
+
+        let mut stale_tab = columns_at(r"C:\letters-stale");
+        let stale_first = stale_tab.tabs().active_tab_id();
+        let _stale_second = stale_tab.new_tab();
+        stale_tab
+            .tabs
+            .tab_mut(stale_first)
+            .expect("first tab")
+            .view
+            .settings
+            .column_preview_visible = false;
+        stale_tab
+            .tab_focus
+            .insert(stale_first, FocusSurface::PreviewPane);
+        assert!(stale_tab.activate_tab(stale_first));
+        assert_eq!(stale_tab.focused_surface(), FocusSurface::FileView);
+
+        let mut details = AppViewState::default();
+        assert_ne!(
+            details.effective_view_mode(),
+            explorer_model::ViewMode::Columns
+        );
+        let column_preference = details.view_settings().column_preview_visible;
+        assert!(!details.column_preview_open());
+        details.focus(FocusSurface::FileView);
+        assert!(details.traverse_focus(FocusDirection::Forward));
+        assert_ne!(details.focused_surface(), FocusSurface::PreviewPane);
+        details.toggle_preview_pane();
+        assert!(details.view_settings().preview_pane);
+        assert_eq!(
+            details.view_settings().column_preview_visible,
+            column_preference
+        );
+        details.focus(FocusSurface::FileView);
+        assert!(details.traverse_focus(FocusDirection::Forward));
+        assert_eq!(details.focused_surface(), FocusSurface::PreviewPane);
+        details.toggle_preview_pane();
+        assert!(!details.view_settings().preview_pane);
+        assert_eq!(details.focused_surface(), FocusSurface::FileView);
+        assert_eq!(
+            details.view_settings().column_preview_visible,
+            column_preference
+        );
+    }
+
+    fn column_row_ids(
+        state: &AppViewState,
+        selected_only: bool,
+    ) -> Vec<explorer_model::ShellItemId> {
+        state
+            .column_strip_model()
+            .expect("column strip")
+            .panes
+            .into_iter()
+            .flat_map(|pane| {
+                let mut rows = pane.rows;
+                if let Some((_, row)) = pane.pinned_row {
+                    rows.push(row);
+                }
+                rows.into_iter()
+                    .filter(|row| !selected_only || row.selected)
+                    .map(|row| row.id)
+            })
+            .collect()
+    }
+
+    fn assert_column_selection_agrees(
+        state: &AppViewState,
+        expected: &[explorer_model::ShellItemId],
+    ) {
+        let highlighted = column_row_ids(state, true);
+        let commands = state
+            .selected_items()
+            .into_iter()
+            .map(|item| item.id)
+            .collect::<Vec<_>>();
+        let preview = state
+            .column_selected_entries()
+            .into_iter()
+            .map(|entry| entry.id)
+            .collect::<Vec<_>>();
+        assert_eq!(highlighted.len(), expected.len());
+        assert_eq!(commands.len(), expected.len());
+        assert_eq!(preview.len(), expected.len());
+        assert_eq!(state.active_presentation().selected_count, expected.len());
+        for id in expected {
+            assert!(highlighted.contains(id));
+            assert!(commands.contains(id));
+            assert!(preview.contains(id));
+        }
+    }
+
+    fn column_letter(
+        id: u8,
+        folder: &str,
+        name: &str,
+        container: bool,
+    ) -> explorer_model::FileEntry {
+        explorer_model::FileEntry {
+            id: explorer_model::ShellItemId::from_provider_bytes([id]).expect("letter id"),
+            display_name: name.to_owned(),
+            location: explorer_model::LocationDescriptor::file_system(format!(r"{folder}\{name}")),
+            is_container: container,
+            metadata: explorer_model::FileEntryMetadata::default(),
+        }
+    }
+
+    #[test]
+    fn column_view_shift_ctrl_keyboard_and_clear_share_selection_preview_and_commands() {
+        let mut state = AppViewState::with_initial_location(explorer_model::HistoryEntry::new(
+            explorer_model::LocationDescriptor::file_system(r"C:\letters"),
+            "letters",
+        ));
+        state.set_drive_kind('C', explorer_model::DriveKind::Fixed);
+        state.set_view_mode(explorer_model::ViewMode::Columns);
+        let alpha = column_letter(1, r"C:\letters", "a.txt", false);
+        let photo = column_letter(2, r"C:\letters", "b.jpg", false);
+        let gamma = column_letter(3, r"C:\letters", "c.txt", false);
+        let delta = column_letter(4, r"C:\letters", "d.txt", false);
+        install_column_entries(
+            &mut state,
+            vec![alpha.clone(), photo.clone(), gamma.clone(), delta.clone()],
+        );
+        state.ensure_column_branch();
+        let column = state
+            .column_branches
+            .get(state.tabs().active_tab_id())
+            .expect("branch")
+            .active_index();
+        let choose =
+            |state: &mut AppViewState, entry: &explorer_model::FileEntry, shift, control| {
+                let _ = state.activate_column_item(
+                    column,
+                    entry.id.clone(),
+                    entry.location.clone(),
+                    entry.is_container,
+                    shift,
+                    control,
+                );
+            };
+
+        choose(&mut state, &alpha, false, false);
+        assert_column_selection_agrees(&state, &[alpha.id.clone()]);
+        assert_eq!(
+            state.column_strip_model().expect("strip").preview_route,
+            crate::column_view::ColumnPreviewRoute::PreviewHandler
+        );
+        assert_eq!(
+            state.tabs().active_tab().selection.len(),
+            1,
+            "the current column mirrors into the standard selection"
+        );
+
+        assert!(state.move_column_cursor(1, 0).is_none());
+        assert_column_selection_agrees(&state, &[photo.id.clone()]);
+        assert_eq!(
+            state.column_strip_model().expect("strip").preview_route,
+            crate::column_view::ColumnPreviewRoute::ImageThumbnail
+        );
+
+        choose(&mut state, &delta, true, false);
+        assert_column_selection_agrees(
+            &state,
+            &[photo.id.clone(), gamma.id.clone(), delta.id.clone()],
+        );
+        assert!(!column_row_ids(&state, true).contains(&alpha.id));
+        let ranged = state.column_strip_model().expect("shift strip");
+        assert_eq!(
+            ranged.preview_route,
+            crate::column_view::ColumnPreviewRoute::Multiple
+        );
+        assert_ne!(
+            ranged.preview_status,
+            state.catalog().t("status-preview-loading")
+        );
+        assert_eq!(state.tabs().active_tab().selection.len(), 3);
+
+        choose(&mut state, &photo, false, true);
+        assert_column_selection_agrees(&state, &[gamma.id.clone(), delta.id.clone()]);
+        choose(&mut state, &gamma, false, true);
+        choose(&mut state, &delta, false, true);
+        assert_column_selection_agrees(&state, &[]);
+        let cleared = state.column_strip_model().expect("empty strip");
+        assert_eq!(
+            cleared.preview_route,
+            crate::column_view::ColumnPreviewRoute::None
+        );
+        assert_ne!(
+            cleared.preview_status,
+            state.catalog().t("status-preview-loading")
+        );
+        assert!(state.selected_items().is_empty());
+
+        choose(&mut state, &photo, false, false);
+        state.clear_selection();
+        assert_column_selection_agrees(&state, &[]);
+        assert_eq!(
+            state.column_strip_model().expect("cleared").preview_route,
+            crate::column_view::ColumnPreviewRoute::None
+        );
+    }
+
+    #[test]
+    fn column_shift_and_ctrl_arrows_keep_selection_in_the_active_column() {
+        let beta = explorer_model::LocationDescriptor::file_system(r"C:\alpha\beta");
+        let alpha = explorer_model::LocationDescriptor::file_system(r"C:\alpha");
+        let mut state = AppViewState::with_initial_location(explorer_model::HistoryEntry::new(
+            beta.clone(),
+            "beta",
+        ));
+        state.set_drive_kind('C', explorer_model::DriveKind::Fixed);
+        state.set_view_mode(explorer_model::ViewMode::Columns);
+        let deep = column_letter(9, r"C:\alpha\beta", "deep.txt", false);
+        let other = column_letter(8, r"C:\alpha\beta", "other.txt", false);
+        install_column_entries(&mut state, vec![deep.clone(), other.clone()]);
+        state.ensure_column_branch();
+        let opened = column_letter(7, r"C:\alpha", "beta", true);
+        let extra = column_letter(5, r"C:\alpha", "extra.txt", false);
+        let notes = column_letter(4, r"C:\alpha", "notes.txt", false);
+        let mut ancestor = explorer_model::DirectorySnapshot::default();
+        let _ = ancestor.upsert(opened.clone());
+        let _ = ancestor.upsert(extra.clone());
+        let _ = ancestor.upsert(notes.clone());
+        let tab_id = state.tabs().active_tab_id();
+        assert!(
+            state
+                .column_branches
+                .get_mut(tab_id)
+                .expect("branch")
+                .apply_cached_snapshot(1, ancestor)
+        );
+        state
+            .column_branches
+            .get_mut(tab_id)
+            .expect("branch")
+            .remember_branch_child(1, opened.id.clone());
+        let child_column = state
+            .column_branches
+            .get(tab_id)
+            .expect("branch")
+            .active_index();
+        let _ = state.activate_column_item(
+            child_column,
+            deep.id.clone(),
+            deep.location.clone(),
+            false,
+            false,
+            false,
+        );
+        assert!(state.move_column_cursor(0, -1).is_none());
+        let parent = state
+            .column_branches
+            .get(tab_id)
+            .expect("branch")
+            .active_index();
+        assert_ne!(parent, child_column);
+        assert_eq!(
+            state
+                .column_branches
+                .get(tab_id)
+                .expect("branch")
+                .selected_ids(),
+            std::slice::from_ref(&opened.id)
+        );
+
+        let parent_order = state
+            .column_visible_projection(parent)
+            .expect("parent rows")
+            .visible_ids();
+        assert!(parent_order.len() >= 3);
+        assert_eq!(parent_order.first(), Some(&opened.id));
+        assert!(!parent_order.contains(&deep.id));
+        assert!(!parent_order.contains(&other.id));
+        assert!(
+            state
+                .move_column_cursor_modified(1, 0, true, false)
+                .is_none()
+        );
+        assert!(
+            state
+                .move_column_cursor_modified(1, 0, true, false)
+                .is_none()
+        );
+        let selected = state
+            .column_branches
+            .get(tab_id)
+            .expect("branch")
+            .selected_ids()
+            .to_vec();
+        assert_eq!(selected.len(), 3);
+        for id in &parent_order[..3] {
+            assert!(selected.contains(id));
+        }
+        assert!(!selected.contains(&deep.id));
+        assert!(!selected.contains(&other.id));
+        assert_eq!(
+            state
+                .column_branches
+                .get(tab_id)
+                .expect("branch")
+                .active_index(),
+            parent
+        );
+        assert_eq!(state.column_command_parent(), Some(alpha.clone()));
+        assert_eq!(
+            state
+                .column_branches
+                .get(tab_id)
+                .expect("branch")
+                .navigated_location()
+                .cloned(),
+            Some(beta.clone())
+        );
+        assert!(
+            state
+                .selected_items()
+                .iter()
+                .all(|item| item.id != deep.id && item.id != other.id)
+        );
+
+        assert!(
+            state
+                .move_column_cursor_modified(1, 0, false, true)
+                .is_none()
+        );
+        assert_eq!(
+            state
+                .column_branches
+                .get(tab_id)
+                .expect("branch")
+                .selected_ids(),
+            selected.as_slice(),
+            "Ctrl+Down must not replace the active column with the navigated folder"
+        );
+        let focused = selected.last().cloned().expect("focused column item");
+        assert!(state.toggle_focused_column_selection());
+        let toggled = state
+            .column_branches
+            .get(tab_id)
+            .expect("branch")
+            .selected_ids()
+            .to_vec();
+        assert!(!toggled.contains(&focused));
+        assert_eq!(toggled.len(), selected.len() - 1);
+        assert!(toggled.contains(&opened.id));
+        assert!(toggled.iter().all(|id| parent_order.contains(id)));
+        assert!(!toggled.contains(&deep.id));
+        assert!(!toggled.contains(&other.id));
+        assert_eq!(state.column_command_parent(), Some(alpha));
+    }
+
+    #[test]
+    fn column_view_ancestor_selection_keeps_parent_and_survives_tab_and_truncation() {
+        let beta = explorer_model::LocationDescriptor::file_system(r"C:\alpha\beta");
+        let alpha = explorer_model::LocationDescriptor::file_system(r"C:\alpha");
+        let mut state = AppViewState::with_initial_location(explorer_model::HistoryEntry::new(
+            beta.clone(),
+            "beta",
+        ));
+        state.set_drive_kind('C', explorer_model::DriveKind::Fixed);
+        state.set_view_mode(explorer_model::ViewMode::Columns);
+        let deep = column_letter(9, r"C:\alpha\beta", "deep.txt", false);
+        let other = column_letter(8, r"C:\alpha\beta", "other.txt", false);
+        install_column_entries(&mut state, vec![deep.clone(), other.clone()]);
+        state.ensure_column_branch();
+        let notes = column_letter(4, r"C:\alpha", "notes.txt", false);
+        let sibling = column_letter(6, r"C:\alpha", "sibling", true);
+        let mut ancestor = explorer_model::DirectorySnapshot::default();
+        let _ = ancestor.upsert(notes.clone());
+        let _ = ancestor.upsert(sibling.clone());
+        let tab_id = state.tabs().active_tab_id();
+        assert!(
+            state
+                .column_branches
+                .get_mut(tab_id)
+                .expect("branch")
+                .apply_cached_snapshot(1, ancestor)
+        );
+        let current = state
+            .column_branches
+            .get(tab_id)
+            .expect("branch")
+            .active_index();
+        let _ = state.activate_column_item(
+            current,
+            deep.id.clone(),
+            deep.location.clone(),
+            false,
+            false,
+            false,
+        );
+        let _ = state.activate_column_item(
+            current,
+            other.id.clone(),
+            other.location.clone(),
+            false,
+            true,
+            false,
+        );
+        assert_column_selection_agrees(&state, &[deep.id.clone(), other.id.clone()]);
+
+        let _ = state.activate_column_item(
+            1,
+            notes.id.clone(),
+            notes.location.clone(),
+            false,
+            false,
+            true,
+        );
+        assert_column_selection_agrees(&state, &[notes.id.clone()]);
+        assert!(!column_row_ids(&state, true).contains(&deep.id));
+        assert!(!column_row_ids(&state, true).contains(&other.id));
+        assert_eq!(state.column_command_parent(), Some(alpha.clone()));
+        assert_eq!(
+            state.selected_items()[0].location,
+            notes.location,
+            "the ancestor file keeps its own location"
+        );
+        assert_eq!(
+            state.column_strip_model().expect("notes").preview_route,
+            crate::column_view::ColumnPreviewRoute::PreviewHandler
+        );
+        assert!(
+            state
+                .column_branches
+                .get(tab_id)
+                .expect("branch")
+                .levels()
+                .iter()
+                .any(|level| level.location == beta),
+            "ctrl toggle must not truncate the open branch"
+        );
+
+        let command = state.activate_column_item(
+            1,
+            notes.id.clone(),
+            notes.location.clone(),
+            false,
+            false,
+            false,
+        );
+        assert!(matches!(
+            command,
+            Some(explorer_model::ExplorerCommand::Navigate { location, .. }) if location == alpha
+        ));
+        assert_column_selection_agrees(&state, &[notes.id.clone()]);
+        assert_eq!(state.column_command_parent(), Some(alpha.clone()));
+        assert!(
+            state
+                .column_branches
+                .get(tab_id)
+                .expect("branch")
+                .levels()
+                .iter()
+                .all(|level| level.location != beta)
+        );
+        assert_eq!(state.selected_items()[0].location, notes.location);
+        let alpha_index = state
+            .column_branches
+            .get(tab_id)
+            .expect("branch")
+            .levels()
+            .iter()
+            .position(|level| level.location == alpha)
+            .expect("alpha column");
+
+        let other_tab = state.new_tab();
+        state.ensure_column_branch();
+        assert_column_selection_agrees(&state, &[]);
+        assert_eq!(
+            state.column_strip_model().expect("other tab").preview_route,
+            crate::column_view::ColumnPreviewRoute::None
+        );
+        assert!(state.activate_tab(tab_id));
+        state.ensure_column_branch();
+        assert_column_selection_agrees(&state, &[notes.id.clone()]);
+
+        let truncated = state.activate_column_item(
+            alpha_index,
+            sibling.id.clone(),
+            sibling.location.clone(),
+            true,
+            false,
+            false,
+        );
+        assert!(matches!(
+            truncated,
+            Some(explorer_model::ExplorerCommand::Navigate { .. })
+        ));
+        assert_column_selection_agrees(&state, &[]);
+        assert_eq!(
+            state.column_strip_model().expect("truncated").preview_route,
+            crate::column_view::ColumnPreviewRoute::None
+        );
+        let _ = other_tab;
+    }
+
+    fn column_command_capabilities() -> explorer_model::NamespaceCapabilities {
+        explorer_model::NamespaceCapabilities::from_public_bits(
+            explorer_model::NamespaceCapabilities::OPEN
+                | explorer_model::NamespaceCapabilities::COPY
+                | explorer_model::NamespaceCapabilities::DELETE
+                | explorer_model::NamespaceCapabilities::RENAME
+                | explorer_model::NamespaceCapabilities::PROPERTIES
+                | explorer_model::NamespaceCapabilities::CONTEXT_MENU,
+        )
+    }
+
+    fn with_column_commands(mut entry: explorer_model::FileEntry) -> explorer_model::FileEntry {
+        entry.metadata.namespace_capabilities = column_command_capabilities();
+        entry
+    }
+
+    fn mark_column_location_writable(
+        state: &mut AppViewState,
+        location: explorer_model::LocationDescriptor,
+        title: &str,
+    ) {
+        let command = state.begin_active_location_load().expect("load");
+        let context = command.context().expect("context").clone();
+        assert_eq!(
+            state.apply_service_event(explorer_model::ExplorerEvent::LocationResolved {
+                context,
+                metadata: explorer_model::LocationMetadata {
+                    descriptor: location,
+                    display_title: title.to_owned(),
+                    can_go_up: true,
+                    can_write: true,
+                },
+            }),
+            explorer_model::WindowEventOutcome::Applied
+        );
+    }
+
+    struct AncestorColumnFixture {
+        state: AppViewState,
+        alpha: explorer_model::LocationDescriptor,
+        beta: explorer_model::LocationDescriptor,
+        alpha_index: usize,
+        beta_index: usize,
+        notes: explorer_model::FileEntry,
+        deep: explorer_model::FileEntry,
+        sibling: explorer_model::FileEntry,
+    }
+
+    fn ancestor_column_fixture() -> AncestorColumnFixture {
+        let beta = explorer_model::LocationDescriptor::file_system(r"C:\alpha\beta");
+        let alpha = explorer_model::LocationDescriptor::file_system(r"C:\alpha");
+        let mut state = AppViewState::with_initial_location(explorer_model::HistoryEntry::new(
+            beta.clone(),
+            "beta",
+        ));
+        state.set_drive_kind('C', explorer_model::DriveKind::Fixed);
+        state.set_view_mode(explorer_model::ViewMode::Columns);
+        mark_column_location_writable(&mut state, beta.clone(), "beta");
+        let deep = with_column_commands(column_letter(9, r"C:\alpha\beta", "deep.txt", false));
+        let other = with_column_commands(column_letter(8, r"C:\alpha\beta", "other.txt", false));
+        install_column_entries(&mut state, vec![deep.clone(), other.clone()]);
+        state.ensure_column_branch();
+        let notes = with_column_commands(column_letter(4, r"C:\alpha", "notes.txt", false));
+        let sibling = with_column_commands(column_letter(6, r"C:\alpha", "sibling", true));
+        let mut ancestor = explorer_model::DirectorySnapshot::default();
+        let _ = ancestor.upsert(notes.clone());
+        let _ = ancestor.upsert(sibling.clone());
+        let (alpha_index, beta_index) = {
+            let branch = state
+                .column_branches
+                .get(state.tabs().active_tab_id())
+                .expect("branch");
+            (
+                branch
+                    .levels()
+                    .iter()
+                    .position(|level| level.location == alpha)
+                    .expect("alpha column"),
+                branch
+                    .levels()
+                    .iter()
+                    .position(|level| level.location == beta)
+                    .expect("beta column"),
+            )
+        };
+        assert!(
+            state
+                .column_branches
+                .get_mut(state.tabs().active_tab_id())
+                .expect("branch")
+                .apply_cached_snapshot(alpha_index, ancestor)
+        );
+        let _ = state.activate_column_item(
+            beta_index,
+            deep.id.clone(),
+            deep.location.clone(),
+            false,
+            false,
+            false,
+        );
+        AncestorColumnFixture {
+            state,
+            alpha,
+            beta,
+            alpha_index,
+            beta_index,
+            notes,
+            deep,
+            sibling,
+        }
+    }
+
+    #[test]
+    fn column_view_ancestor_commands_use_that_column_instead_of_the_rightmost_selection() {
+        let mut fixture = ancestor_column_fixture();
+        let state = &mut fixture.state;
+        assert_eq!(
+            state.selected_items()[0].id,
+            fixture.deep.id,
+            "precondition: the navigated column is the stale selection"
+        );
+        assert!(state.begin_context_item_gesture(
+            Some(fixture.alpha_index),
+            fixture.notes.id.clone(),
+            8.0,
+            12.0,
+            false,
+        ));
+        let menu = state
+            .begin_context_menu_request(
+                Some(fixture.notes.id.clone()),
+                7,
+                30,
+                40,
+                8.0,
+                12.0,
+                false,
+                false,
+            )
+            .expect("ancestor context menu");
+        let explorer_model::ExplorerCommand::ShowContextMenu { request, .. } = menu else {
+            panic!("expected context menu command");
+        };
+        let explorer_model::ShellContextMenuTarget::Items { parent, items } = request.target else {
+            panic!("item menu");
+        };
+        assert_eq!(parent, fixture.alpha);
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].id, fixture.notes.id);
+        assert_eq!(items[0].location, fixture.notes.location);
+        assert_ne!(items[0].id, fixture.deep.id);
+
+        state
+            .tabs
+            .active_tab_mut()
+            .selection
+            .select_only(fixture.deep.id.clone());
+        let copied = state
+            .begin_clipboard_request(explorer_model::ClipboardMode::Copy)
+            .expect("copy");
+        let explorer_model::ExplorerCommand::DataTransfer {
+            request: explorer_model::DataTransferRequest::Copy { items },
+            ..
+        } = copied
+        else {
+            panic!("copy payload");
+        };
+        assert_eq!(items[0].id, fixture.notes.id);
+        assert_eq!(items[0].location, fixture.notes.location);
+        let cut = state
+            .begin_clipboard_request(explorer_model::ClipboardMode::Cut)
+            .expect("cut");
+        let explorer_model::ExplorerCommand::DataTransfer {
+            request: explorer_model::DataTransferRequest::Cut { items },
+            ..
+        } = cut
+        else {
+            panic!("cut payload");
+        };
+        assert_eq!(items[0].id, fixture.notes.id);
+        let deleted = state.recycle_selected_request().expect("delete");
+        let explorer_model::FileOperationKind::RecycleDelete { items } = deleted.kind else {
+            panic!("recycle payload");
+        };
+        assert_eq!(items[0].id, fixture.notes.id);
+        assert_eq!(items[0].location, fixture.notes.location);
+
+        let _ = state.apply_service_event(explorer_model::ExplorerEvent::ClipboardChanged {
+            state: explorer_model::ClipboardState::Owned {
+                mode: explorer_model::ClipboardMode::Copy,
+                items: vec![explorer_model::ItemDescriptor {
+                    id: fixture.deep.id.clone(),
+                    location: fixture.deep.location.clone(),
+                }],
+                effects: explorer_model::TransferEffects::COPY,
+                generation: 2,
+            },
+        });
+        state.prepare_column_context_target(fixture.alpha_index, None);
+        let pasted = state
+            .begin_paste_request(explorer_model::ConflictDecision::Prompt)
+            .expect("paste");
+        let explorer_model::ExplorerCommand::DataTransfer {
+            request: explorer_model::DataTransferRequest::Paste { destination, .. },
+            ..
+        } = pasted
+        else {
+            panic!("paste payload");
+        };
+        assert_eq!(destination, fixture.alpha);
+        assert_ne!(destination, fixture.beta);
+        state.pending_context_menu = None;
+        let background = state
+            .begin_context_menu_request(None, 7, 1, 2, 0.0, 0.0, true, false)
+            .expect("background menu");
+        let explorer_model::ExplorerCommand::ShowContextMenu { request, .. } = background else {
+            panic!("background command");
+        };
+        assert!(matches!(
+            request.target,
+            explorer_model::ShellContextMenuTarget::Background { parent } if parent == fixture.alpha
+        ));
+
+        state.prepare_column_context_target(fixture.alpha_index, Some(&fixture.notes.id));
+        state
+            .tabs
+            .active_tab_mut()
+            .selection
+            .select_only(fixture.deep.id.clone());
+        let trace = crate::actions::dispatch_action(
+            state,
+            crate::actions::ExplorerAction::BeginRenameFocused,
+            crate::actions::ActionSource::Keyboard,
+        );
+        assert_eq!(trace.outcome, crate::actions::ActionOutcome::Handled);
+        let editor = state.rename_editor().expect("f2 editor").clone();
+        assert_eq!(editor.item.id, fixture.notes.id);
+        assert_eq!(editor.item.location, fixture.notes.location);
+        assert_eq!(editor.buffer, "notes.txt");
+        assert_ne!(editor.item.id, fixture.deep.id);
+        assert!(state.update_inline_rename("renamed.txt".to_owned()));
+        state
+            .tabs
+            .active_tab_mut()
+            .selection
+            .select_only(fixture.deep.id.clone());
+        let renamed = state
+            .commit_inline_rename(explorer_model::RenameCommitTrigger::Enter)
+            .expect("commit")
+            .expect("rename request");
+        let explorer_model::FileOperationKind::Rename { item, new_name } = renamed.kind else {
+            panic!("rename payload");
+        };
+        assert_eq!(item.id, fixture.notes.id);
+        assert_eq!(item.location, fixture.notes.location);
+        assert_eq!(new_name, "renamed.txt");
+
+        let mut details = state_with_rows();
+        assert!(details.begin_focused_inline_rename());
+        assert_eq!(
+            details.rename_editor().expect("details editor").buffer,
+            "folder"
+        );
+    }
+
+    #[test]
+    fn column_view_drag_open_and_drop_use_the_ancestor_identity() {
+        let mut fixture = ancestor_column_fixture();
+        let state = &mut fixture.state;
+        let opened = state
+            .open_column_item(
+                fixture.alpha_index,
+                fixture.notes.id.clone(),
+                fixture.notes.location.clone(),
+                false,
+            )
+            .expect("open");
+        let explorer_model::ExplorerCommand::OpenItem { item, .. } = opened else {
+            panic!("open payload");
+        };
+        assert_eq!(item.id, fixture.notes.id);
+        assert_eq!(item.location, fixture.notes.location);
+        assert!(
+            state
+                .column_branches
+                .get(state.tabs().active_tab_id())
+                .expect("branch")
+                .levels()
+                .iter()
+                .any(|level| level.location == fixture.beta)
+        );
+        let _ = state.activate_column_item(
+            fixture.beta_index,
+            fixture.deep.id.clone(),
+            fixture.deep.location.clone(),
+            false,
+            false,
+            false,
+        );
+        assert!(state.press_column_row(
+            fixture.alpha_index,
+            fixture.notes.id.clone(),
+            fixture.notes.location.clone(),
+            false,
+            1.0,
+            1.0,
+            false,
+            false,
+        ));
+        assert!(state.update_drag_pointer(40.0, 1.0));
+        let drag = state.take_pending_drag_command().expect("begin drag");
+        let explorer_model::ExplorerCommand::DataTransfer {
+            request: explorer_model::DataTransferRequest::BeginDrag { items, .. },
+            ..
+        } = drag
+        else {
+            panic!("drag payload");
+        };
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].id, fixture.notes.id);
+        assert_eq!(items[0].location, fixture.notes.location);
+        assert!(
+            state
+                .column_branches
+                .get(state.tabs().active_tab_id())
+                .expect("branch")
+                .levels()
+                .iter()
+                .any(|level| level.location == fixture.beta),
+            "dragging an ancestor must not truncate the open branch"
+        );
+        assert!(state.finish_column_press().is_none());
+
+        let notes_path = fixture
+            .notes
+            .location
+            .path()
+            .expect("notes path")
+            .to_path_buf();
+        let moved = state
+            .column_drop_transfer(
+                fixture.beta_index,
+                None,
+                std::slice::from_ref(&notes_path),
+                explorer_model::DragEffect::Move,
+                false,
+                explorer_model::TransferEffects {
+                    copy: true,
+                    move_item: true,
+                    link: false,
+                },
+            )
+            .expect("internal move");
+        let explorer_model::ExplorerCommand::ExecuteFileOperation { request, .. } = moved else {
+            panic!("internal drop payload");
+        };
+        let explorer_model::FileOperationKind::Move { items, destination } = request.kind else {
+            panic!("move kind");
+        };
+        assert_eq!(items[0].id, fixture.notes.id);
+        assert_eq!(items[0].location, fixture.notes.location);
+        assert_eq!(destination, fixture.beta);
+
+        let external = state
+            .column_drop_transfer(
+                fixture.alpha_index,
+                None,
+                &[std::path::PathBuf::from(r"D:\outside\other.txt")],
+                explorer_model::DragEffect::Copy,
+                false,
+                explorer_model::TransferEffects::COPY,
+            )
+            .expect("external drop");
+        let explorer_model::ExplorerCommand::DataTransfer {
+            request:
+                explorer_model::DataTransferRequest::DropExternal {
+                    destination,
+                    sources,
+                    ..
+                },
+            ..
+        } = external
+        else {
+            panic!("external payload");
+        };
+        assert_eq!(destination, fixture.alpha);
+        assert_ne!(destination, fixture.beta);
+        assert_eq!(sources.len(), 1);
+    }
+
+    #[test]
+    fn column_view_paste_and_drop_use_the_selected_folder_not_the_rightmost_column() {
+        let mut fixture = ancestor_column_fixture();
+        let state = &mut fixture.state;
+        let _ = state.apply_service_event(explorer_model::ExplorerEvent::ClipboardChanged {
+            state: explorer_model::ClipboardState::Owned {
+                mode: explorer_model::ClipboardMode::Copy,
+                items: vec![explorer_model::ItemDescriptor {
+                    id: fixture.notes.id.clone(),
+                    location: fixture.notes.location.clone(),
+                }],
+                effects: explorer_model::TransferEffects::COPY,
+                generation: 4,
+            },
+        });
+        state.prepare_column_context_target(fixture.alpha_index, Some(&fixture.sibling.id));
+        state
+            .tabs
+            .active_tab_mut()
+            .selection
+            .select_only(fixture.deep.id.clone());
+        let pasted = state
+            .begin_paste_request(explorer_model::ConflictDecision::Prompt)
+            .expect("paste into selected folder");
+        let explorer_model::ExplorerCommand::DataTransfer {
+            request: explorer_model::DataTransferRequest::Paste { destination, .. },
+            ..
+        } = pasted
+        else {
+            panic!("paste payload");
+        };
+        assert_eq!(destination, fixture.sibling.location);
+        assert_ne!(destination, fixture.alpha);
+        assert_ne!(destination, fixture.beta);
+
+        state.prepare_column_context_target(fixture.alpha_index, Some(&fixture.notes.id));
+        state
+            .tabs
+            .active_tab_mut()
+            .selection
+            .select_only(fixture.deep.id.clone());
+        let pasted = state
+            .begin_paste_request(explorer_model::ConflictDecision::Prompt)
+            .expect("paste beside a selected file");
+        let explorer_model::ExplorerCommand::DataTransfer {
+            request: explorer_model::DataTransferRequest::Paste { destination, .. },
+            ..
+        } = pasted
+        else {
+            panic!("file paste payload");
+        };
+        assert_eq!(
+            destination, fixture.alpha,
+            "a selected file pastes into its column, not into the file"
+        );
+        assert_ne!(destination, fixture.notes.location);
+        assert_ne!(destination, fixture.beta);
+
+        state.prepare_column_context_target(fixture.alpha_index, Some(&fixture.notes.id));
+        let notes_path = fixture
+            .notes
+            .location
+            .path()
+            .expect("notes path")
+            .to_path_buf();
+        let moved = state
+            .column_drop_transfer(
+                fixture.alpha_index,
+                Some(&fixture.sibling.id),
+                std::slice::from_ref(&notes_path),
+                explorer_model::DragEffect::Move,
+                false,
+                explorer_model::TransferEffects {
+                    copy: true,
+                    move_item: true,
+                    link: false,
+                },
+            )
+            .expect("drop onto selected folder");
+        let explorer_model::ExplorerCommand::ExecuteFileOperation { request, .. } = moved else {
+            panic!("folder drop payload");
+        };
+        let explorer_model::FileOperationKind::Move { items, destination } = request.kind else {
+            panic!("move kind");
+        };
+        assert_eq!(items[0].id, fixture.notes.id);
+        assert_eq!(items[0].location, fixture.notes.location);
+        assert_eq!(destination, fixture.sibling.location);
+        assert_ne!(destination, fixture.beta);
+        assert_ne!(destination, fixture.alpha);
+    }
+
+    #[test]
+    fn cross_column_hover_drop_moves_the_child_file_into_the_ancestor_sibling() {
+        let mut fixture = ancestor_column_fixture();
+        let state = &mut fixture.state;
+        let deep_path = fixture
+            .deep
+            .location
+            .path()
+            .expect("child file path")
+            .to_path_buf();
+        let paths = gpui::ExternalPaths::with_metadata(
+            [deep_path.clone()].into_iter().collect(),
+            gpui::ExternalDropMetadata {
+                allowed: gpui::ExternalDropEffects {
+                    copy: true,
+                    move_item: true,
+                    link: false,
+                },
+                ..gpui::ExternalDropMetadata::default()
+            },
+        );
+        let untouched = paths.drop_metadata().negotiated;
+        assert!(
+            crate::column_view::column_drag_hover_effect(&paths, &fixture.sibling.location, false)
+                .is_none(),
+            "a folder row the pointer has left must not rewrite the OLE effect"
+        );
+        assert_eq!(paths.drop_metadata().negotiated, untouched);
+
+        let effect =
+            crate::column_view::column_drag_hover_effect(&paths, &fixture.sibling.location, true)
+                .expect("the pointer is on the ancestor sibling folder");
+        assert_eq!(effect, explorer_model::DragEffect::Move);
+        assert_eq!(
+            paths.drop_metadata().negotiated,
+            gpui::ExternalDropEffect::Move
+        );
+        assert_eq!(
+            crate::column_view::column_drag_hover_effect(&paths, &fixture.beta, true),
+            Some(explorer_model::DragEffect::None),
+            "the open child column is the file's parent and must not accept the move"
+        );
+
+        let effect = crate::column_view::negotiate_column_drop(&paths, &fixture.sibling.location);
+        assert_eq!(effect, explorer_model::DragEffect::Move);
+        let moved = state
+            .column_drop_transfer(
+                fixture.alpha_index,
+                Some(&fixture.sibling.id),
+                std::slice::from_ref(&deep_path),
+                effect,
+                false,
+                explorer_model::TransferEffects {
+                    copy: true,
+                    move_item: true,
+                    link: false,
+                },
+            )
+            .expect("DropOnColumn dispatch");
+        let explorer_model::ExplorerCommand::ExecuteFileOperation { request, .. } = moved else {
+            panic!("internal sibling move");
+        };
+        let explorer_model::FileOperationKind::Move { items, destination } = request.kind else {
+            panic!("move kind");
+        };
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].id, fixture.deep.id);
+        assert_eq!(items[0].location, fixture.deep.location);
+        assert_eq!(destination, fixture.sibling.location);
+        assert_ne!(destination, fixture.beta);
+        assert_ne!(destination, fixture.alpha);
+        assert!(
+            state
+                .column_drop_transfer(
+                    fixture.beta_index,
+                    None,
+                    std::slice::from_ref(&deep_path),
+                    explorer_model::DragEffect::None,
+                    false,
+                    explorer_model::TransferEffects {
+                        copy: true,
+                        move_item: true,
+                        link: false,
+                    },
+                )
+                .is_none(),
+            "a rejected effect must not dispatch a file operation"
+        );
+    }
+
+    #[test]
+    fn column_view_refresh_reloads_ancestors_and_drops_a_missing_branch_child() {
+        let mut fixture = ancestor_column_fixture();
+        let state = &mut fixture.state;
+        let before = state
+            .column_branches
+            .get(state.tabs().active_tab_id())
+            .expect("branch")
+            .levels()
+            .len();
+        let loads = state.plan_column_refresh_after_mutation();
+        assert!(loads.iter().any(|command| matches!(
+            command,
+            explorer_model::ExplorerCommand::EnumerateColumn { location, .. }
+                if location == &fixture.alpha
+        )));
+        assert_eq!(
+            state
+                .column_branches
+                .get(state.tabs().active_tab_id())
+                .expect("branch")
+                .levels()
+                .len(),
+            before,
+            "refresh planning keeps the visible branch"
+        );
+
+        state
+            .column_branches
+            .get_mut(state.tabs().active_tab_id())
+            .expect("branch")
+            .remember_branch_child(fixture.alpha_index, fixture.sibling.id.clone());
+        let mut remaining = explorer_model::DirectorySnapshot::default();
+        let _ = remaining.upsert(fixture.notes.clone());
+        state
+            .column_branches
+            .get_mut(state.tabs().active_tab_id())
+            .expect("branch")
+            .invalidate_location(&fixture.alpha);
+        assert!(
+            state
+                .column_branches
+                .get_mut(state.tabs().active_tab_id())
+                .expect("branch")
+                .apply_cached_snapshot(fixture.alpha_index, remaining)
+        );
+        state.reconcile_column_after_load(&fixture.alpha);
+        let levels = state
+            .column_branches
+            .get(state.tabs().active_tab_id())
+            .expect("branch")
+            .levels()
+            .iter()
+            .map(|level| level.location.clone())
+            .collect::<Vec<_>>();
+        assert!(levels.contains(&fixture.alpha));
+        assert!(!levels.contains(&fixture.beta));
+        let repair = state
+            .take_pending_column_repair()
+            .expect("repair navigation");
+        assert!(matches!(
+            repair,
+            explorer_model::ExplorerCommand::Navigate { location, .. } if location == fixture.alpha
+        ));
+    }
+
+    fn column_locations(state: &AppViewState) -> Vec<explorer_model::LocationDescriptor> {
+        state
+            .column_branches
+            .get(state.tabs().active_tab_id())
+            .expect("column branch")
+            .levels()
+            .iter()
+            .map(|level| level.location.clone())
+            .collect()
+    }
+
+    fn column_pane<'a>(
+        strip: &'a crate::column_view::ColumnStripModel,
+        title: &str,
+    ) -> &'a crate::column_view::ColumnPaneModel {
+        strip
+            .panes
+            .iter()
+            .find(|pane| pane.title == title)
+            .unwrap_or_else(|| panic!("missing column {title}"))
+    }
+
+    fn finish_column_directory(
+        state: &mut AppViewState,
+        command: &explorer_model::ExplorerCommand,
+        location: explorer_model::LocationDescriptor,
+        entries: Vec<explorer_model::FileEntry>,
+    ) {
+        let context = command.context().expect("navigation context").clone();
+        assert_eq!(
+            state.apply_service_event(explorer_model::ExplorerEvent::LocationResolved {
+                context: context.clone(),
+                metadata: explorer_model::LocationMetadata {
+                    descriptor: location,
+                    display_title: "column".to_owned(),
+                    can_go_up: true,
+                    can_write: true,
+                },
+            }),
+            explorer_model::WindowEventOutcome::Applied
+        );
+        if !entries.is_empty() {
+            assert_eq!(
+                state.apply_service_event(explorer_model::ExplorerEvent::DirectoryBatch {
+                    context: context.clone(),
+                    entries,
+                }),
+                explorer_model::WindowEventOutcome::Applied
+            );
+        }
+        assert_eq!(
+            state.apply_service_event(explorer_model::ExplorerEvent::DirectoryFinished { context }),
+            explorer_model::WindowEventOutcome::Applied
+        );
+    }
+
+    fn fail_column_directory(
+        state: &mut AppViewState,
+        command: &explorer_model::ExplorerCommand,
+        location: explorer_model::LocationDescriptor,
+        message: &str,
+    ) {
+        let context = command.context().expect("navigation context").clone();
+        assert_eq!(
+            state.apply_service_event(explorer_model::ExplorerEvent::LocationResolved {
+                context: context.clone(),
+                metadata: explorer_model::LocationMetadata {
+                    descriptor: location,
+                    display_title: "column".to_owned(),
+                    can_go_up: true,
+                    can_write: false,
+                },
+            }),
+            explorer_model::WindowEventOutcome::Applied
+        );
+        assert_eq!(
+            state.apply_service_event(explorer_model::ExplorerEvent::Failed {
+                context,
+                error: explorer_common::ExplorerError::new(
+                    explorer_common::ExplorerErrorKind::Authorization,
+                    "enumerate",
+                    true,
+                    message,
+                    "access denied",
+                ),
+            }),
+            explorer_model::WindowEventOutcome::Applied
+        );
+    }
+
+    fn open_column_folder(
+        state: &mut AppViewState,
+        parent_title: &str,
+        folder: &explorer_model::FileEntry,
+    ) -> explorer_model::ExplorerCommand {
+        state.ensure_column_branch();
+        let parent = column_locations(state)
+            .iter()
+            .position(|location| {
+                location
+                    .path()
+                    .and_then(|path| path.file_name())
+                    .is_some_and(|name| name.to_string_lossy() == parent_title)
+            })
+            .unwrap_or_else(|| panic!("missing parent {parent_title}"));
+        state
+            .activate_column_item(
+                parent,
+                folder.id.clone(),
+                folder.location.clone(),
+                true,
+                false,
+                false,
+            )
+            .expect("folder navigation")
+    }
+
+    #[test]
+    fn column_empty_current_folder_keeps_parent_and_does_not_look_ready() {
+        let alpha = explorer_model::LocationDescriptor::file_system(r"C:\alpha");
+        let mut state = AppViewState::with_initial_location(explorer_model::HistoryEntry::new(
+            alpha.clone(),
+            "alpha",
+        ));
+        state.set_drive_kind('C', explorer_model::DriveKind::Fixed);
+        state.set_view_mode(explorer_model::ViewMode::Columns);
+        let notes = column_letter(1, r"C:\alpha", "notes.txt", false);
+        let empty = column_letter(2, r"C:\alpha", "empty", true);
+        let nested = column_letter(3, r"C:\alpha", "nested", true);
+        let load = state.begin_active_location_load().expect("load alpha");
+        finish_column_directory(
+            &mut state,
+            &load,
+            alpha,
+            vec![notes.clone(), empty.clone(), nested.clone()],
+        );
+        let nested_child = column_letter(4, r"C:\alpha\nested", "child.txt", false);
+        let opened = open_column_folder(&mut state, "alpha", &nested);
+        finish_column_directory(
+            &mut state,
+            &opened,
+            nested.location.clone(),
+            vec![nested_child],
+        );
+        state.ensure_column_branch();
+        assert!(
+            column_locations(&state).iter().any(|location| {
+                location == &explorer_model::LocationDescriptor::file_system(r"C:\alpha\nested")
+            }),
+            "precondition: nested column is open"
+        );
+
+        let selecting = open_column_folder(&mut state, "alpha", &empty);
+        state.ensure_column_branch();
+        let loading = state.column_strip_model().expect("loading strip");
+        let parent = column_pane(&loading, "alpha");
+        assert!(
+            parent.row_count >= 3,
+            "the parent column stays usable while the child loads"
+        );
+        assert!(parent.rows.iter().any(|row| row.name == "notes.txt"));
+        assert_eq!(
+            column_pane(&loading, "empty").status,
+            crate::column_view::ColumnPaneStatus::Loading
+        );
+        assert!(
+            !column_locations(&state).iter().any(|location| {
+                location == &explorer_model::LocationDescriptor::file_system(r"C:\alpha\nested")
+            }),
+            "opening empty truncates the previous descendant"
+        );
+
+        finish_column_directory(&mut state, &selecting, empty.location.clone(), Vec::new());
+        state.ensure_column_branch();
+        let ready = state.column_strip_model().expect("empty strip");
+        let empty_pane = column_pane(&ready, "empty");
+        assert_eq!(
+            empty_pane.status,
+            crate::column_view::ColumnPaneStatus::Empty
+        );
+        assert_eq!(empty_pane.row_count, 0);
+        assert_ne!(
+            empty_pane.status,
+            crate::column_view::ColumnPaneStatus::Ready
+        );
+        assert!(
+            column_pane(&ready, "alpha")
+                .rows
+                .iter()
+                .any(|row| row.name == "notes.txt")
+        );
+        assert!(!column_locations(&state).iter().any(|location| {
+            location == &explorer_model::LocationDescriptor::file_system(r"C:\alpha\nested")
+        }));
+
+        let _ = state.begin_refresh_navigation();
+        state.invalidate_column_branch();
+        state.ensure_column_branch();
+        let _ = state.plan_column_loads();
+        assert!(
+            !column_locations(&state).iter().any(|location| {
+                location == &explorer_model::LocationDescriptor::file_system(r"C:\alpha\nested")
+            }),
+            "refresh must not revive the truncated descendant"
+        );
+        let refreshed = state.column_strip_model().expect("refreshed empty strip");
+        assert_eq!(
+            column_pane(&refreshed, "empty").status,
+            crate::column_view::ColumnPaneStatus::Loading
+        );
+        assert!(column_pane(&refreshed, "alpha").row_count >= 1 || refreshed.panes.len() >= 2);
+    }
+
+    #[test]
+    fn column_empty_ancestor_is_not_ready_when_cache_has_rows() {
+        let mut state = AppViewState::with_initial_location(explorer_model::HistoryEntry::new(
+            explorer_model::LocationDescriptor::file_system(r"C:\alpha"),
+            "alpha",
+        ));
+        state.set_drive_kind('C', explorer_model::DriveKind::Fixed);
+        state.set_view_mode(explorer_model::ViewMode::Columns);
+        state.set_column_file_viewport_width(2_000.0);
+        install_column_entries(
+            &mut state,
+            vec![column_letter(1, r"C:\alpha", "notes.txt", false)],
+        );
+        state.ensure_column_branch();
+        let root = explorer_model::LocationDescriptor::file_system(r"C:\");
+        let mut stale = explorer_model::DirectorySnapshot::default();
+        let _ = stale.upsert(column_letter(9, r"C:\", "stale.txt", false));
+        let loads = column_load_commands(&state.plan_column_loads());
+        let root_load = loads
+            .iter()
+            .find(|load| load.1 == root)
+            .cloned()
+            .expect("root column load");
+        state.directory_cache.insert(&root, stale);
+        assert!(state.apply_column_event(
+            &explorer_model::ExplorerEvent::ColumnDirectoryFinished {
+                context: root_load.0,
+                branch_revision: root_load.2,
+                location: root,
+                outcome: explorer_model::ColumnListingTerminal::Empty,
+            }
+        ));
+        let strip = state.column_strip_model().expect("strip");
+        let root_pane = &strip.panes[0];
+        assert_eq!(
+            root_pane.status,
+            crate::column_view::ColumnPaneStatus::Empty
+        );
+        assert_eq!(root_pane.row_count, 0);
+        assert!(root_pane.rows.iter().all(|row| row.name != "stale.txt"));
+        assert_ne!(
+            root_pane.status,
+            crate::column_view::ColumnPaneStatus::Ready
+        );
+    }
+
+    #[test]
+    fn column_loading_partial_keeps_rows_and_loading_status() {
+        let location = explorer_model::LocationDescriptor::file_system(r"C:\alpha");
+        let mut state = AppViewState::with_initial_location(explorer_model::HistoryEntry::new(
+            location.clone(),
+            "alpha",
+        ));
+        state.set_drive_kind('C', explorer_model::DriveKind::Fixed);
+        state.set_view_mode(explorer_model::ViewMode::Columns);
+        state.set_column_file_viewport_width(2_000.0);
+        let refresh = state.begin_refresh_navigation().expect("refresh");
+        let context = refresh.context().expect("context").clone();
+        let partial = column_letter(3, r"C:\alpha", "partial.txt", false);
+        assert_eq!(
+            state.apply_service_event(explorer_model::ExplorerEvent::DirectoryBatch {
+                context,
+                entries: vec![partial.clone()],
+            }),
+            explorer_model::WindowEventOutcome::Applied
+        );
+        state.ensure_column_branch();
+        let strip = state.column_strip_model().expect("partial strip");
+        let current = column_pane(&strip, "alpha");
+        assert_eq!(
+            current.status,
+            crate::column_view::ColumnPaneStatus::Loading
+        );
+        assert!(current.rows.iter().any(|row| row.name == "partial.txt"));
+        assert_ne!(current.status, crate::column_view::ColumnPaneStatus::Ready);
+        assert_ne!(current.status, crate::column_view::ColumnPaneStatus::Empty);
+
+        let ancestor_loads = column_load_commands(&state.plan_column_loads());
+        let root = explorer_model::LocationDescriptor::file_system(r"C:\");
+        let root_load = ancestor_loads
+            .iter()
+            .find(|load| load.1 == root)
+            .cloned()
+            .expect("ancestor load");
+        assert!(
+            state.apply_column_event(&explorer_model::ExplorerEvent::ColumnDirectoryBatch {
+                context: root_load.0.clone(),
+                branch_revision: root_load.2,
+                location: root.clone(),
+                entries: vec![column_letter(8, r"C:\", "seen.txt", false)],
+            })
+        );
+        let loading_ancestor = state.column_strip_model().expect("ancestor partial");
+        let root_pane = &loading_ancestor.panes[0];
+        assert_eq!(
+            root_pane.status,
+            crate::column_view::ColumnPaneStatus::Loading
+        );
+        assert!(root_pane.rows.iter().any(|row| row.name == "seen.txt"));
+        assert_ne!(
+            root_pane.status,
+            crate::column_view::ColumnPaneStatus::Ready
+        );
+    }
+
+    #[test]
+    fn column_error_with_previous_rows_is_not_an_empty_folder() {
+        let location = explorer_model::LocationDescriptor::file_system(r"C:\alpha");
+        let mut state = AppViewState::with_initial_location(explorer_model::HistoryEntry::new(
+            location.clone(),
+            "alpha",
+        ));
+        state.set_drive_kind('C', explorer_model::DriveKind::Fixed);
+        state.set_view_mode(explorer_model::ViewMode::Columns);
+        state.set_column_file_viewport_width(2_000.0);
+        install_column_entries(
+            &mut state,
+            vec![column_letter(1, r"C:\alpha", "kept.txt", false)],
+        );
+        let refresh = state.begin_refresh_navigation().expect("refresh");
+        let context = refresh.context().expect("context").clone();
+        let message = "Access is denied.";
+        assert_eq!(
+            state.apply_service_event(explorer_model::ExplorerEvent::Failed {
+                context,
+                error: explorer_common::ExplorerError::new(
+                    explorer_common::ExplorerErrorKind::Authorization,
+                    "enumerate",
+                    true,
+                    message,
+                    "0x80070005",
+                ),
+            }),
+            explorer_model::WindowEventOutcome::Applied
+        );
+        state.ensure_column_branch();
+        let strip = state.column_strip_model().expect("error strip");
+        let current = column_pane(&strip, "alpha");
+        assert_eq!(
+            current.status,
+            crate::column_view::ColumnPaneStatus::Error(explorer_model::ColumnFault::Inaccessible)
+        );
+        assert!(current.rows.iter().any(|row| row.name == "kept.txt"));
+        assert_eq!(current.status_detail.as_deref(), Some(message));
+        let empty = state.catalog().t("column-empty");
+        assert_ne!(current.status_detail.as_deref(), Some(empty.as_str()));
+        assert_ne!(current.status, crate::column_view::ColumnPaneStatus::Empty);
+        assert_ne!(current.status, crate::column_view::ColumnPaneStatus::Ready);
+
+        let root = explorer_model::LocationDescriptor::file_system(r"C:\");
+        let loads = column_load_commands(&state.plan_column_loads());
+        let root_load = loads
+            .iter()
+            .find(|load| load.1 == root)
+            .cloned()
+            .expect("ancestor load");
+        let mut previous = explorer_model::DirectorySnapshot::default();
+        let _ = previous.upsert(column_letter(6, r"C:\", "previous.txt", false));
+        state.directory_cache.insert(&root, previous);
+        assert!(state.apply_column_event(
+            &explorer_model::ExplorerEvent::ColumnDirectoryFinished {
+                context: root_load.0,
+                branch_revision: root_load.2,
+                location: root,
+                outcome: explorer_model::ColumnListingTerminal::Failed(
+                    explorer_common::ExplorerError::new(
+                        explorer_common::ExplorerErrorKind::Authorization,
+                        "enumerate",
+                        true,
+                        message,
+                        "0x80070005",
+                    )
+                ),
+            }
+        ));
+        let ancestor = state.column_strip_model().expect("ancestor error");
+        let root_pane = &ancestor.panes[0];
+        assert_eq!(
+            root_pane.status,
+            crate::column_view::ColumnPaneStatus::Error(explorer_model::ColumnFault::Inaccessible)
+        );
+        assert!(root_pane.rows.iter().any(|row| row.name == "previous.txt"));
+        assert_ne!(
+            root_pane.status,
+            crate::column_view::ColumnPaneStatus::Empty
+        );
+    }
+
+    #[test]
+    fn column_error_without_rows_is_not_ready_and_parent_stays_usable() {
+        let alpha = explorer_model::LocationDescriptor::file_system(r"C:\alpha");
+        let mut state = AppViewState::with_initial_location(explorer_model::HistoryEntry::new(
+            alpha.clone(),
+            "alpha",
+        ));
+        state.set_drive_kind('C', explorer_model::DriveKind::Fixed);
+        state.set_view_mode(explorer_model::ViewMode::Columns);
+        let notes = column_letter(1, r"C:\alpha", "notes.txt", false);
+        let locked = column_letter(2, r"C:\alpha", "locked", true);
+        let load = state.begin_active_location_load().expect("load alpha");
+        finish_column_directory(&mut state, &load, alpha, vec![notes, locked.clone()]);
+        let opening = open_column_folder(&mut state, "alpha", &locked);
+        let message = "Can't read this folder contents.";
+        fail_column_directory(&mut state, &opening, locked.location.clone(), message);
+        state.ensure_column_branch();
+        let strip = state.column_strip_model().expect("failed child");
+        let parent = column_pane(&strip, "alpha");
+        assert!(parent.rows.iter().any(|row| row.name == "notes.txt"));
+        assert!(parent.row_count >= 2);
+        let failed = column_pane(&strip, "locked");
+        assert_eq!(
+            failed.status,
+            crate::column_view::ColumnPaneStatus::Error(explorer_model::ColumnFault::Inaccessible)
+        );
+        assert_eq!(failed.row_count, 0);
+        assert_eq!(failed.status_detail.as_deref(), Some(message));
+        assert_ne!(failed.status, crate::column_view::ColumnPaneStatus::Empty);
+        assert_ne!(failed.status, crate::column_view::ColumnPaneStatus::Ready);
+        assert_ne!(
+            failed.status_detail.as_deref(),
+            Some(state.catalog().t("column-empty").as_str())
+        );
+    }
+
+    #[test]
+    fn column_refresh_after_removed_folder_does_not_revive_descendants() {
+        let gamma = explorer_model::LocationDescriptor::file_system(r"C:\alpha\beta\gamma");
+        let alpha = explorer_model::LocationDescriptor::file_system(r"C:\alpha");
+        let beta = explorer_model::LocationDescriptor::file_system(r"C:\alpha\beta");
+        let mut state = AppViewState::with_initial_location(explorer_model::HistoryEntry::new(
+            gamma.clone(),
+            "gamma",
+        ));
+        state.set_drive_kind('C', explorer_model::DriveKind::Fixed);
+        state.set_view_mode(explorer_model::ViewMode::Columns);
+        state.set_column_file_viewport_width(2_000.0);
+        mark_column_location_writable(&mut state, gamma.clone(), "gamma");
+        install_column_entries(
+            &mut state,
+            vec![column_letter(1, r"C:\alpha\beta\gamma", "file.txt", false)],
+        );
+        state.ensure_column_branch();
+        let beta_folder = column_letter(7, r"C:\alpha", "beta", true);
+        let mut stale_alpha = explorer_model::DirectorySnapshot::default();
+        let _ = stale_alpha.upsert(beta_folder.clone());
+        let _ = stale_alpha.upsert(column_letter(5, r"C:\alpha", "notes.txt", false));
+        let alpha_index = column_locations(&state)
+            .iter()
+            .position(|location| location == &alpha)
+            .expect("alpha column");
+        assert!(
+            state
+                .column_branches
+                .get_mut(state.tabs().active_tab_id())
+                .expect("branch")
+                .apply_cached_snapshot(alpha_index, stale_alpha.clone())
+        );
+        state
+            .column_branches
+            .get_mut(state.tabs().active_tab_id())
+            .expect("branch")
+            .remember_branch_child(alpha_index, beta_folder.id.clone());
+        state.directory_cache.insert(&alpha, stale_alpha);
+        assert!(column_locations(&state).contains(&beta));
+        assert!(column_locations(&state).contains(&gamma));
+
+        let _ = state.begin_refresh_navigation();
+        state.invalidate_column_branch();
+        state.ensure_column_branch();
+        let loads = column_load_commands(&state.plan_column_loads());
+        let alpha_load =
+            loads.iter().find(|load| load.1 == alpha).cloned().expect(
+                "refresh enumerates the ancestor instead of trusting the removed child cache",
+            );
+        let mut remaining = explorer_model::DirectorySnapshot::default();
+        let _ = remaining.upsert(column_letter(5, r"C:\alpha", "notes.txt", false));
+        assert!(
+            state.apply_column_event(&explorer_model::ExplorerEvent::ColumnDirectoryBatch {
+                context: alpha_load.0.clone(),
+                branch_revision: alpha_load.2,
+                location: alpha.clone(),
+                entries: remaining.entries().to_vec(),
+            })
+        );
+        assert!(state.apply_column_event(
+            &explorer_model::ExplorerEvent::ColumnDirectoryFinished {
+                context: alpha_load.0.clone(),
+                branch_revision: alpha_load.2,
+                location: alpha.clone(),
+                outcome: explorer_model::ColumnListingTerminal::Finished,
+            }
+        ));
+        let locations = column_locations(&state);
+        assert!(locations.contains(&alpha));
+        assert!(!locations.contains(&beta));
+        assert!(!locations.contains(&gamma));
+        let repair = state
+            .take_pending_column_repair()
+            .expect("repair leaves the removed branch");
+        assert!(matches!(
+            &repair,
+            explorer_model::ExplorerCommand::Navigate { location, .. } if location == &alpha
+        ));
+        state.ensure_column_branch();
+        assert!(!column_locations(&state).contains(&gamma));
+        assert!(
+            !state.apply_column_event(&explorer_model::ExplorerEvent::ColumnDirectoryBatch {
+                context: alpha_load.0.clone(),
+                branch_revision: alpha_load.2,
+                location: gamma.clone(),
+                entries: vec![column_letter(1, r"C:\alpha\beta\gamma", "file.txt", false)],
+            })
+        );
+        assert!(!column_locations(&state).contains(&gamma));
+
+        let notes = column_letter(5, r"C:\alpha", "notes.txt", false);
+        finish_column_directory(&mut state, &repair, alpha.clone(), vec![notes]);
+        state.ensure_column_branch();
+        assert_eq!(
+            state
+                .tabs()
+                .active_tab()
+                .history
+                .current()
+                .map(|entry| entry.location.clone()),
+            Some(alpha.clone())
+        );
+        assert!(!column_locations(&state).contains(&beta));
+        assert!(!column_locations(&state).contains(&gamma));
+
+        let mut revived = explorer_model::DirectorySnapshot::default();
+        let _ = revived.upsert(beta_folder);
+        state.directory_cache.insert(&alpha, revived);
+        let _ = state.begin_refresh_navigation();
+        state.invalidate_column_branch();
+        state.ensure_column_branch();
+        let again = column_load_commands(&state.plan_column_loads());
+        assert!(
+            again.iter().all(|load| load.1 != beta && load.1 != gamma),
+            "refresh must not enumerate a removed descendant"
+        );
+        for load in again {
+            assert!(state.apply_column_event(
+                &explorer_model::ExplorerEvent::ColumnDirectoryFinished {
+                    context: load.0,
+                    branch_revision: load.2,
+                    location: load.1,
+                    outcome: explorer_model::ColumnListingTerminal::Empty,
+                }
+            ));
+        }
+        state.ensure_column_branch();
+        assert!(!column_locations(&state).contains(&beta));
+        assert!(!column_locations(&state).contains(&gamma));
+        assert!(column_locations(&state).contains(&alpha));
+    }
+
+    #[test]
+    fn column_view_auxiliary_loads_follow_the_visible_strip_until_one_terminal() {
+        let mut state = AppViewState::with_initial_location(explorer_model::HistoryEntry::new(
+            explorer_model::LocationDescriptor::file_system(r"C:\a\b\c\d\e\f"),
+            "f",
+        ));
+        state.set_drive_kind('C', explorer_model::DriveKind::Fixed);
+        state.set_view_mode(explorer_model::ViewMode::Columns);
+        state.toggle_preview_pane();
+        state.set_column_file_viewport_width(480.0);
+        state.ensure_column_branch();
+        state.set_column_horizontal_offset(720.0);
+        let mut highest = 0_usize;
+        let commands = state.plan_column_loads();
+        let loads = column_load_commands(&commands);
+        highest = highest.max(state.column_loads.active_count());
+        assert_eq!(loads.len(), explorer_model::COLUMN_LOAD_CONCURRENCY);
+        assert_eq!(
+            state.column_loads.active_count(),
+            explorer_model::COLUMN_LOAD_CONCURRENCY
+        );
+        assert_eq!(
+            loads[0].1,
+            explorer_model::LocationDescriptor::file_system(r"C:\a\b\c\d")
+        );
+        assert_eq!(
+            loads[1].1,
+            explorer_model::LocationDescriptor::file_system(r"C:\a\b\c")
+        );
+        let names = ["a.txt", "b.txt", "c.txt"];
+        for (index, name) in names.iter().enumerate() {
+            let entry = mixed_column_entry(20 + index as u8, r"C:\a\b\c\d", name, false, 0);
+            assert!(state.apply_column_event(
+                &explorer_model::ExplorerEvent::ColumnDirectoryBatch {
+                    context: loads[0].0.clone(),
+                    branch_revision: loads[0].2,
+                    location: loads[0].1.clone(),
+                    entries: vec![entry],
+                }
+            ));
+            assert_eq!(
+                state.column_loads.active_count(),
+                explorer_model::COLUMN_LOAD_CONCURRENCY
+            );
+        }
+        let blocked = state.plan_column_loads();
+        assert!(column_load_commands(&blocked).is_empty());
+        assert!(state.apply_column_event(
+            &explorer_model::ExplorerEvent::ColumnDirectoryFinished {
+                context: loads[0].0.clone(),
+                branch_revision: loads[0].2,
+                location: loads[0].1.clone(),
+                outcome: explorer_model::ColumnListingTerminal::Finished,
+            }
+        ));
+        assert_eq!(
+            state.column_loads.active_count(),
+            explorer_model::COLUMN_LOAD_CONCURRENCY - 1
+        );
+        assert_eq!(column_ready_names(&state, &loads[0].1), names);
+        assert!(!state.apply_column_event(
+            &explorer_model::ExplorerEvent::ColumnDirectoryFinished {
+                context: loads[0].0.clone(),
+                branch_revision: loads[0].2,
+                location: loads[0].1.clone(),
+                outcome: explorer_model::ColumnListingTerminal::Finished,
+            }
+        ));
+        assert_eq!(
+            state.column_loads.active_count(),
+            explorer_model::COLUMN_LOAD_CONCURRENCY - 1
+        );
+        assert!(
+            !state.apply_column_event(&explorer_model::ExplorerEvent::ColumnDirectoryBatch {
+                context: loads[0].0.clone(),
+                branch_revision: loads[0].2,
+                location: loads[0].1.clone(),
+                entries: vec![mixed_column_entry(29, r"C:\a\b\c\d", "late.txt", false, 0)],
+            })
+        );
+        assert_eq!(column_ready_names(&state, &loads[0].1), names);
+
+        assert!(state.apply_column_event(
+            &explorer_model::ExplorerEvent::ColumnDirectoryFinished {
+                context: loads[1].0.clone(),
+                branch_revision: loads[1].2,
+                location: loads[1].1.clone(),
+                outcome: explorer_model::ColumnListingTerminal::Finished,
+            }
+        ));
+        assert_eq!(state.column_loads.active_count(), 0);
+        assert!(
+            !state.apply_column_event(&explorer_model::ExplorerEvent::ColumnDirectoryBatch {
+                context: loads[1].0.clone(),
+                branch_revision: loads[1].2,
+                location: loads[1].1.clone(),
+                entries: vec![mixed_column_entry(30, r"C:\a\b\c", "missed.txt", false, 0)],
+            })
+        );
+        assert!(column_ready_names(&state, &loads[1].1).is_empty());
+
+        let started = column_load_commands(&state.plan_column_loads());
+        assert_eq!(started.len(), explorer_model::COLUMN_LOAD_CONCURRENCY);
+        assert!(
+            started
+                .iter()
+                .all(|load| { load.1 != explorer_model::LocationDescriptor::file_system(r"C:\") })
+        );
+        highest = highest.max(state.column_loads.active_count());
+        assert!(
+            !state.apply_column_event(&explorer_model::ExplorerEvent::ColumnDirectoryBatch {
+                context: started[0].0.clone(),
+                branch_revision: started[0].2.wrapping_add(1),
+                location: started[0].1.clone(),
+                entries: vec![mixed_column_entry(31, r"C:\stale", "stale.txt", false, 0)],
+            })
+        );
+        assert_eq!(
+            state.column_loads.active_count(),
+            explorer_model::COLUMN_LOAD_CONCURRENCY
+        );
+        assert!(state.apply_column_event(
+            &explorer_model::ExplorerEvent::ColumnDirectoryFinished {
+                context: started[0].0.clone(),
+                branch_revision: started[0].2,
+                location: started[0].1.clone(),
+                outcome: explorer_model::ColumnListingTerminal::Cancelled,
+            }
+        ));
+        assert_eq!(
+            state.column_loads.active_count(),
+            explorer_model::COLUMN_LOAD_CONCURRENCY - 1
+        );
+        assert!(!state.apply_column_event(
+            &explorer_model::ExplorerEvent::ColumnDirectoryFinished {
+                context: started[0].0.clone(),
+                branch_revision: started[0].2,
+                location: started[0].1.clone(),
+                outcome: explorer_model::ColumnListingTerminal::Cancelled,
+            }
+        ));
+        assert_eq!(
+            state.column_loads.active_count(),
+            explorer_model::COLUMN_LOAD_CONCURRENCY - 1
+        );
+
+        let previous = state.tabs().active_tab_id();
+        let _other = state.new_tab();
+        state.set_drive_kind('C', explorer_model::DriveKind::Fixed);
+        let switched = state.plan_column_loads();
+        assert!(switched.iter().any(|command| matches!(
+            command,
+            explorer_model::ExplorerCommand::Cancel { request_id }
+                if *request_id == started[1].0.request_id
+        )));
+        highest = highest.max(state.column_loads.active_count());
+        assert!(state.column_loads.active_count() <= explorer_model::COLUMN_LOAD_CONCURRENCY);
+        assert!(
+            !state.apply_column_event(&explorer_model::ExplorerEvent::ColumnDirectoryBatch {
+                context: started[1].0.clone(),
+                branch_revision: started[1].2,
+                location: started[1].1.clone(),
+                entries: vec![mixed_column_entry(32, r"C:\a", "tab.txt", false, 0)],
+            })
+        );
+        let before_terminal = state.column_loads.active_count();
+        assert!(before_terminal >= 1);
+        assert!(state.apply_column_event(
+            &explorer_model::ExplorerEvent::ColumnDirectoryFinished {
+                context: started[1].0.clone(),
+                branch_revision: started[1].2,
+                location: started[1].1.clone(),
+                outcome: explorer_model::ColumnListingTerminal::Cancelled,
+            }
+        ));
+        assert_eq!(state.column_loads.active_count(), before_terminal - 1);
+        assert_eq!(state.column_loads.in_flight_count(previous), 0);
+        assert!(highest <= explorer_model::COLUMN_LOAD_CONCURRENCY);
+        assert!(state.column_loads.active_count() <= explorer_model::COLUMN_LOAD_CONCURRENCY);
+    }
+
+    fn column_load_commands(
+        commands: &[explorer_model::ExplorerCommand],
+    ) -> Vec<(
+        explorer_model::RequestContext,
+        explorer_model::LocationDescriptor,
+        u64,
+    )> {
+        commands
+            .iter()
+            .filter_map(|command| match command {
+                explorer_model::ExplorerCommand::EnumerateColumn {
+                    context,
+                    location,
+                    branch_revision,
+                } => Some((context.clone(), location.clone(), *branch_revision)),
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn column_ready_names(
+        state: &AppViewState,
+        location: &explorer_model::LocationDescriptor,
+    ) -> Vec<String> {
+        let branch = state
+            .column_branches
+            .get(state.tabs().active_tab_id())
+            .expect("column branch");
+        branch
+            .levels()
+            .iter()
+            .find(|level| &level.location == location)
+            .map(|level| match &level.phase {
+                explorer_model::ColumnPhase::Ready(snapshot) => snapshot
+                    .entries()
+                    .iter()
+                    .map(|entry| entry.display_name.clone())
+                    .collect(),
+                explorer_model::ColumnPhase::Empty => Vec::new(),
+                other => panic!("column {location:?} was {other:?}"),
+            })
+            .unwrap_or_default()
+    }
+
+    fn mixed_column_entry(
+        id: u8,
+        directory: &str,
+        name: &str,
+        container: bool,
+        attributes: u32,
+    ) -> explorer_model::FileEntry {
+        explorer_model::FileEntry {
+            id: explorer_model::ShellItemId::from_provider_bytes([id]).expect("mixed id"),
+            display_name: name.to_owned(),
+            location: explorer_model::LocationDescriptor::file_system(format!(
+                r"{directory}\{name}"
+            )),
+            is_container: container,
+            metadata: explorer_model::FileEntryMetadata {
+                filesystem_attributes: attributes,
+                ..explorer_model::FileEntryMetadata::default()
+            },
+        }
+    }
+
+    fn ready_snapshot(
+        entries: Vec<explorer_model::FileEntry>,
+    ) -> explorer_model::DirectorySnapshot {
+        let mut snapshot = explorer_model::DirectorySnapshot::default();
+        for entry in entries {
+            let _ = snapshot.upsert(entry);
+        }
+        snapshot
+    }
+
+    fn projected_rows(
+        snapshot: &explorer_model::DirectorySnapshot,
+        hidden_items: bool,
+        direction: explorer_model::SortDirection,
+        filters: &crate::file_view::DetailsFilters,
+    ) -> Vec<(
+        explorer_model::ShellItemId,
+        String,
+        explorer_model::LocationDescriptor,
+    )> {
+        let presentation = crate::file_view::DirectoryPresentation::build_filtered(
+            snapshot,
+            hidden_items,
+            explorer_model::SortDescriptor {
+                column: explorer_model::ColumnId::Name,
+                direction,
+            },
+            filters.clone(),
+        );
+        (0..presentation.len())
+            .filter_map(|index| {
+                presentation.entry(index).map(|(_, entry)| {
+                    (
+                        entry.id.clone(),
+                        entry.display_name.clone(),
+                        entry.location.clone(),
+                    )
+                })
+            })
+            .collect()
+    }
+
+    fn pane_rows(
+        state: &AppViewState,
+        column: usize,
+    ) -> Vec<(
+        explorer_model::ShellItemId,
+        String,
+        explorer_model::LocationDescriptor,
+    )> {
+        state
+            .column_strip_model()
+            .expect("column strip")
+            .panes
+            .into_iter()
+            .nth(column)
+            .expect("column pane")
+            .rows
+            .into_iter()
+            .map(|row| (row.id, row.name, row.location))
+            .collect()
+    }
+
+    fn assert_pane_projects(
+        state: &AppViewState,
+        column: usize,
+        snapshot: &explorer_model::DirectorySnapshot,
+        hidden_items: bool,
+        direction: explorer_model::SortDirection,
+        filters: &crate::file_view::DetailsFilters,
+    ) {
+        let expected = projected_rows(snapshot, hidden_items, direction, filters);
+        let actual = pane_rows(state, column);
+        assert_eq!(actual.len(), expected.len());
+        for (actual, expected) in actual.iter().zip(expected.iter()) {
+            assert_eq!(actual.0, expected.0);
+            assert_eq!(actual.1, expected.1);
+            assert_eq!(actual.2, expected.2);
+        }
+        assert!(
+            actual.iter().all(|row| row.1 != "system.dat"),
+            "protected system items stay hidden"
+        );
+    }
+
+    fn column_selected(state: &AppViewState) -> Vec<explorer_model::ShellItemId> {
+        state
+            .column_branches
+            .get(state.tabs().active_tab_id())
+            .expect("branch")
+            .selected_ids()
+            .to_vec()
+    }
+
+    #[test]
+    fn column_view_every_level_uses_the_filtered_sorted_order() {
+        const HIDDEN: u32 = 0x2;
+        const SYSTEM: u32 = 0x4;
+        const DIRECTORY: u32 = 0x10;
+        const ARCHIVE: u32 = 0x20;
+        let alpha = explorer_model::LocationDescriptor::file_system(r"C:\alpha");
+        let beta = explorer_model::LocationDescriptor::file_system(r"C:\alpha\beta");
+        let mut state = AppViewState::with_initial_location(explorer_model::HistoryEntry::new(
+            beta.clone(),
+            "beta",
+        ));
+        state.set_drive_kind('C', explorer_model::DriveKind::Fixed);
+        state.set_view_mode(explorer_model::ViewMode::Columns);
+        state.ensure_column_branch();
+        let ancestor_entries = vec![
+            mixed_column_entry(1, r"C:\alpha", "hidden.txt", false, HIDDEN),
+            mixed_column_entry(2, r"C:\alpha", "system.dat", false, SYSTEM),
+            mixed_column_entry(3, r"C:\alpha", "mike.txt", false, ARCHIVE),
+            mixed_column_entry(4, r"C:\alpha", "zeta", true, DIRECTORY),
+            mixed_column_entry(5, r"C:\alpha", "alpha.txt", false, ARCHIVE),
+            mixed_column_entry(6, r"C:\alpha", "hide-dir", true, HIDDEN | DIRECTORY),
+        ];
+        let current_entries = vec![
+            mixed_column_entry(11, r"C:\alpha\beta", "hidden.txt", false, HIDDEN),
+            mixed_column_entry(12, r"C:\alpha\beta", "system.dat", false, SYSTEM),
+            mixed_column_entry(13, r"C:\alpha\beta", "mike.txt", false, ARCHIVE),
+            mixed_column_entry(14, r"C:\alpha\beta", "zeta", true, DIRECTORY),
+            mixed_column_entry(15, r"C:\alpha\beta", "alpha.txt", false, ARCHIVE),
+            mixed_column_entry(16, r"C:\alpha\beta", "hide-dir", true, HIDDEN | DIRECTORY),
+        ];
+        let ancestor = ready_snapshot(ancestor_entries);
+        let current = ready_snapshot(current_entries);
+        let raw_names = current
+            .entries()
+            .iter()
+            .map(|entry| entry.display_name.as_str())
+            .collect::<Vec<_>>();
+        assert_ne!(
+            raw_names,
+            ["zeta", "alpha.txt", "mike.txt"],
+            "the fixture order must differ from the visible projection"
+        );
+        let (ancestor_index, current_index) = {
+            let branch = state
+                .column_branches
+                .get(state.tabs().active_tab_id())
+                .expect("branch");
+            (
+                branch
+                    .levels()
+                    .iter()
+                    .position(|level| level.location == alpha)
+                    .expect("ancestor column"),
+                branch
+                    .levels()
+                    .iter()
+                    .position(|level| level.location == beta)
+                    .expect("current column"),
+            )
+        };
+        assert!(
+            state
+                .column_branches
+                .get_mut(state.tabs().active_tab_id())
+                .expect("branch")
+                .apply_cached_snapshot(ancestor_index, ancestor.clone())
+        );
+        state.tabs.active_tab_mut().directory =
+            explorer_model::DirectoryState::Ready(current.clone());
+        let filters = crate::file_view::DetailsFilters::default();
+        let ascending = explorer_model::SortDirection::Ascending;
+        assert_pane_projects(
+            &state,
+            ancestor_index,
+            &ancestor,
+            false,
+            ascending,
+            &filters,
+        );
+        assert_pane_projects(&state, current_index, &current, false, ascending, &filters);
+        assert_eq!(
+            pane_rows(&state, current_index)
+                .into_iter()
+                .map(|row| row.1)
+                .collect::<Vec<_>>(),
+            ["zeta", "alpha.txt", "mike.txt"]
+        );
+
+        let row_height = crate::column_view::COLUMN_ROW_HEIGHT;
+        state.set_column_horizontal_offset(15.0);
+        let horizontal = state
+            .column_branches
+            .get(state.tabs().active_tab_id())
+            .expect("branch")
+            .horizontal_offset();
+        state.set_column_scroll(crate::column_view::COLUMN_LIST_VIEWPORT_SLOT, 48.0);
+        let built = state.column_projection_rebuilds();
+        state.set_column_scroll(ancestor_index, 9_000.0);
+        state.set_column_scroll(current_index, 9_000.0);
+        state.set_column_scroll(0, 9_000.0);
+        assert_eq!(column_level_offset(&state, 0), 0.0);
+        assert_eq!(
+            column_level_offset(&state, ancestor_index),
+            3.0 * row_height - 48.0,
+            "scroll bounds follow the visible rows, not the raw snapshot"
+        );
+        assert_eq!(
+            column_level_offset(&state, current_index),
+            3.0 * row_height - 48.0
+        );
+        for _ in 0..6 {
+            state.set_column_scroll(ancestor_index, 4.0);
+            state.set_column_scroll(current_index, 4.0);
+        }
+        assert_eq!(
+            state.column_projection_rebuilds(),
+            built,
+            "wheel clamping must reuse the cached projection"
+        );
+        assert_eq!(
+            state
+                .column_branches
+                .get(state.tabs().active_tab_id())
+                .expect("branch")
+                .horizontal_offset(),
+            horizontal
+        );
+
+        let alpha_file = current
+            .entries()
+            .iter()
+            .find(|entry| entry.display_name == "alpha.txt")
+            .unwrap()
+            .clone();
+        let mike_file = current
+            .entries()
+            .iter()
+            .find(|entry| entry.display_name == "mike.txt")
+            .unwrap()
+            .clone();
+        let hidden_file = current
+            .entries()
+            .iter()
+            .find(|entry| entry.display_name == "hidden.txt")
+            .unwrap()
+            .clone();
+        let zeta_id = current
+            .entries()
+            .iter()
+            .find(|entry| entry.display_name == "zeta")
+            .unwrap()
+            .id
+            .clone();
+        let _ = state.activate_column_item(
+            current_index,
+            alpha_file.id.clone(),
+            alpha_file.location.clone(),
+            false,
+            false,
+            false,
+        );
+        assert_eq!(
+            state.integrated_preview_entry().map(|entry| entry.location),
+            Some(alpha_file.location.clone()),
+            "preview keeps the real file location"
+        );
+        assert_eq!(
+            state.column_strip_model().expect("preview").preview_route,
+            crate::column_view::ColumnPreviewRoute::PreviewHandler
+        );
+        let _ = state.activate_column_item(
+            current_index,
+            mike_file.id.clone(),
+            mike_file.location.clone(),
+            false,
+            true,
+            false,
+        );
+        assert_eq!(
+            column_selected(&state),
+            vec![alpha_file.id.clone(), mike_file.id.clone()]
+        );
+        assert!(!column_selected(&state).contains(&zeta_id));
+        assert!(!column_selected(&state).contains(&hidden_file.id));
+        let commanded = state.selected_items();
+        assert_eq!(commanded.len(), 2);
+        assert_eq!(commanded[0].location, alpha_file.location);
+        assert_eq!(commanded[1].location, mike_file.location);
+        assert!(state.move_column_cursor(1, 0).is_none());
+        assert_eq!(column_selected(&state), vec![mike_file.id.clone()]);
+
+        let ancestor_rows = pane_rows(&state, ancestor_index);
+        let ancestor_alpha = ancestor
+            .entries()
+            .iter()
+            .find(|entry| entry.display_name == "alpha.txt")
+            .unwrap()
+            .clone();
+        let ancestor_mike = ancestor
+            .entries()
+            .iter()
+            .find(|entry| entry.display_name == "mike.txt")
+            .unwrap()
+            .clone();
+        let _ = state.activate_column_item(
+            ancestor_index,
+            ancestor_alpha.id.clone(),
+            ancestor_alpha.location.clone(),
+            false,
+            true,
+            false,
+        );
+        let _ = state.activate_column_item(
+            ancestor_index,
+            ancestor_mike.id.clone(),
+            ancestor_mike.location.clone(),
+            false,
+            true,
+            false,
+        );
+        assert_eq!(
+            column_selected(&state),
+            vec![ancestor_alpha.id.clone(), ancestor_mike.id.clone()]
+        );
+        assert_eq!(state.column_command_parent(), Some(alpha.clone()));
+        assert_eq!(state.selected_items()[0].location, ancestor_alpha.location);
+        assert_eq!(state.selected_items()[1].location, ancestor_mike.location);
+        assert_eq!(pane_rows(&state, current_index).len(), 3);
+        for _ in 0..ancestor_rows.len() {
+            if column_selected(&state) == [ancestor_rows[0].0.clone()] {
+                break;
+            }
+            assert!(state.move_column_cursor(-1, 0).is_none());
+        }
+        assert_eq!(column_selected(&state), vec![ancestor_rows[0].0.clone()]);
+        for row in ancestor_rows.iter().skip(1) {
+            assert!(state.move_column_cursor(1, 0).is_none());
+            assert_eq!(column_selected(&state), vec![row.0.clone()]);
+        }
+        assert_eq!(pane_rows(&state, current_index).len(), 3);
+
+        state.toggle_hidden_items();
+        assert_pane_projects(&state, ancestor_index, &ancestor, true, ascending, &filters);
+        assert_pane_projects(&state, current_index, &current, true, ascending, &filters);
+        assert!(
+            pane_rows(&state, current_index)
+                .iter()
+                .any(|row| row.1 == "hidden.txt")
+        );
+        assert!(
+            pane_rows(&state, current_index)
+                .iter()
+                .any(|row| row.1 == "hide-dir")
+        );
+        assert!(
+            pane_rows(&state, ancestor_index)
+                .iter()
+                .any(|row| row.1 == "hidden.txt")
+        );
+        state.set_column_scroll(current_index, 9_000.0);
+        assert_eq!(
+            column_level_offset(&state, current_index),
+            5.0 * row_height - 48.0
+        );
+
+        let descending = explorer_model::SortDirection::Descending;
+        state.set_sort_direction(descending);
+        assert_pane_projects(
+            &state,
+            ancestor_index,
+            &ancestor,
+            true,
+            descending,
+            &filters,
+        );
+        assert_pane_projects(&state, current_index, &current, true, descending, &filters);
+        let descending_rows = pane_rows(&state, current_index);
+        let _ = state.activate_column_item(
+            current_index,
+            alpha_file.id.clone(),
+            alpha_file.location.clone(),
+            false,
+            false,
+            false,
+        );
+        for _ in 0..descending_rows.len() {
+            if column_selected(&state) == [descending_rows[0].0.clone()] {
+                break;
+            }
+            assert!(state.move_column_cursor(-1, 0).is_none());
+        }
+        assert_eq!(column_selected(&state), vec![descending_rows[0].0.clone()]);
+        for row in descending_rows.iter().skip(1) {
+            assert!(state.move_column_cursor(1, 0).is_none());
+            assert_eq!(column_selected(&state), vec![row.0.clone()]);
+        }
+
+        state.set_sort_direction(ascending);
+        state.toggle_hidden_items();
+        state.toggle_details_filter(explorer_model::ColumnId::Name, "name:a-h".to_owned());
+        let name_filter = state.active_details_filters();
+        assert_pane_projects(
+            &state,
+            ancestor_index,
+            &ancestor,
+            false,
+            ascending,
+            &name_filter,
+        );
+        assert_pane_projects(
+            &state,
+            current_index,
+            &current,
+            false,
+            ascending,
+            &name_filter,
+        );
+        assert_eq!(
+            pane_rows(&state, ancestor_index)
+                .into_iter()
+                .map(|row| row.1)
+                .collect::<Vec<_>>(),
+            ["alpha.txt"]
+        );
+        assert_eq!(
+            pane_rows(&state, current_index)
+                .into_iter()
+                .map(|row| row.1)
+                .collect::<Vec<_>>(),
+            ["alpha.txt"]
+        );
+        assert!(
+            state
+                .activate_column_item(
+                    current_index,
+                    mike_file.id.clone(),
+                    mike_file.location.clone(),
+                    false,
+                    false,
+                    false,
+                )
+                .is_none(),
+            "a filtered row is not selectable by its stale id"
+        );
+        state.clear_details_filter(explorer_model::ColumnId::Name);
+
+        state.toggle_hidden_items();
+        let _ = state.activate_column_item(
+            current_index,
+            hidden_file.id.clone(),
+            hidden_file.location.clone(),
+            false,
+            false,
+            false,
+        );
+        assert_eq!(column_selected(&state), vec![hidden_file.id.clone()]);
+        state.toggle_hidden_items();
+        assert!(
+            !pane_rows(&state, current_index)
+                .iter()
+                .any(|row| row.0 == hidden_file.id)
+        );
+        assert!(
+            !pane_rows(&state, ancestor_index)
+                .iter()
+                .any(|row| row.1 == "hidden.txt")
+        );
+        assert!(state.selected_items().is_empty());
+        assert!(state.integrated_preview_entry().is_none());
+        assert_eq!(
+            state.column_strip_model().expect("stale").preview_route,
+            crate::column_view::ColumnPreviewRoute::None
+        );
+        assert_eq!(state.active_presentation().selected_count, 0);
+        assert!(
+            state
+                .activate_column_item(
+                    current_index,
+                    hidden_file.id.clone(),
+                    hidden_file.location.clone(),
+                    false,
+                    false,
+                    false,
+                )
+                .is_none()
+        );
+        assert!(state.selected_items().is_empty());
+    }
+
+    #[test]
     fn cancel_escape_and_title_close_share_an_idempotent_discard_transition() {
         for _close_reason in ["cancel", "escape", "title-close"] {
             let mut state = AppViewState::default();
@@ -14817,7 +20774,9 @@ mod tests {
         state.set_app_menu_focus(1);
         assert!(matches!(
             state.app_menu_activation(),
-            Some(crate::actions::ExplorerAction::SetAppMenuPage(AppMenuPage::History))
+            Some(crate::actions::ExplorerAction::SetAppMenuPage(
+                AppMenuPage::History
+            ))
         ));
         let _ = history;
         crate::actions::dispatch_action(
@@ -14855,10 +20814,12 @@ mod tests {
             other => panic!("expected recent visit activation, got {other:?}"),
         }
         state.append_app_menu_history_query("missing");
-        assert!(state
-            .app_menu_slots()
-            .iter()
-            .any(|slot| matches!(slot, AppMenuSlot::Empty(_))));
+        assert!(
+            state
+                .app_menu_slots()
+                .iter()
+                .any(|slot| matches!(slot, AppMenuSlot::Empty(_)))
+        );
         crate::actions::dispatch_action(
             &mut state,
             crate::actions::ExplorerAction::NewTab,
@@ -14951,10 +20912,12 @@ mod tests {
             })
         ));
         state.toggle_closed_window_expanded(7);
-        assert!(state
-            .app_menu_slots()
-            .iter()
-            .all(|slot| !matches!(slot, AppMenuSlot::ClosedWindowTab { .. })));
+        assert!(
+            state
+                .app_menu_slots()
+                .iter()
+                .all(|slot| !matches!(slot, AppMenuSlot::ClosedWindowTab { .. }))
+        );
         state.remove_closed_window(7);
         assert!(matches!(
             state.app_menu_activation(),
@@ -15058,9 +21021,12 @@ mod tests {
         assert!(!state.set_sort_menu_focus(6));
 
         state.toggle_view_menu();
-        assert!(state.set_view_menu_focus(9));
-        assert_eq!(state.view_menu_index(), 9);
-        assert!(!state.set_view_menu_focus(13));
+        assert!(state.set_view_menu_focus(crate::actions::VIEW_MENU_PREVIEW_PANE));
+        assert_eq!(
+            state.view_menu_index(),
+            crate::actions::VIEW_MENU_PREVIEW_PANE
+        );
+        assert!(!state.set_view_menu_focus(crate::actions::VIEW_MENU_LAST + 1));
 
         state.toggle_more_menu();
         assert!(state.set_more_menu_focus(10));

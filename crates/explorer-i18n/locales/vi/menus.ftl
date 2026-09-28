@@ -274,3 +274,19 @@ menu-shortcut-ctrl-shift-q = Ctrl+Shift+Q
 
 menu-closed-windows = Recently closed windows
 menu-no-closed-windows = No recently closed windows
+
+menu-columns = Cột
+column-empty = Thư mục này trống
+column-loading = Đang tải…
+column-error = Không thể đọc thư mục này
+column-cycle = Thư mục này liên kết lại cột trước
+column-preview-folder = Thư mục
+column-preview-multiple = Đã chọn nhiều mục
+column-preview-empty = Không có gì để xem trước
+column-preview-offline = Mục ngoại tuyến không được tải xuống
+column-preview-handler-ready = Bản xem trước đã sẵn sàng
+a11y-column-view = Xem dạng cột
+a11y-column-level = Cột
+a11y-column-row = Mục
+a11y-column-divider = Đổi độ rộng cột
+a11y-column-preview = Xem trước tích hợp

@@ -274,3 +274,19 @@ menu-shortcut-ctrl-shift-q = Ctrl+Shift+Q
 
 menu-closed-windows = Recently closed windows
 menu-no-closed-windows = No recently closed windows
+
+menu-columns = คอลัมน์
+column-empty = โฟลเดอร์นี้ว่าง
+column-loading = กำลังโหลด…
+column-error = ไม่สามารถอ่านโฟลเดอร์นี้
+column-cycle = โฟลเดอร์นี้ลิงก์กลับไปคอลัมน์ก่อนหน้า
+column-preview-folder = โฟลเดอร์
+column-preview-multiple = เลือกหลายรายการ
+column-preview-empty = ไม่มีรายการให้แสดงตัวอย่าง
+column-preview-offline = รายการออฟไลน์จะไม่ถูกดาวน์โหลด
+column-preview-handler-ready = ตัวอย่างพร้อมแล้ว
+a11y-column-view = มุมมองคอลัมน์
+a11y-column-level = คอลัมน์
+a11y-column-row = รายการ
+a11y-column-divider = ปรับความกว้างคอลัมน์
+a11y-column-preview = ตัวอย่างในตัว
