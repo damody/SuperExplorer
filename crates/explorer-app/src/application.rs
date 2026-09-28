@@ -6393,7 +6393,10 @@ fn remember_changed_tab_locations(
             current.location.editable_text(),
             current.display_title
         );
-        if recorded.get(&tab.id).is_some_and(|previous| previous == &signature) {
+        if recorded
+            .get(&tab.id)
+            .is_some_and(|previous| previous == &signature)
+        {
             continue;
         }
         recorded.insert(tab.id, signature);

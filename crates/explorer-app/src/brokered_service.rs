@@ -1904,9 +1904,7 @@ impl BrokeredExplorerService {
                 })
             }))
             .unwrap_or_else(|_| {
-                explorer_model::ThumbnailTerminal::Failed(
-                    "thumbnail decode panicked".to_owned(),
-                )
+                explorer_model::ThumbnailTerminal::Failed("thumbnail decode panicked".to_owned())
             });
             // Free the slot before publishing so the UI can start the next
             // visible thumbnail in the completion handler. Releasing afterwards
@@ -2378,10 +2376,7 @@ fn mft_missing_telemetry_availability(
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        decode_trusted_raster, is_host_owned_context_verb,
-        virtual_container_record,
-    };
+    use super::{decode_trusted_raster, is_host_owned_context_verb, virtual_container_record};
 
     #[test]
     fn virtual_container_identity_survives_content_change_while_generation_advances() {

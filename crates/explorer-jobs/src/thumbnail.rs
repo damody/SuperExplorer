@@ -293,10 +293,8 @@ impl ThumbnailMemoryCache {
             .collect::<Vec<_>>();
         for key in keys {
             if let Some(evicted) = self.entries.remove(&key) {
-                self.stats.current_bytes = self
-                    .stats
-                    .current_bytes
-                    .saturating_sub(evicted.byte_cost());
+                self.stats.current_bytes =
+                    self.stats.current_bytes.saturating_sub(evicted.byte_cost());
             }
             self.order.retain(|candidate| candidate != &key);
         }
