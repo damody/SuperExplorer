@@ -1,0 +1,373 @@
+﻿crates/explorer-extension-host/src/extension_value_router.rs:21:pub struct ExtensionValueRowV1 {
+crates/explorer-extension-host/src/extension_value_router.rs:126:pub enum ExtensionValueViewV1<'a> {
+crates/explorer-extension-host/src/extension_value_router.rs:183:    pub fn try_new(
+crates/explorer-extension-host/src/extension_value_router.rs:231:    pub fn outcome(&self) -> PluginItemOutcomeV1 {
+crates/explorer-extension-host/src/extension_value_router.rs:252:    pub fn value(&self) -> Option<ExtensionValueViewV1<'_>> {
+crates/explorer-extension-host/src/extension_value_router.rs:394:pub enum ExtensionSortDirectionV1 {
+crates/explorer-extension-host/src/extension_value_router.rs:401:pub fn compare_extension_rows_v1(
+crates/explorer-extension-host/src/extension_value_router.rs:484:pub const fn project_terminal_outcome_v1(
+crates/explorer-extension-host/src/extension_value_router.rs:505:pub struct OpaquePayloadBindingV1 {
+crates/explorer-extension-host/src/extension_value_router.rs:513:    pub fn bind(
+crates/explorer-extension-host/src/extension_value_router.rs:550:    pub fn route(&self) -> Result<RoutedOpaquePayloadV1, OpaquePayloadRouteErrorV1> {
+crates/explorer-extension-host/src/extension_value_router.rs:568:pub struct RoutedOpaquePayloadV1 {
+crates/explorer-extension-host/src/extension_value_router.rs:574:pub enum OpaquePayloadRouteErrorV1 {
+crates/explorer-extension-host/src/extension_result_cache.rs:32:pub struct ExtensionResultCacheFileFactV1 {
+crates/explorer-extension-host/src/extension_result_cache.rs:39:    pub const fn from_host(file_identity: u128, metadata_generation: u64) -> Self {
+crates/explorer-extension-host/src/extension_result_cache.rs:49:pub struct ExtensionResultCacheGenerationV1 {
+crates/explorer-extension-host/src/extension_result_cache.rs:57:    pub const fn from_host(
+crates/explorer-extension-host/src/extension_result_cache.rs:87:pub struct ExtensionResultCacheKeyV1 {
+crates/explorer-extension-host/src/extension_result_cache.rs:106:    pub fn from_host(
+crates/explorer-extension-host/src/extension_result_cache.rs:133:pub struct ExtensionResultCacheConfigV1 {
+crates/explorer-extension-host/src/extension_result_cache.rs:158:    pub fn try_new(
+crates/explorer-extension-host/src/extension_result_cache.rs:250:pub struct ExtensionResultCacheAdmissionV1 {
+crates/explorer-extension-host/src/extension_result_cache.rs:273:pub enum ExtensionResultCacheLookupV1 {
+crates/explorer-extension-host/src/extension_result_cache.rs:280:pub struct ExtensionResultCacheHitV1 {
+crates/explorer-extension-host/src/extension_result_cache.rs:314:pub enum ExtensionResultCacheInsertOutcomeV1 {
+crates/explorer-extension-host/src/extension_result_cache.rs:323:pub struct ExtensionResultCacheV1 {
+crates/explorer-extension-host/src/extension_result_cache.rs:330:    pub fn new(config: ExtensionResultCacheConfigV1) -> Self {
+crates/explorer-extension-host/src/extension_result_cache.rs:415:    pub fn lookup(
+crates/explorer-extension-host/src/extension_result_cache.rs:545:    pub fn invalidate_watcher_scope(&self, watcher_scope: u128) {
+crates/explorer-extension-host/src/extension_result_cache.rs:565:    pub fn invalidate_manual(&self, producer: &ExtensionJobProducerV1) {
+crates/explorer-extension-host/src/extension_result_cache.rs:576:    pub fn invalidate_data_version(&self, producer: &ExtensionJobProducerV1) {
+crates/explorer-extension-host/src/extension_result_cache.rs:594:    pub fn watcher_generation(&self, watcher_scope: u128) -> u64 {
+crates/explorer-extension-host/src/lib.rs:33:pub use contribution_gate::{
+crates/explorer-extension-host/src/lib.rs:38:pub use extension_job_runtime::{
+crates/explorer-extension-host/src/lib.rs:44:pub use extension_job_ui_bridge::{
+crates/explorer-extension-host/src/lib.rs:50:pub use extension_result_cache::{
+crates/explorer-extension-host/src/lib.rs:56:pub use extension_value_router::{
+crates/explorer-extension-host/src/lib.rs:61:pub use feature_state::{
+crates/explorer-extension-host/src/lib.rs:68:pub use manifest::{
+crates/explorer-extension-host/src/lib.rs:75:pub use native_lifecycle::{
+crates/explorer-extension-host/src/lib.rs:81:pub use package_resolver::{
+crates/explorer-extension-host/src/lib.rs:85:pub use package_source::{
+crates/explorer-extension-host/src/lib.rs:91:pub use package_validation::{
+crates/explorer-extension-host/src/lib.rs:97:pub use plugin_call_guard::{
+crates/explorer-extension-host/src/lib.rs:101:pub use sepack_import::SePackImportErrorV1;
+crates/explorer-extension-host/src/lib.rs:102:pub use ui_invalidation_batcher::{
+crates/explorer-extension-host/src/lib.rs:131:pub enum ExtensionStartupDiagnosticCodeV1 {
+crates/explorer-extension-host/src/lib.rs:161:pub struct ExtensionStartupDiagnosticV1 {
+crates/explorer-extension-host/src/lib.rs:168:    pub const fn code(&self) -> ExtensionStartupDiagnosticCodeV1 {
+crates/explorer-extension-host/src/lib.rs:173:    pub fn package_id(&self) -> Option<&str> {
+crates/explorer-extension-host/src/lib.rs:409:pub enum LocalDeveloperModeV1 {
+crates/explorer-extension-host/src/lib.rs:419:pub struct ExtensionHostConfigV1 {
+crates/explorer-extension-host/src/lib.rs:435:    pub fn with_local_developer_mode(mut self, mode: LocalDeveloperModeV1) -> Self {
+crates/explorer-extension-host/src/lib.rs:447:    pub fn with_local_developer_archives(
+crates/explorer-extension-host/src/lib.rs:459:    pub fn with_local_developer_import_cancellation(
+crates/explorer-extension-host/src/lib.rs:474:    pub fn with_integration_test_state_root(mut self, root: PathBuf) -> Self {
+crates/explorer-extension-host/src/lib.rs:482:    pub fn with_integration_test_local_developer_root(mut self, root: PathBuf) -> Self {
+crates/explorer-extension-host/src/lib.rs:531:pub struct ExtensionHost {
+crates/explorer-extension-host/src/lib.rs:553:pub enum ExtensionHostStartErrorV1 {
+crates/explorer-extension-host/src/lib.rs:578:pub enum FeatureStateMutationErrorV1 {
+crates/explorer-extension-host/src/lib.rs:593:    pub const fn new() -> Self {
+crates/explorer-extension-host/src/lib.rs:611:    pub const fn with_config(config: ExtensionHostConfigV1) -> Self {
+crates/explorer-extension-host/src/lib.rs:630:    pub fn start(&mut self) -> Result<(), ExtensionHostStartErrorV1> {
+crates/explorer-extension-host/src/lib.rs:829:    pub fn local_developer_scratch_telemetry(&self) -> Option<LocalDeveloperScratchTelemetryV1> {
+crates/explorer-extension-host/src/lib.rs:839:    pub fn startup_admissions(&self) -> &[NativeStartupAdmissionV1] {
+crates/explorer-extension-host/src/lib.rs:847:    pub fn startup_diagnostics(&self) -> &[ExtensionStartupDiagnosticV1] {
+crates/explorer-extension-host/src/lib.rs:857:    pub fn feature_state(&self) -> Option<&FeatureStateStoreV1> {
+crates/explorer-extension-host/src/lib.rs:870:    pub fn set_global_feature_desired(
+crates/explorer-extension-host/src/lib.rs:886:    pub fn set_package_feature_desired(
+crates/explorer-extension-host/src/lib.rs:904:    pub fn set_individual_feature_desired(
+crates/explorer-extension-host/src/lib.rs:935:    pub fn safe_mode_incidents(&self) -> Vec<NativeSafeModeIncidentV1> {
+crates/explorer-extension-host/src/lib.rs:944:    pub fn safe_mode_denies_all(&self) -> bool {
+crates/explorer-extension-host/src/lib.rs:955:    pub fn integration_test_recovered_callback_is_denied(&self) -> bool {
+crates/explorer-extension-host/src/lib.rs:967:    pub fn confirm_safe_mode_incident(
+crates/explorer-extension-host/src/lib.rs:980:    pub fn native_call_timings(&self) -> Vec<NativeCallTimingV1> {
+crates/explorer-extension-host/src/lib.rs:991:    pub fn extension_job_ui_ingress(&self) -> Option<ExtensionJobUiIngressV1> {
+crates/explorer-extension-host/src/lib.rs:1005:    pub fn extension_job_runtime(&self) -> Option<Arc<ExtensionJobRuntimeV1>> {
+crates/explorer-extension-host/src/lib.rs:1018:    pub fn take_extension_job_ui_inbox(&mut self) -> Option<ExtensionJobUiInboxV1> {
+crates/explorer-extension-host/src/lib.rs:1029:    pub fn shutdown(&mut self) {
+crates/explorer-extension-host/src/lib.rs:1047:    pub fn is_running(&self) -> bool {
+crates/explorer-extension-host/src/lib.rs:1062:    pub fn validate_root(
+crates/explorer-extension-host/src/lib.rs:1162:pub enum HostRegistrationErrorV1 {
+crates/explorer-extension-api/src/lib.rs:77:pub use jobs::{
+crates/explorer-extension-api/src/lib.rs:97:pub const EXTENSION_ID_NAMESPACE_V1: IdNamespaceV1 = IdNamespaceV1(0x5345_0001);
+crates/explorer-extension-api/src/lib.rs:100:pub const ABI_SCHEMA_V1: AbiSchemaIdV1 = AbiSchemaIdV1(0x5345_0001);
+crates/explorer-extension-api/src/lib.rs:103:pub const ROOT_MODULE_CONTRACT_ID_V1: StableIdV1 = StableIdV1 {
+crates/explorer-extension-api/src/lib.rs:109:pub const SDK_MAJOR_VERSION_V1: u16 = 1;
+crates/explorer-extension-api/src/lib.rs:111:pub const DESCRIPTOR_CONTRACT_REVISION_V1: u32 = 1;
+crates/explorer-extension-api/src/lib.rs:119:pub struct IdNamespaceV1(u32);
+crates/explorer-extension-api/src/lib.rs:124:    pub const fn new(authority: u16, revision: u16) -> Self {
+crates/explorer-extension-api/src/lib.rs:130:    pub const fn authority(self) -> u16 {
+crates/explorer-extension-api/src/lib.rs:136:    pub const fn revision(self) -> u16 {
+crates/explorer-extension-api/src/lib.rs:143:    pub const fn into_raw(self) -> u32 {
+crates/explorer-extension-api/src/lib.rs:149:    pub const fn is_valid(self) -> bool {
+crates/explorer-extension-api/src/lib.rs:161:pub struct StableIdV1 {
+crates/explorer-extension-api/src/lib.rs:172:    pub const fn new(namespace: IdNamespaceV1, value: u64) -> Self {
+crates/explorer-extension-api/src/lib.rs:178:    pub const fn is_valid(self) -> bool {
+crates/explorer-extension-api/src/lib.rs:184:    pub const fn is_in_namespace(self, namespace: IdNamespaceV1) -> bool {
+crates/explorer-extension-api/src/lib.rs:196:pub struct AbiSchemaIdV1(u32);
+crates/explorer-extension-api/src/lib.rs:202:    pub const fn new(authority: u16, revision: u16) -> Self {
+crates/explorer-extension-api/src/lib.rs:208:    pub const fn authority(self) -> u16 {
+crates/explorer-extension-api/src/lib.rs:214:    pub const fn revision(self) -> u16 {
+crates/explorer-extension-api/src/lib.rs:221:    pub const fn into_raw(self) -> u32 {
+crates/explorer-extension-api/src/lib.rs:227:    pub const fn is_valid(self) -> bool {
+crates/explorer-extension-api/src/lib.rs:238:pub struct UiAbiFingerprintV1([u8; 32]);
+crates/explorer-extension-api/src/lib.rs:243:    pub const fn new(bytes: [u8; 32]) -> Self {
+crates/explorer-extension-api/src/lib.rs:249:    pub const fn bytes(self) -> [u8; 32] {
+crates/explorer-extension-api/src/lib.rs:255:    pub fn from_lower_hex(value: &str) -> Option<Self> {
+crates/explorer-extension-api/src/lib.rs:281:pub struct AbiErrorCodeV1(u32);
+crates/explorer-extension-api/src/lib.rs:285:    pub const SCHEMA_MISMATCH: Self = Self(1);
+crates/explorer-extension-api/src/lib.rs:287:    pub const INVALID_ID: Self = Self(2);
+crates/explorer-extension-api/src/lib.rs:289:    pub const UNSUPPORTED_ID: Self = Self(3);
+crates/explorer-extension-api/src/lib.rs:291:    pub const REGISTRATION_REJECTED: Self = Self(4);
+crates/explorer-extension-api/src/lib.rs:293:    pub const CALLBACK_PANICKED: Self = Self(5);
+crates/explorer-extension-api/src/lib.rs:295:    pub const SDK_MAJOR_MISMATCH: Self = Self(6);
+crates/explorer-extension-api/src/lib.rs:297:    pub const REGISTRATION_OUTCOME_REJECTED: Self = Self(7);
+crates/explorer-extension-api/src/lib.rs:299:    pub const MALFORMED_REGISTRATION_OUTCOME: Self = Self(8);
+crates/explorer-extension-api/src/lib.rs:301:    pub const UNKNOWN_REGISTRATION_OUTCOME: Self = Self(9);
+crates/explorer-extension-api/src/lib.rs:305:    pub const fn into_raw(self) -> u32 {
+crates/explorer-extension-api/src/lib.rs:314:pub struct AbiErrorV1 {
+crates/explorer-extension-api/src/lib.rs:327:    pub const fn new(code: AbiErrorCodeV1, subject: StableIdV1, detail: u32) -> Self {
+crates/explorer-extension-api/src/lib.rs:337:pub type AbiResultV1<T> = RResult<T, AbiErrorV1>;
+crates/explorer-extension-api/src/lib.rs:359:pub struct PluginMetadataV1 {
+crates/explorer-extension-api/src/lib.rs:370:pub struct RegistrarRequestV1 {
+crates/explorer-extension-api/src/lib.rs:388:pub struct RegistrationStatusV1(u32);
+crates/explorer-extension-api/src/lib.rs:392:    pub const ACCEPTED: Self = Self(1);
+crates/explorer-extension-api/src/lib.rs:394:    pub const REJECTED: Self = Self(2);
+crates/explorer-extension-api/src/lib.rs:398:    pub const fn from_raw(raw: u32) -> Self {
+crates/explorer-extension-api/src/lib.rs:404:    pub const fn into_raw(self) -> u32 {
+crates/explorer-extension-api/src/lib.rs:412:pub struct RegistrationOutcomeV1 {
+crates/explorer-extension-api/src/lib.rs:422:pub struct RegisteredContributionKindV1(u32);
+crates/explorer-extension-api/src/lib.rs:425:    pub const COLUMN: Self = Self(1);
+crates/explorer-extension-api/src/lib.rs:426:    pub const GPUI_RENDERER: Self = Self(2);
+crates/explorer-extension-api/src/lib.rs:427:    pub const COMMAND: Self = Self(3);
+crates/explorer-extension-api/src/lib.rs:428:    pub const FORM: Self = Self(4);
+crates/explorer-extension-api/src/lib.rs:429:    pub const OPERATION_PLAN: Self = Self(5);
+crates/explorer-extension-api/src/lib.rs:430:    pub const VIEW_MODE: Self = Self(6);
+crates/explorer-extension-api/src/lib.rs:431:    pub const RESOURCE: Self = Self(7);
+crates/explorer-extension-api/src/lib.rs:434:    pub const fn into_raw(self) -> u32 {
+crates/explorer-extension-api/src/lib.rs:442:pub struct OpaquePayloadContractV1 {
+crates/explorer-extension-api/src/lib.rs:452:pub struct RegisteredContributionV1 {
+crates/explorer-extension-api/src/lib.rs:468:pub struct RegistrarOutputV1 {
+crates/explorer-extension-api/src/lib.rs:473:pub type RegistrarOutputResultV1 = AbiResultV1<RegistrarOutputV1>;
+crates/explorer-extension-api/src/lib.rs:480:pub trait AbiRegistrarObjectV1: Send + Sync {
+crates/explorer-extension-api/src/lib.rs:489:pub struct RegistrarObjectV1(AbiRegistrarObjectV1_TO<'static, RBox<()>>);
+crates/explorer-extension-api/src/lib.rs:495:pub trait ExtensionRegistrarImplementationV1: Send + Sync {
+crates/explorer-extension-api/src/lib.rs:569:    pub fn register(&self, request: RegistrarRequestV1) -> RegistrarOutputResultV1 {
+crates/explorer-extension-api/src/lib.rs:574:pub type RegistrarFactoryResultV1 = AbiResultV1<RegistrarObjectV1>;
+crates/explorer-extension-api/src/lib.rs:578:pub struct RegistrarFactoryV1(extern "C" fn() -> RegistrarFactoryResultV1);
+crates/explorer-extension-api/src/lib.rs:582:    pub fn new<T: ExtensionRegistrarImplementationV1 + 'static>() -> Self {
+crates/explorer-extension-api/src/lib.rs:587:    pub fn create(self) -> RegistrarFactoryResultV1 {
+crates/explorer-extension-api/src/lib.rs:619:    pub const fn accepted(registered_interface_count: u32) -> Self {
+crates/explorer-extension-api/src/lib.rs:628:    pub const fn is_accepted(self) -> bool {
+crates/explorer-extension-api/src/lib.rs:642:pub struct ExtensionRootModuleV1 {
+crates/explorer-extension-api/src/lib.rs:666:    pub fn new<T>(
+crates/explorer-extension-api/src/lib.rs:696:pub const fn registrar_request_v1() -> RegistrarRequestV1 {
+crates/explorer-extension-api/src/jobs.rs:20:pub const MAX_INCREMENTAL_RESULT_ITEMS_V1: usize = 1_024;
+crates/explorer-extension-api/src/jobs.rs:22:pub const MAX_INCREMENTAL_RESULT_BYTES_V1: usize = 1024 * 1024;
+crates/explorer-extension-api/src/jobs.rs:24:pub const MAX_PLUGIN_VALUE_BYTES_V1: usize = 64 * 1024;
+crates/explorer-extension-api/src/jobs.rs:26:pub const MAX_INPUT_STREAM_READ_BYTES_V1: u32 = 64 * 1024;
+crates/explorer-extension-api/src/jobs.rs:31:pub struct JobHandleV1 {
+crates/explorer-extension-api/src/jobs.rs:39:    pub const fn from_host(nonce: [u8; 16], generation: u64) -> Self {
+crates/explorer-extension-api/src/jobs.rs:45:    pub const fn generation(self) -> u64 {
+crates/explorer-extension-api/src/jobs.rs:53:pub struct ItemHandleV1 {
+crates/explorer-extension-api/src/jobs.rs:60:    pub const fn from_host(nonce: [u8; 16], generation: u64) -> Self {
+crates/explorer-extension-api/src/jobs.rs:65:    pub const fn generation(self) -> u64 {
+crates/explorer-extension-api/src/jobs.rs:73:pub struct LocationHandleV1 {
+crates/explorer-extension-api/src/jobs.rs:84:pub struct SinkCapabilityV1 {
+crates/explorer-extension-api/src/jobs.rs:90:    pub const fn from_host(nonce: [u8; 16]) -> Self {
+crates/explorer-extension-api/src/jobs.rs:97:    pub const fn from_host(nonce: [u8; 16], generation: u64) -> Self {
+crates/explorer-extension-api/src/jobs.rs:102:    pub const fn generation(self) -> u64 {
+crates/explorer-extension-api/src/jobs.rs:110:pub struct JobControlStateV1(u32);
+crates/explorer-extension-api/src/jobs.rs:113:    pub const ACTIVE: Self = Self(1);
+crates/explorer-extension-api/src/jobs.rs:114:    pub const CANCELLED: Self = Self(2);
+crates/explorer-extension-api/src/jobs.rs:115:    pub const DEADLINE_ELAPSED: Self = Self(3);
+crates/explorer-extension-api/src/jobs.rs:116:    pub const CLOSED: Self = Self(4);
+crates/explorer-extension-api/src/jobs.rs:119:    pub const fn into_raw(self) -> u32 {
+crates/explorer-extension-api/src/jobs.rs:124:    pub const fn from_raw(raw: u32) -> Self {
+crates/explorer-extension-api/src/jobs.rs:132:pub struct PluginValueKindV1(u32);
+crates/explorer-extension-api/src/jobs.rs:135:    pub const BOOL: Self = Self(1);
+crates/explorer-extension-api/src/jobs.rs:136:    pub const I64: Self = Self(2);
+crates/explorer-extension-api/src/jobs.rs:137:    pub const F64: Self = Self(3);
+crates/explorer-extension-api/src/jobs.rs:138:    pub const BYTES: Self = Self(4);
+crates/explorer-extension-api/src/jobs.rs:140:    pub const TIME_UNIX_NANOS: Self = Self(5);
+crates/explorer-extension-api/src/jobs.rs:142:    pub const DURATION_NANOS: Self = Self(6);
+crates/explorer-extension-api/src/jobs.rs:144:    pub const TEXT: Self = Self(7);
+crates/explorer-extension-api/src/jobs.rs:148:    pub const LOCALIZED_TEXT: Self = Self(8);
+crates/explorer-extension-api/src/jobs.rs:150:    pub const STRUCTURED: Self = Self(9);
+crates/explorer-extension-api/src/jobs.rs:152:    pub const OPAQUE: Self = Self(10);
+crates/explorer-extension-api/src/jobs.rs:155:    pub const fn into_raw(self) -> u32 {
+crates/explorer-extension-api/src/jobs.rs:160:    pub const fn from_raw(raw: u32) -> Self {
+crates/explorer-extension-api/src/jobs.rs:168:pub struct PluginValueV1 {
+crates/explorer-extension-api/src/jobs.rs:197:    pub const fn boolean(value: bool) -> Self {
+crates/explorer-extension-api/src/jobs.rs:203:    pub const fn integer(value: i64) -> Self {
+crates/explorer-extension-api/src/jobs.rs:209:    pub fn float(value: f64) -> Result<Self, PluginValueTransportErrorV1> {
+crates/explorer-extension-api/src/jobs.rs:218:    pub fn bytes(value: impl Into<RVec<u8>>) -> Result<Self, PluginValueTransportErrorV1> {
+crates/explorer-extension-api/src/jobs.rs:225:    pub const fn time_unix_nanos(value: i64) -> Self {
+crates/explorer-extension-api/src/jobs.rs:231:    pub fn duration_nanos(value: u64) -> Result<Self, PluginValueTransportErrorV1> {
+crates/explorer-extension-api/src/jobs.rs:239:    pub fn text(value: impl Into<RString>) -> Result<Self, PluginValueTransportErrorV1> {
+crates/explorer-extension-api/src/jobs.rs:246:    pub fn localized_text(value: impl Into<RString>) -> Result<Self, PluginValueTransportErrorV1> {
+crates/explorer-extension-api/src/jobs.rs:253:    pub fn structured_canonical_json(
+crates/explorer-extension-api/src/jobs.rs:262:    pub fn opaque(
+crates/explorer-extension-api/src/jobs.rs:280:    pub fn validate_transport(&self) -> Result<(), PluginValueTransportErrorV1> {
+crates/explorer-extension-api/src/jobs.rs:355:pub struct StableSortValueKindV1(u32);
+crates/explorer-extension-api/src/jobs.rs:358:    pub const BOOL: Self = Self(1);
+crates/explorer-extension-api/src/jobs.rs:359:    pub const I64: Self = Self(2);
+crates/explorer-extension-api/src/jobs.rs:360:    pub const U64: Self = Self(3);
+crates/explorer-extension-api/src/jobs.rs:361:    pub const F64: Self = Self(4);
+crates/explorer-extension-api/src/jobs.rs:362:    pub const TIME_UNIX_NANOS: Self = Self(5);
+crates/explorer-extension-api/src/jobs.rs:363:    pub const DURATION_NANOS: Self = Self(6);
+crates/explorer-extension-api/src/jobs.rs:364:    pub const TEXT: Self = Self(7);
+crates/explorer-extension-api/src/jobs.rs:365:    pub const BYTES: Self = Self(8);
+crates/explorer-extension-api/src/jobs.rs:367:    pub const fn into_raw(self) -> u32 {
+crates/explorer-extension-api/src/jobs.rs:371:    pub const fn from_raw(raw: u32) -> Self {
+crates/explorer-extension-api/src/jobs.rs:375:    pub const fn is_known(self) -> bool {
+crates/explorer-extension-api/src/jobs.rs:384:pub struct StableSortValueV1 {
+crates/explorer-extension-api/src/jobs.rs:410:    pub const fn boolean(value: bool) -> Self {
+crates/explorer-extension-api/src/jobs.rs:416:    pub const fn integer(value: i64) -> Self {
+crates/explorer-extension-api/src/jobs.rs:422:    pub const fn unsigned(value: u64) -> Self {
+crates/explorer-extension-api/src/jobs.rs:428:    pub fn float(value: f64) -> Result<Self, StableSortValueTransportErrorV1> {
+crates/explorer-extension-api/src/jobs.rs:437:    pub const fn time_unix_nanos(value: i64) -> Self {
+crates/explorer-extension-api/src/jobs.rs:443:    pub const fn duration_nanos(value: u64) -> Self {
+crates/explorer-extension-api/src/jobs.rs:449:    pub fn text(value: impl Into<RString>) -> Result<Self, StableSortValueTransportErrorV1> {
+crates/explorer-extension-api/src/jobs.rs:456:    pub fn bytes(value: impl Into<RVec<u8>>) -> Result<Self, StableSortValueTransportErrorV1> {
+crates/explorer-extension-api/src/jobs.rs:462:    pub fn validate_transport(&self) -> Result<(), StableSortValueTransportErrorV1> {
+crates/explorer-extension-api/src/jobs.rs:505:pub enum StableSortValueTransportErrorV1 {
+crates/explorer-extension-api/src/jobs.rs:517:pub struct PluginItemOutcomeV1(u32);
+crates/explorer-extension-api/src/jobs.rs:519:    pub const VALUE: Self = Self(1);
+crates/explorer-extension-api/src/jobs.rs:520:    pub const UNSUPPORTED: Self = Self(2);
+crates/explorer-extension-api/src/jobs.rs:521:    pub const UNAVAILABLE: Self = Self(3);
+crates/explorer-extension-api/src/jobs.rs:522:    pub const CANCELLED: Self = Self(4);
+crates/explorer-extension-api/src/jobs.rs:523:    pub const PLUGIN_ERROR: Self = Self(5);
+crates/explorer-extension-api/src/jobs.rs:524:    pub const INCOMPATIBLE: Self = Self(6);
+crates/explorer-extension-api/src/jobs.rs:526:    pub const fn into_raw(self) -> u32 {
+crates/explorer-extension-api/src/jobs.rs:530:    pub const fn from_raw(raw: u32) -> Self {
+crates/explorer-extension-api/src/jobs.rs:534:    pub const fn is_known(self) -> bool {
+crates/explorer-extension-api/src/jobs.rs:542:pub struct PluginItemResultV1 {
+crates/explorer-extension-api/src/jobs.rs:551:    pub fn value(value: PluginValueV1, stable_sort: ROption<StableSortValueV1>) -> Self {
+crates/explorer-extension-api/src/jobs.rs:560:    pub const fn absent(outcome: PluginItemOutcomeV1) -> Self {
+crates/explorer-extension-api/src/jobs.rs:568:    pub fn validate_transport(
+crates/explorer-extension-api/src/jobs.rs:609:pub enum PluginItemResultTransportErrorV1 {
+crates/explorer-extension-api/src/jobs.rs:864:pub enum PluginValueTransportErrorV1 {
+crates/explorer-extension-api/src/jobs.rs:878:pub struct IncrementalResultEntryV1 {
+crates/explorer-extension-api/src/jobs.rs:888:pub struct IncrementalResultBatchV1 {
+crates/explorer-extension-api/src/jobs.rs:902:pub struct SinkSubmitStatusV1(u32);
+crates/explorer-extension-api/src/jobs.rs:905:    pub const ACCEPTED: Self = Self(1);
+crates/explorer-extension-api/src/jobs.rs:906:    pub const WOULD_BLOCK: Self = Self(2);
+crates/explorer-extension-api/src/jobs.rs:907:    pub const STALE: Self = Self(3);
+crates/explorer-extension-api/src/jobs.rs:908:    pub const CLOSED: Self = Self(4);
+crates/explorer-extension-api/src/jobs.rs:909:    pub const WRONG_THREAD: Self = Self(5);
+crates/explorer-extension-api/src/jobs.rs:910:    pub const INVALID: Self = Self(6);
+crates/explorer-extension-api/src/jobs.rs:913:    pub const fn from_raw(raw: u32) -> Self {
+crates/explorer-extension-api/src/jobs.rs:918:    pub const fn into_raw(self) -> u32 {
+crates/explorer-extension-api/src/jobs.rs:926:pub struct SinkSubmitOutcomeV1 {
+crates/explorer-extension-api/src/jobs.rs:937:pub struct JobProgressUpdateV1 {
+crates/explorer-extension-api/src/jobs.rs:953:pub struct JobProgressStatusV1(u32);
+crates/explorer-extension-api/src/jobs.rs:956:    pub const ACCEPTED: Self = Self(1);
+crates/explorer-extension-api/src/jobs.rs:957:    pub const STALE: Self = Self(2);
+crates/explorer-extension-api/src/jobs.rs:958:    pub const CLOSED: Self = Self(3);
+crates/explorer-extension-api/src/jobs.rs:959:    pub const WRONG_THREAD: Self = Self(4);
+crates/explorer-extension-api/src/jobs.rs:960:    pub const INVALID: Self = Self(5);
+crates/explorer-extension-api/src/jobs.rs:963:    pub const fn into_raw(self) -> u32 {
+crates/explorer-extension-api/src/jobs.rs:968:    pub const fn from_raw(raw: u32) -> Self {
+crates/explorer-extension-api/src/jobs.rs:977:pub trait AbiJobHostServicesV1: Send + Sync + Clone {
+crates/explorer-extension-api/src/jobs.rs:987:pub struct JobHostServicesV1(AbiJobHostServicesV1_TO<'static, RArc<()>>);
+crates/explorer-extension-api/src/jobs.rs:991:    pub fn from_host<T>(services: T) -> Self
+crates/explorer-extension-api/src/jobs.rs:1002:    pub fn poll_control(&self) -> JobControlStateV1 {
+crates/explorer-extension-api/src/jobs.rs:1007:    pub fn try_submit(&self, batch: IncrementalResultBatchV1) -> SinkSubmitOutcomeV1 {
+crates/explorer-extension-api/src/jobs.rs:1012:    pub fn try_submit_progress(&self, update: JobProgressUpdateV1) -> JobProgressStatusV1 {
+crates/explorer-extension-api/src/jobs.rs:1018:    pub fn result_sink(
+crates/explorer-extension-api/src/jobs.rs:1032:    pub fn progress_sink(
+crates/explorer-extension-api/src/jobs.rs:1049:pub struct IncrementalResultSinkV1 {
+crates/explorer-extension-api/src/jobs.rs:1057:    pub fn try_submit(&self, batch: IncrementalResultBatchV1) -> SinkSubmitOutcomeV1 {
+crates/explorer-extension-api/src/jobs.rs:1066:pub struct JobProgressSinkV1 {
+crates/explorer-extension-api/src/jobs.rs:1074:    pub fn try_submit(&self, update: JobProgressUpdateV1) -> JobProgressStatusV1 {
+crates/explorer-extension-api/src/jobs.rs:1082:pub struct InputStreamCapabilityV1 {
+crates/explorer-extension-api/src/jobs.rs:1089:    pub const fn from_host(nonce: [u8; 16]) -> Self {
+crates/explorer-extension-api/src/jobs.rs:1098:pub struct InputStreamStatusV1(u32);
+crates/explorer-extension-api/src/jobs.rs:1101:    pub const OK: Self = Self(1);
+crates/explorer-extension-api/src/jobs.rs:1102:    pub const EOF: Self = Self(2);
+crates/explorer-extension-api/src/jobs.rs:1103:    pub const CANCELLED: Self = Self(3);
+crates/explorer-extension-api/src/jobs.rs:1104:    pub const DEADLINE_ELAPSED: Self = Self(4);
+crates/explorer-extension-api/src/jobs.rs:1105:    pub const STALE: Self = Self(5);
+crates/explorer-extension-api/src/jobs.rs:1106:    pub const CLOSED: Self = Self(6);
+crates/explorer-extension-api/src/jobs.rs:1107:    pub const WRONG_THREAD: Self = Self(7);
+crates/explorer-extension-api/src/jobs.rs:1108:    pub const UNSUPPORTED: Self = Self(8);
+crates/explorer-extension-api/src/jobs.rs:1109:    pub const INVALID: Self = Self(9);
+crates/explorer-extension-api/src/jobs.rs:1112:    pub const fn into_raw(self) -> u32 {
+crates/explorer-extension-api/src/jobs.rs:1117:    pub const fn from_raw(raw: u32) -> Self {
+crates/explorer-extension-api/src/jobs.rs:1126:pub struct InputStreamSeekOriginV1(u32);
+crates/explorer-extension-api/src/jobs.rs:1129:    pub const START: Self = Self(1);
+crates/explorer-extension-api/src/jobs.rs:1130:    pub const CURRENT: Self = Self(2);
+crates/explorer-extension-api/src/jobs.rs:1131:    pub const END: Self = Self(3);
+crates/explorer-extension-api/src/jobs.rs:1134:    pub const fn into_raw(self) -> u32 {
+crates/explorer-extension-api/src/jobs.rs:1143:pub struct InputStreamReadRequestV1 {
+crates/explorer-extension-api/src/jobs.rs:1152:pub struct InputStreamReadOutcomeV1 {
+crates/explorer-extension-api/src/jobs.rs:1163:pub struct InputStreamSeekRequestV1 {
+crates/explorer-extension-api/src/jobs.rs:1172:pub struct InputStreamSeekOutcomeV1 {
+crates/explorer-extension-api/src/jobs.rs:1183:pub struct InputStreamLengthOutcomeV1 {
+crates/explorer-extension-api/src/jobs.rs:1195:pub trait AbiInputStreamServicesV1: Send + Sync + Clone {
+crates/explorer-extension-api/src/jobs.rs:1204:pub struct InputStreamV1 {
+crates/explorer-extension-api/src/jobs.rs:1211:    pub fn from_host<T>(capability: InputStreamCapabilityV1, services: T) -> Self
+crates/explorer-extension-api/src/jobs.rs:1225:    pub fn read(&self, request: InputStreamReadRequestV1) -> InputStreamReadOutcomeV1 {
+crates/explorer-extension-api/src/jobs.rs:1230:    pub fn seek(&self, request: InputStreamSeekRequestV1) -> InputStreamSeekOutcomeV1 {
+crates/explorer-extension-api/src/jobs.rs:1235:    pub fn length(&self) -> InputStreamLengthOutcomeV1 {
+crates/explorer-extension-api/src/jobs.rs:1243:pub struct JobContextV1 {
+crates/explorer-extension-api/src/jobs.rs:1261:    pub fn poll_control(&self) -> JobControlStateV1 {
+crates/explorer-extension-api/src/jobs.rs:1266:    pub fn try_submit(&self, batch: IncrementalResultBatchV1) -> SinkSubmitOutcomeV1 {
+crates/explorer-extension-api/src/jobs.rs:1271:    pub fn try_submit_progress(&self, update: JobProgressUpdateV1) -> JobProgressStatusV1 {
+crates/explorer-extension-api/src/jobs.rs:1279:pub struct JobTerminalV1(u32);
+crates/explorer-extension-api/src/jobs.rs:1282:    pub const COMPLETED: Self = Self(1);
+crates/explorer-extension-api/src/jobs.rs:1283:    pub const UNSUPPORTED: Self = Self(2);
+crates/explorer-extension-api/src/jobs.rs:1284:    pub const UNAVAILABLE: Self = Self(3);
+crates/explorer-extension-api/src/jobs.rs:1285:    pub const CANCELLED: Self = Self(4);
+crates/explorer-extension-api/src/jobs.rs:1286:    pub const DEADLINE_ELAPSED: Self = Self(5);
+crates/explorer-extension-api/src/jobs.rs:1289:    pub const BACKPRESSURED: Self = Self(6);
+crates/explorer-extension-api/src/jobs.rs:1290:    pub const PLUGIN_ERROR: Self = Self(7);
+crates/explorer-extension-api/src/jobs.rs:1291:    pub const INCOMPATIBLE: Self = Self(8);
+crates/explorer-extension-api/src/jobs.rs:1292:    pub const PANICKED: Self = Self(9);
+crates/explorer-extension-api/src/jobs.rs:1295:    pub const fn into_raw(self) -> u32 {
+crates/explorer-extension-api/src/jobs.rs:1300:    pub const fn from_raw(raw: u32) -> Self {
+crates/explorer-extension-api/src/jobs.rs:1306:    pub const fn is_known(self) -> bool {
+crates/explorer-extension-api/src/jobs.rs:1315:pub trait AbiJobProviderObjectV1: Send + Sync {
+crates/explorer-extension-api/src/jobs.rs:1325:pub struct JobProviderObjectV1(AbiJobProviderObjectV1_TO<'static, RBox<()>>);
+crates/explorer-extension-api/src/jobs.rs:1330:pub trait JobProviderImplementationV1: Send + Sync {
+crates/explorer-extension-api/src/jobs.rs:1398:    pub fn new<T: JobProviderImplementationV1 + 'static>(provider: T) -> Self {
+crates/explorer-extension-api/src/jobs.rs:1409:    pub fn invoke(&self, context: JobContextV1) -> JobTerminalV1 {
+crates/explorer-extension-host/src/extension_job_runtime.rs:49:pub struct ExtensionResultBufferConfigV1 {
+crates/explorer-extension-host/src/extension_job_runtime.rs:64:pub const MAX_EXTENSION_RUNTIME_REGISTRY_JOBS_V1: usize = 4096;
+crates/explorer-extension-host/src/extension_job_runtime.rs:88:    pub fn try_new(
+crates/explorer-extension-host/src/extension_job_runtime.rs:158:pub struct ExtensionJobProducerV1 {
+crates/explorer-extension-host/src/extension_job_runtime.rs:173:    pub fn package_id(&self) -> &str {
+crates/explorer-extension-host/src/extension_job_runtime.rs:177:    pub fn sealed_manifest_digest(&self) -> &str {
+crates/explorer-extension-host/src/extension_job_runtime.rs:181:    pub const fn data_version(&self) -> u64 {
+crates/explorer-extension-host/src/extension_job_runtime.rs:185:    pub fn contribution_id(&self) -> &str {
+crates/explorer-extension-host/src/extension_job_runtime.rs:189:    pub const fn interface_id(&self) -> StableIdV1 {
+crates/explorer-extension-host/src/extension_job_runtime.rs:193:    pub fn feature_id(&self) -> &str {
+crates/explorer-extension-host/src/extension_job_runtime.rs:197:    pub const fn feature_epoch(&self) -> u64 {
+crates/explorer-extension-host/src/extension_job_runtime.rs:204:pub struct ExtensionJobAuthorityV1 {
+crates/explorer-extension-host/src/extension_job_runtime.rs:263:    pub fn producer(&self) -> &ExtensionJobProducerV1 {
+crates/explorer-extension-host/src/extension_job_runtime.rs:300:    pub fn for_integration_test(package_id: &str) -> Self {
+crates/explorer-extension-host/src/extension_job_runtime.rs:334:pub const MAX_HOST_INPUT_STREAM_SOURCE_BYTES_V1: usize = 8 * 1024 * 1024;
+crates/explorer-extension-host/src/extension_job_runtime.rs:337:pub struct HostInputStreamSourceV1 {
+crates/explorer-extension-host/src/extension_job_runtime.rs:378:    pub fn from_host_snapshot(bytes: Vec<u8>, generation: u64, seekable: bool) -> Option<Self> {
+crates/explorer-extension-host/src/extension_job_runtime.rs:393:    pub fn replace_host_snapshot(&self, bytes: Vec<u8>, generation: u64, seekable: bool) -> bool {
+crates/explorer-extension-host/src/extension_job_runtime.rs:414:pub struct ExtensionJobRuntimeRequestV1 {
+crates/explorer-extension-host/src/extension_job_runtime.rs:426:pub struct AcceptedIncrementalResultBatchV1 {
+crates/explorer-extension-host/src/extension_job_runtime.rs:501:pub enum ExtensionJobFinishOutcomeV1 {
+crates/explorer-extension-host/src/extension_job_runtime.rs:509:pub struct ExtensionJobRuntimeV1 {
+crates/explorer-extension-host/src/extension_job_runtime.rs:518:pub enum ExtensionJobCacheLookupV1 {
+crates/explorer-extension-host/src/extension_job_runtime.rs:609:pub struct ExtensionJobQuarantineEventV1 {
+crates/explorer-extension-host/src/extension_job_runtime.rs:1204:    pub fn new(config: ExtensionResultBufferConfigV1) -> Self {
+crates/explorer-extension-host/src/extension_job_runtime.rs:1246:    pub fn result_cache(&self) -> Arc<ExtensionResultCacheV1> {
+crates/explorer-extension-host/src/extension_job_runtime.rs:1251:    pub fn cache_watcher_generation(&self, watcher_scope: u128) -> u64 {
+crates/explorer-extension-host/src/extension_job_runtime.rs:1260:    pub fn lookup_cached_result(
+crates/explorer-extension-host/src/extension_job_runtime.rs:1387:    pub fn cache_accepted_batch(
+crates/explorer-extension-host/src/extension_job_runtime.rs:1411:    pub fn ready_job_signals(&self) -> Vec<ExtensionJobUiReadySignalV1> {
+crates/explorer-extension-host/src/extension_job_runtime.rs:1575:    pub fn open_job_for_integration_test(
+crates/explorer-extension-host/src/extension_job_runtime.rs:1586:    pub fn submit_for_integration_test(
+crates/explorer-extension-host/src/extension_job_runtime.rs:1608:    pub fn finish_for_integration_test(
+crates/explorer-extension-host/src/extension_job_runtime.rs:1823:    pub fn take_quarantine(&self) -> Vec<ExtensionJobQuarantineEventV1> {
+crates/explorer-extension-host/src/extension_job_runtime.rs:1834:    pub fn is_accepted_batch_current(&self, batch: &AcceptedIncrementalResultBatchV1) -> bool {
+crates/explorer-extension-host/src/extension_job_runtime.rs:1844:    pub fn apply_accepted_batch(
+crates/explorer-extension-host/src/extension_job_runtime.rs:1876:    pub fn apply_accepted_batch_and_enqueue_invalidation(
+crates/explorer-extension-host/src/extension_job_runtime.rs:1899:    pub fn is_result_generation_current(
+crates/explorer-extension-host/src/extension_job_runtime.rs:1928:    pub fn applied_rows_snapshot(
+crates/explorer-extension-host/src/extension_job_runtime.rs:1945:    pub fn request_control(
+crates/explorer-extension-host/src/extension_job_runtime.rs:1957:    pub fn update_current_generations(
+crates/explorer-extension-host/src/extension_job_runtime.rs:2040:    pub fn take_progress(
+crates/explorer-extension-host/src/extension_job_runtime.rs:2069:    pub fn drain(
+crates/explorer-extension-host/src/extension_job_runtime.rs:2179:    pub fn purge(&self, job: JobHandleV1) -> Result<(), ExtensionJobRuntimeErrorV1> {
+crates/explorer-extension-host/src/extension_job_runtime.rs:2186:    pub fn retire(&self, job: JobHandleV1) -> Result<(), ExtensionJobRuntimeErrorV1> {
+crates/explorer-extension-host/src/extension_job_runtime.rs:3262:pub enum ExtensionJobRuntimeErrorV1 {
