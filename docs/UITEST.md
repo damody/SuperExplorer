@@ -78,6 +78,12 @@ cargo run -p explorer-uitest -- --case icon-view-layout-headful
 
 失敗時先使用 `summary.md` 提供的 `--case` 指令重跑，再查看該案例的 stderr、report 與 screenshot。測試輸出不得包含使用者名稱或電腦名稱；host metadata 只保留 Windows build、CPU architecture、rustc/cargo、Git revision 與 dirty flag。
 
+## 本機分欄檢視
+
+`local-column-view-contract` 執行分欄模式的模型與 UI reducer 測試。`local-column-view-headful` 需有互動桌面與已建置的 `SuperExplorer.exe`；它先確認 runner 擁有的啟動夾具已顯示，再操作 View 選單切換分欄、點開資料夾確認下一欄子檔可見，最後驗證 Alt+P 隱藏整合預覽。缺少執行檔時報告 SKIP；操作或斷言失敗時報告 FAIL。JPEG 像素、水平捲軸與 F2 重新命名另由專用腳本驗證。`local-column-view-commands-headful` 在四個獨立的 runner 擁有夾具中逐項驗證祖先欄 Delete、複製貼上、跨欄拖放及右鍵選單；每項有程序時間上限，只有實際檔案結果吻合才報 PASS。使用者操作說明見 `docs/COLUMN_VIEW.md`。
+
+分欄案例在 `uitest/manifest.json` 使用逐項的 OpenSpec requirement ID。`local-column-view-keyboard-headful` 用獨立本機夾具驗證鍵盤切換分欄、方向鍵與位址、欄內 Shift/Ctrl 選取、UIA 名稱／角色及焦點返回；檢視選單勾選狀態在 UIA 不提供 TogglePattern 時標示 SKIP。`local-column-view-empty-headful` 驗證空資料夾的狀態文字、父欄保留及重試控制；權限不足的資料夾只經單元測試，腳本不更動 ACL。`local-column-view-handler-headful` 使用已註冊的本機 PDF Preview Handler，驗證初始邊界、預覽寬度拖曳、Alt+P 卸載／重開與切換選取後卸載；視窗同步縮放、真實 DPI 切換、handler 崩潰與 UIA 焦點查詢在報告中明確標示 SKIP，對應的狀態轉移另有單元測試。全庫 `--validate-only` 仍因其他進行中變更的 548 項未覆蓋要求而失敗；使用 `--case <id>` 執行單一分欄案例，並檢查其報告的 PASS、FAIL 或 SKIP 與證據路徑。
+
 ## 新增案例檢查表
 
 1. 優先新增 deterministic Rust test，再以 headful 腳本補足 Windows 行為。

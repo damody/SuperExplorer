@@ -55,6 +55,159 @@
       "prerequisites": [{"kind": "command", "name": "cargo.exe"}]
     },
     {
+      "id": "local-column-view-contract",
+      "description": "本機分欄檢視的模式、session、分支、輔助列舉與預覽偏好契約測試。",
+      "suites": ["quick", "full"],
+      "program": "cargo.exe",
+      "arguments": ["test", "-p", "explorer-model", "-p", "explorer-ui", "--lib", "column_view", "--", "--test-threads=8"],
+      "timeout_seconds": 600,
+      "prerequisites": [{"kind": "command", "name": "cargo.exe"}],
+      "covers": [
+        "add-local-column-view/local-column-view/built-in-columns-view-and-location-eligibility",
+        "add-local-column-view/local-column-view/folder-level-column-navigation",
+        "add-local-column-view/local-column-view/file-selection-and-integrated-preview",
+        "add-local-column-view/local-column-view/deep-paths-and-resizable-layout",
+        "add-local-column-view/local-column-view/keyboard-commands-and-file-operations",
+        "add-local-column-view/local-column-view/session-accessibility-and-responsiveness"
+      ]
+    },
+    {
+      "id": "local-column-view-headful",
+      "description": "驗證啟動夾具、View 選單、子欄導覽與 Alt+P 隱藏整合預覽。",
+      "suites": ["full"],
+      "program": "powershell.exe",
+      "arguments": ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "{workspace_root}\\scripts\\test_local_column_view_headful.ps1", "-OutputDirectory", "{evidence_dir}"],
+      "timeout_seconds": 120,
+      "prerequisites": [
+        {"kind": "windows"},
+        {"kind": "interactive_desktop"},
+        {"kind": "path", "path": "{workspace_root}\\scripts\\test_local_column_view_headful.ps1"}
+      ],
+      "exclusive_resources": ["gui", "cursor"],
+      "required_artifacts": ["report.json"],
+      "covers": [
+        "add-local-column-view/local-column-view/built-in-columns-view-and-location-eligibility",
+        "add-local-column-view/local-column-view/folder-level-column-navigation",
+        "add-local-column-view/local-column-view/file-selection-and-integrated-preview"
+      ]
+    },
+    {
+      "id": "local-column-view-jpeg-headful",
+      "description": "驗證本機 JPEG 在整合預覽的像素與切換選取後清除舊影像。",
+      "suites": ["full"],
+      "program": "powershell.exe",
+      "arguments": ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "{workspace_root}\\scripts\\test_local_column_view_jpeg_preview.ps1", "-OutputDirectory", "{evidence_dir}"],
+      "timeout_seconds": 180,
+      "prerequisites": [
+        {"kind": "windows"},
+        {"kind": "interactive_desktop"},
+        {"kind": "path", "path": "{workspace_root}\\scripts\\test_local_column_view_jpeg_preview.ps1"}
+      ],
+      "exclusive_resources": ["gui", "cursor"],
+      "required_artifacts": ["report.json"],
+      "covers": ["add-local-column-view/local-column-view/file-selection-and-integrated-preview"]
+    },
+    {
+      "id": "local-column-view-horizontal-headful",
+      "description": "驗證窄視窗的水平捲軸、拖曳滑塊與整合預覽分隔線。",
+      "suites": ["full"],
+      "program": "powershell.exe",
+      "arguments": ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "{workspace_root}\\scripts\\test_local_column_view_horizontal_scroll.ps1", "-OutputDirectory", "{evidence_dir}"],
+      "timeout_seconds": 120,
+      "prerequisites": [
+        {"kind": "windows"},
+        {"kind": "interactive_desktop"},
+        {"kind": "path", "path": "{workspace_root}\\scripts\\test_local_column_view_horizontal_scroll.ps1"}
+      ],
+      "exclusive_resources": ["gui", "cursor"],
+      "required_artifacts": ["report.json"],
+      "covers": ["add-local-column-view/local-column-view/deep-paths-and-resizable-layout"]
+    },
+    {
+      "id": "local-column-view-rename-headful",
+      "description": "驗證 F2 在分欄列內顯示編輯框並提交測試檔案重新命名。",
+      "suites": ["full"],
+      "program": "powershell.exe",
+      "arguments": ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "{workspace_root}\\scripts\\test_local_column_view_rename_headful.ps1", "-OutputDirectory", "{evidence_dir}"],
+      "timeout_seconds": 120,
+      "prerequisites": [
+        {"kind": "windows"},
+        {"kind": "interactive_desktop"},
+        {"kind": "path", "path": "{workspace_root}\\scripts\\test_local_column_view_rename_headful.ps1"}
+      ],
+      "exclusive_resources": ["gui", "cursor"],
+      "required_artifacts": ["report.json", "after-f2.png"],
+      "covers": ["add-local-column-view/local-column-view/keyboard-commands-and-file-operations"]
+    },
+    {
+      "id": "local-column-view-commands-headful",
+      "description": "以獨立本機夾具驗證祖先欄右鍵、Delete、貼上與跨欄拖放的檔案結果。",
+      "suites": ["full"],
+      "program": "powershell.exe",
+      "arguments": ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "{workspace_root}\\scripts\\test_local_column_view_commands_headful.ps1", "-OutputDirectory", "{evidence_dir}"],
+      "timeout_seconds": 600,
+      "prerequisites": [
+        {"kind": "windows"},
+        {"kind": "interactive_desktop"},
+        {"kind": "path", "path": "{workspace_root}\\scripts\\test_local_column_view_commands_headful.ps1"}
+      ],
+      "exclusive_resources": ["gui", "cursor"],
+      "required_artifacts": ["report.json"],
+      "covers": ["add-local-column-view/local-column-view/keyboard-commands-and-file-operations"]
+    },
+    {
+      "id": "local-column-view-keyboard-headful",
+      "description": "以鍵盤開啟分欄，並檢查方向鍵與地址、欄內 Shift/Ctrl 選取、輔助名稱角色狀態，以及切換層級後焦點回到作用中欄。檢視選單的勾選狀態只有在 UIA 讀得到時才斷言。",
+      "suites": ["full"],
+      "program": "powershell.exe",
+      "arguments": ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "{workspace_root}\\scripts\\test_local_column_view_keyboard_headful.ps1", "-OutputDirectory", "{evidence_dir}"],
+      "timeout_seconds": 600,
+      "prerequisites": [
+        {"kind": "windows"},
+        {"kind": "interactive_desktop"},
+        {"kind": "path", "path": "{workspace_root}\\scripts\\test_local_column_view_keyboard_headful.ps1"}
+      ],
+      "exclusive_resources": ["gui", "cursor"],
+      "required_artifacts": ["report.json"],
+      "covers": [
+        "add-local-column-view/local-column-view/built-in-columns-view-and-location-eligibility",
+        "add-local-column-view/local-column-view/keyboard-commands-and-file-operations",
+        "add-local-column-view/local-column-view/session-accessibility-and-responsiveness"
+      ]
+    },
+    {
+      "id": "local-column-view-handler-headful",
+      "description": "驗證本機 PDF Preview Handler 的整合預覽邊界、寬度拖曳、Alt+P 卸載與選取切換。",
+      "suites": ["full"],
+      "program": "powershell.exe",
+      "arguments": ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "{workspace_root}\\scripts\\test_local_column_view_handler_headful.ps1", "-OutputDirectory", "{evidence_dir}", "-Quick"],
+      "timeout_seconds": 120,
+      "prerequisites": [
+        {"kind": "windows"},
+        {"kind": "interactive_desktop"},
+        {"kind": "path", "path": "{workspace_root}\\scripts\\test_local_column_view_handler_headful.ps1"}
+      ],
+      "exclusive_resources": ["gui", "cursor"],
+      "required_artifacts": ["report.json"],
+      "covers": ["add-local-column-view/local-column-view/preview-lifecycle-and-safety"]
+    },
+    {
+      "id": "local-column-view-empty-headful",
+      "description": "驗證空的本機資料夾顯示空狀態、保留父欄與重試控制。",
+      "suites": ["full"],
+      "program": "powershell.exe",
+      "arguments": ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "{workspace_root}\\scripts\\test_local_column_view_empty_headful.ps1", "-OutputDirectory", "{evidence_dir}"],
+      "timeout_seconds": 120,
+      "prerequisites": [
+        {"kind": "windows"},
+        {"kind": "interactive_desktop"},
+        {"kind": "path", "path": "{workspace_root}\\scripts\\test_local_column_view_empty_headful.ps1"}
+      ],
+      "exclusive_resources": ["gui", "cursor"],
+      "required_artifacts": ["report.json"],
+      "covers": ["add-local-column-view/local-column-view/folder-level-column-navigation"]
+    },
+    {
       "id": "workspace-tests",
       "description": "執行 workspace 全部 target 的回歸測試。",
       "suites": ["quick"],
