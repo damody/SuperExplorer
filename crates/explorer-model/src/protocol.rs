@@ -611,6 +611,15 @@ impl Default for ClipboardState {
     }
 }
 
+/// Exactly-one terminal for an auxiliary column listing. It never mutates tab history.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ColumnListingTerminal {
+    Finished,
+    Empty,
+    Cancelled,
+    Failed(ExplorerError),
+}
+
 /// Commands accepted by the application service boundary.
 #[derive(Clone, Debug)]
 pub enum ExplorerCommand {
@@ -631,6 +640,12 @@ pub enum ExplorerCommand {
         parent: LocationDescriptor,
         segment_id: BreadcrumbSegmentId,
         menu_generation: u64,
+    },
+    /// Lists one ancestor column without changing the active tab location or history.
+    EnumerateColumn {
+        context: RequestContext,
+        location: LocationDescriptor,
+        branch_revision: u64,
     },
     OpenItem {
         context: RequestContext,
@@ -693,6 +708,7 @@ impl ExplorerCommand {
             | Self::Refresh { context, .. }
             | Self::ResolveAncestry { context, .. }
             | Self::EnumerateChildContainers { context, .. }
+            | Self::EnumerateColumn { context, .. }
             | Self::OpenItem { context, .. }
             | Self::ExecuteFileOperation { context, .. }
             | Self::ShowContextMenu { context, .. }
@@ -1033,6 +1049,18 @@ pub enum ExplorerEvent {
         menu_generation: u64,
         outcome: BreadcrumbTerminal,
     },
+    ColumnDirectoryBatch {
+        context: RequestContext,
+        branch_revision: u64,
+        location: LocationDescriptor,
+        entries: Vec<FileEntry>,
+    },
+    ColumnDirectoryFinished {
+        context: RequestContext,
+        branch_revision: u64,
+        location: LocationDescriptor,
+        outcome: ColumnListingTerminal,
+    },
     DirectoryChanged {
         tab_id: TabId,
         generation: Generation,
@@ -1122,6 +1150,8 @@ impl ExplorerEvent {
             | Self::AncestryFinished { context, .. }
             | Self::ChildContainersBatch { context, .. }
             | Self::ChildContainersFinished { context, .. }
+            | Self::ColumnDirectoryBatch { context, .. }
+            | Self::ColumnDirectoryFinished { context, .. }
             | Self::OperationProgress { context, .. }
             | Self::SearchBatch { context, .. }
             | Self::SearchStatus { context, .. }
@@ -1150,6 +1180,7 @@ impl ExplorerEvent {
                 Self::DirectoryFinished { .. }
                     | Self::AncestryFinished { .. }
                     | Self::ChildContainersFinished { .. }
+                    | Self::ColumnDirectoryFinished { .. }
                     | Self::OperationFinished { .. }
                     | Self::ContextMenuFinished { .. }
                     | Self::SearchFinished { .. }

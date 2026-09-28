@@ -247,7 +247,9 @@ impl ExplorerWindowState {
             | ExplorerEvent::ThumbnailCacheCleared { .. }
             | ExplorerEvent::PreviewHostFinished { .. }
             | ExplorerEvent::LockOwnersDiscovered { .. }
-            | ExplorerEvent::LockOwnersClosed { .. } => WindowEventOutcome::IgnoredUnrelated,
+            | ExplorerEvent::LockOwnersClosed { .. }
+            | ExplorerEvent::ColumnDirectoryBatch { .. }
+            | ExplorerEvent::ColumnDirectoryFinished { .. } => WindowEventOutcome::IgnoredUnrelated,
         }
     }
 

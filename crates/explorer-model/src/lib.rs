@@ -17,6 +17,7 @@
 mod bookmark;
 mod cache_budget;
 mod cache_telemetry;
+mod column_view;
 mod context_menu;
 mod domain;
 mod drag_drop;
@@ -49,6 +50,17 @@ pub use cache_telemetry::{
     CacheTelemetryCountersV1, CacheTelemetryEntryV1, CacheTelemetryIdV1,
     CacheTelemetrySnapshotErrorV1, CacheTelemetrySnapshotV1, CacheTelemetrySubtotalV1,
     CacheTelemetryValueV1, MAX_CACHE_TELEMETRY_ENTRIES,
+};
+pub use column_view::{
+    COLUMN_LOAD_CONCURRENCY, COLUMN_PREVIEW_WIDTH_DEFAULT, COLUMN_PREVIEW_WIDTH_MAX,
+    COLUMN_PREVIEW_WIDTH_MIN, COLUMN_ROW_HEIGHT, COLUMN_STRIP_MIN_SPAN, COLUMN_WIDTH_DEFAULT,
+    COLUMN_WIDTH_MAX, COLUMN_WIDTH_MIN, ColumnBranch, ColumnBranchStore, ColumnFault, ColumnLevel,
+    ColumnLoadCoordinator, ColumnLoadRequest, ColumnNavigationSession, ColumnPhase,
+    ColumnSelectEffect, clamp_column_horizontal_offset, column_layout_spans,
+    column_listing_rejected, column_resolved_key, column_visible_row_bounds,
+    columns_location_eligible, effective_view_mode, filesystem_column_chain,
+    normalized_column_preview_width, normalized_column_width, normalized_column_widths,
+    reveal_column_offset, visible_column_range,
 };
 pub use context_menu::{
     ContextMenuColorScheme, ContextMenuHostCommand, ContextMenuInvocationProfile,
@@ -117,16 +129,16 @@ pub use preview::{
 };
 pub use protocol::{
     ApkInstallStatus, BaseIconClass, BaseIconKey, Bc7RasterPayload, BreadcrumbTerminal,
-    ClipboardMode, ClipboardState, CompressedRasterKind, ConflictDecision, DataTransferRequest,
-    DirectoryDelta, ExplorerCommand, ExplorerEvent, ExplorerService, ExplorerServiceError,
-    FileOperationFlags, FileOperationKind, FileOperationRequest, IconInvalidationEpochs,
-    ItemDescriptor, LocationMetadata, OpenDisposition, OperationItemOutcome, OperationItemResult,
-    OperationProgress, OperationTerminal, SearchBackend, SearchEngineAvailability,
-    SearchEngineFacts, SearchEnginePreference, SearchEngineSupport, SearchInput, SearchSourcePhase,
-    SearchSourceStatus, SearchTerminal, ShellContextMenuTarget, ShellIconFallbackReason,
-    ShellIconKey, ShellIconPayload, ShellIconPayloadError, ShellIconTheme, ShellNewItemDescriptor,
-    ShellNewItemRecipe, ShellNewValidationError, TerminalLedger, TerminalViolation,
-    TransferEffects, TransferProgressPhase, base_icon_key, classify_base_icon,
+    ClipboardMode, ClipboardState, ColumnListingTerminal, CompressedRasterKind, ConflictDecision,
+    DataTransferRequest, DirectoryDelta, ExplorerCommand, ExplorerEvent, ExplorerService,
+    ExplorerServiceError, FileOperationFlags, FileOperationKind, FileOperationRequest,
+    IconInvalidationEpochs, ItemDescriptor, LocationMetadata, OpenDisposition,
+    OperationItemOutcome, OperationItemResult, OperationProgress, OperationTerminal, SearchBackend,
+    SearchEngineAvailability, SearchEngineFacts, SearchEnginePreference, SearchEngineSupport,
+    SearchInput, SearchSourcePhase, SearchSourceStatus, SearchTerminal, ShellContextMenuTarget,
+    ShellIconFallbackReason, ShellIconKey, ShellIconPayload, ShellIconPayloadError, ShellIconTheme,
+    ShellNewItemDescriptor, ShellNewItemRecipe, ShellNewValidationError, TerminalLedger,
+    TerminalViolation, TransferEffects, TransferProgressPhase, base_icon_key, classify_base_icon,
     normalize_apk_notice_text, search_engine_availability,
 };
 pub use remote::{

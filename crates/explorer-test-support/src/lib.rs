@@ -295,6 +295,39 @@ impl explorer_model::ExplorerService for ImmediateNavigationService {
                 events.push_back(ExplorerEvent::AncestryFinished { context, outcome });
                 Ok(())
             }
+            ExplorerCommand::EnumerateColumn {
+                context,
+                location,
+                branch_revision,
+            } => {
+                let outcome = if context.cancellation.is_cancelled() {
+                    explorer_model::ColumnListingTerminal::Cancelled
+                } else if explorer_model::column_listing_rejected(
+                    &location,
+                    explorer_model::DriveKind::Fixed,
+                )
+                .is_some()
+                {
+                    explorer_model::ColumnListingTerminal::Failed(
+                        explorer_common::ExplorerError::new(
+                            explorer_common::ExplorerErrorKind::Input,
+                            "enumerate column",
+                            false,
+                            "分欄檢視只支援本機磁碟資料夾。",
+                            "deterministic column rejection",
+                        ),
+                    )
+                } else {
+                    explorer_model::ColumnListingTerminal::Empty
+                };
+                events.push_back(ExplorerEvent::ColumnDirectoryFinished {
+                    context,
+                    branch_revision,
+                    location,
+                    outcome,
+                });
+                Ok(())
+            }
             ExplorerCommand::EnumerateChildContainers {
                 context,
                 segment_id,
@@ -738,6 +771,16 @@ impl DeterministicShellService {
                 ExplorerCommand::ResolveAncestry { .. } => ExplorerEvent::AncestryFinished {
                     context,
                     outcome: BreadcrumbTerminal::Failed(error),
+                },
+                ExplorerCommand::EnumerateColumn {
+                    context,
+                    location,
+                    branch_revision,
+                } => ExplorerEvent::ColumnDirectoryFinished {
+                    context,
+                    branch_revision,
+                    location,
+                    outcome: explorer_model::ColumnListingTerminal::Failed(error),
                 },
                 ExplorerCommand::EnumerateChildContainers {
                     segment_id,

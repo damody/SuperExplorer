@@ -879,10 +879,11 @@ pub enum ViewMode {
     Details,
     Tiles,
     Content,
+    Columns,
 }
 
 impl ViewMode {
-    pub const ALL: [Self; 8] = [
+    pub const ALL: [Self; 9] = [
         Self::ExtraLargeIcons,
         Self::LargeIcons,
         Self::MediumIcons,
@@ -891,6 +892,7 @@ impl ViewMode {
         Self::Details,
         Self::Tiles,
         Self::Content,
+        Self::Columns,
     ];
 }
 
@@ -1909,6 +1911,12 @@ pub struct ViewSettings {
     pub details_layout: OrderedColumnLayout,
     pub details_pane_width: u16,
     pub preview_pane_width: u16,
+    /// Shared default directory-column width in logical pixels. Per-column overrides live on the
+    /// transient branch and are normalized into `column_widths` when the session is saved.
+    pub column_width: u16,
+    pub column_widths: Vec<u16>,
+    pub column_preview_width: u16,
+    pub column_preview_visible: bool,
     /// Folder Options single-select search engine. Default is Everything.
     pub search_engine: crate::SearchEnginePreference,
     /// General-page MFT feature. Related plugins follow this switch.
@@ -1945,6 +1953,10 @@ impl Default for ViewSettings {
             details_layout: OrderedColumnLayout::default(),
             details_pane_width: 293,
             preview_pane_width: 293,
+            column_width: crate::COLUMN_WIDTH_DEFAULT,
+            column_widths: Vec::new(),
+            column_preview_width: crate::COLUMN_PREVIEW_WIDTH_DEFAULT,
+            column_preview_visible: true,
             search_engine: crate::SearchEnginePreference::Everything,
             mft_enabled: true,
             tab_min_width: DEFAULT_TAB_MIN_WIDTH,
@@ -2075,7 +2087,7 @@ pub const fn default_icon_size_for_mode(mode: ViewMode) -> u16 {
         ViewMode::LargeIcons => 108,
         ViewMode::MediumIcons => 72,
         ViewMode::SmallIcons | ViewMode::Content => 32,
-        ViewMode::List | ViewMode::Details => 20,
+        ViewMode::List | ViewMode::Details | ViewMode::Columns => 20,
         ViewMode::Tiles => 40,
     }
 }
@@ -2088,7 +2100,7 @@ pub fn effective_icon_size(settings: &ViewSettings) -> u16 {
         ViewMode::MediumIcons => matches!(settings.icon_size, 64 | 72 | 84),
         ViewMode::LargeIcons => matches!(settings.icon_size, 96 | 108 | 128),
         ViewMode::ExtraLargeIcons => matches!(settings.icon_size, 256 | 384 | 512),
-        ViewMode::List | ViewMode::Details => settings.icon_size == 20,
+        ViewMode::List | ViewMode::Details | ViewMode::Columns => settings.icon_size == 20,
         ViewMode::Tiles => settings.icon_size == 40,
         ViewMode::Content => settings.icon_size == 32,
     };

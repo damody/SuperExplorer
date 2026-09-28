@@ -189,34 +189,47 @@ impl ReliableTerminalPublisher {
 
     /// Publishes a required terminal without blocking the calling apartment or worker.
     pub(crate) fn publish(&self, event: ExplorerEvent) {
+        let _ = self.enqueue_terminal(event);
+    }
+
+    /// Queues a required terminal. Returns false only when neither the primary lane nor the
+    /// retained queue accepted it, so the caller can emit one fallback terminal elsewhere.
+    fn enqueue_terminal(&self, event: ExplorerEvent) -> bool {
         if self.ordered {
             let mut retained = self
                 .retained
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             if !retained.is_empty() {
-                self.retain_terminal(&mut retained, event);
-                return;
+                return self.retain_terminal(&mut retained, event);
             }
         }
         match self.primary.try_send(event) {
-            Ok(()) => self.counters.published(),
+            Ok(()) => {
+                self.counters.published();
+                true
+            }
             Err(TrySendError::Full(event)) => {
                 let mut retained = self
                     .retained
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner);
-                self.retain_terminal(&mut retained, event);
+                self.retain_terminal(&mut retained, event)
             }
             Err(TrySendError::Disconnected(_)) => {
                 self.counters
                     .failed_publications
                     .fetch_add(1, Ordering::Relaxed);
+                false
             }
         }
     }
 
-    fn retain_terminal(&self, retained: &mut VecDeque<ExplorerEvent>, event: ExplorerEvent) {
+    fn retain_terminal(
+        &self,
+        retained: &mut VecDeque<ExplorerEvent>,
+        event: ExplorerEvent,
+    ) -> bool {
         if let Some(request_id) = event.context().map(|context| context.request_id)
             && let Some(existing) = retained.iter_mut().find(|existing| {
                 existing.is_terminal()
@@ -226,7 +239,7 @@ impl ReliableTerminalPublisher {
             // A duplicate terminal for one request is safely superseded; it cannot create a
             // second reducer transition and preserves bounded memory.
             *existing = event;
-            return;
+            return true;
         }
         if retained.len() < self.retained_capacity {
             retained.push_back(event);
@@ -234,11 +247,13 @@ impl ReliableTerminalPublisher {
                 .retained_publications
                 .fetch_add(1, Ordering::Relaxed);
             self.counters.published();
+            true
         } else {
             self.counters
                 .failed_publications
                 .fetch_add(1, Ordering::Relaxed);
             tracing::error!("required Shell terminal retention capacity was exhausted");
+            false
         }
     }
 
@@ -268,6 +283,42 @@ impl ReliableTerminalPublisher {
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner);
                 if retained.len() < self.retained_capacity {
+                    retained.push_back(event);
+                    Ok(())
+                } else {
+                    Err(())
+                }
+            }
+            Err(TrySendError::Full(_) | TrySendError::Disconnected(_)) => Err(()),
+        }
+    }
+
+    /// Queues a non-terminal and leaves one retained slot for the matching terminal. A full lane
+    /// returns an error instead of dropping the batch or blocking the STA.
+    fn try_publish_batch_reserving_terminal(&self, event: ExplorerEvent) -> Result<(), ()> {
+        debug_assert!(!event.is_terminal());
+        let batch_limit = self.retained_capacity.saturating_sub(1);
+        if self.ordered {
+            let mut retained = self
+                .retained
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if !retained.is_empty() {
+                if retained.len() < batch_limit {
+                    retained.push_back(event);
+                    return Ok(());
+                }
+                return Err(());
+            }
+        }
+        match self.primary.try_send(event) {
+            Ok(()) => Ok(()),
+            Err(TrySendError::Full(event)) if self.ordered => {
+                let mut retained = self
+                    .retained
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                if retained.len() < batch_limit {
                     retained.push_back(event);
                     Ok(())
                 } else {
@@ -1210,6 +1261,7 @@ fn required_terminal_lane(command: &ExplorerCommand) -> Option<RequiredTerminalL
         ExplorerCommand::ShowContextMenu { .. }
         | ExplorerCommand::ResolveAncestry { .. }
         | ExplorerCommand::EnumerateChildContainers { .. }
+        | ExplorerCommand::EnumerateColumn { .. }
         | ExplorerCommand::StartSearch { .. }
         | ExplorerCommand::LoadShellIcon { .. }
         | ExplorerCommand::LoadThumbnail { .. }
@@ -1404,6 +1456,17 @@ fn process_command(
             start_brokered_breadcrumb(command, events, background_terminals.clone());
             Ok(())
         }
+        ExplorerCommand::EnumerateColumn {
+            location,
+            branch_revision,
+            ..
+        } => process_column_enumeration(
+            &context,
+            location,
+            *branch_revision,
+            background_terminals,
+            typed_terminals,
+        ),
         ExplorerCommand::OpenItem {
             item, disposition, ..
         } => match disposition {
@@ -1658,6 +1721,7 @@ fn process_command(
             | ExplorerCommand::ExecuteFileOperation { .. }
             | ExplorerCommand::ResolveAncestry { .. }
             | ExplorerCommand::EnumerateChildContainers { .. }
+            | ExplorerCommand::EnumerateColumn { .. }
             | ExplorerCommand::Cancel { .. }
             | ExplorerCommand::ShowContextMenu { .. }
             | ExplorerCommand::StartSearch { .. }
@@ -1739,6 +1803,23 @@ fn command_terminal_failure(
             context,
             outcome: BreadcrumbTerminal::Failed(error),
         },
+        ExplorerCommand::EnumerateColumn {
+            location,
+            branch_revision,
+            ..
+        } => {
+            let outcome = if error.kind == ExplorerErrorKind::Cancellation {
+                explorer_model::ColumnListingTerminal::Cancelled
+            } else {
+                explorer_model::ColumnListingTerminal::Failed(error)
+            };
+            ExplorerEvent::ColumnDirectoryFinished {
+                context,
+                branch_revision: *branch_revision,
+                location: location.clone(),
+                outcome,
+            }
+        }
         ExplorerCommand::EnumerateChildContainers {
             segment_id,
             menu_generation,
@@ -2704,6 +2785,138 @@ fn breadcrumb_id(location: &LocationDescriptor) -> BreadcrumbSegmentId {
     BreadcrumbSegmentId(hasher.finish())
 }
 
+fn column_lane_full_error() -> ExplorerError {
+    ExplorerError::new(
+        ExplorerErrorKind::Availability,
+        "publish column directory batch",
+        true,
+        "資料夾更新速度過快，請重新整理。",
+        "bounded column event lane is full",
+    )
+}
+
+fn column_listing_event(
+    context: &explorer_model::RequestContext,
+    branch_revision: u64,
+    location: &LocationDescriptor,
+    outcome: explorer_model::ColumnListingTerminal,
+) -> ExplorerEvent {
+    ExplorerEvent::ColumnDirectoryFinished {
+        context: context.clone(),
+        branch_revision,
+        location: location.clone(),
+        outcome,
+    }
+}
+
+/// Puts the terminal on the same ordered lane as its batches. If that lane cannot accept it,
+/// a success or empty outcome becomes a resource-limited failure so a later poll cannot treat
+/// a partial queue as a complete listing. Cancellation stays on the command error path.
+fn publish_column_terminal(
+    lane: &ReliableTerminalPublisher,
+    fallback: &ReliableTerminalPublisher,
+    context: &explorer_model::RequestContext,
+    branch_revision: u64,
+    location: &LocationDescriptor,
+    outcome: explorer_model::ColumnListingTerminal,
+    queued_entries: usize,
+) {
+    if lane.enqueue_terminal(column_listing_event(
+        context,
+        branch_revision,
+        location,
+        outcome.clone(),
+    )) {
+        return;
+    }
+    let outcome = match outcome {
+        explorer_model::ColumnListingTerminal::Failed(_) => outcome,
+        _ if queued_entries == 0 => outcome,
+        _ => explorer_model::ColumnListingTerminal::Failed(column_lane_full_error()),
+    };
+    fallback.publish(column_listing_event(
+        context,
+        branch_revision,
+        location,
+        outcome,
+    ));
+}
+
+fn process_column_enumeration(
+    context: &explorer_model::RequestContext,
+    location: &LocationDescriptor,
+    branch_revision: u64,
+    lane: &ReliableTerminalPublisher,
+    terminals: &ReliableTerminalPublisher,
+) -> Result<(), ExplorerError> {
+    let media = location
+        .path()
+        .map(crate::navigation::drive_kind_for_path)
+        .unwrap_or(explorer_model::DriveKind::Unknown);
+    if let Some(error) = explorer_model::column_listing_rejected(location, media) {
+        return Err(error);
+    }
+    if context.cancellation.is_cancelled() {
+        return Err(cancelled_error());
+    }
+    let resolved = crate::navigation::resolve_location(location)?;
+    let mut entry_count = 0_usize;
+    let mut resource_limited = false;
+    let completed = crate::navigation::enumerate_directory(context, &resolved, |event| {
+        if context.cancellation.is_cancelled() {
+            return false;
+        }
+        let ExplorerEvent::DirectoryBatch { entries, .. } = event else {
+            return true;
+        };
+        let count = entries.len();
+        let queued = lane
+            .try_publish_batch_reserving_terminal(ExplorerEvent::ColumnDirectoryBatch {
+                context: context.clone(),
+                branch_revision,
+                location: location.clone(),
+                entries,
+            })
+            .is_ok();
+        if !queued {
+            resource_limited = true;
+            return false;
+        }
+        entry_count = entry_count.saturating_add(count);
+        true
+    })?;
+    if context.cancellation.is_cancelled() || (!completed && !resource_limited) {
+        return Err(cancelled_error());
+    }
+    if resource_limited {
+        publish_column_terminal(
+            lane,
+            terminals,
+            context,
+            branch_revision,
+            location,
+            explorer_model::ColumnListingTerminal::Failed(column_lane_full_error()),
+            entry_count,
+        );
+        return Ok(());
+    }
+    let outcome = if entry_count == 0 {
+        explorer_model::ColumnListingTerminal::Empty
+    } else {
+        explorer_model::ColumnListingTerminal::Finished
+    };
+    publish_column_terminal(
+        lane,
+        terminals,
+        context,
+        branch_revision,
+        location,
+        outcome,
+        entry_count,
+    );
+    Ok(())
+}
+
 fn process_navigation(
     context: &explorer_model::RequestContext,
     location: &LocationDescriptor,
@@ -2858,10 +3071,11 @@ mod tests {
         ExplorerError as TestExplorerError, ExplorerErrorKind as TestExplorerErrorKind,
     };
     use explorer_model::{
-        BreadcrumbSegmentId, BreadcrumbTerminal, ClipboardMode, ClipboardState, ConflictDecision,
-        DataTransferRequest, ExplorerCommand, ExplorerEvent, ExplorerService, ExplorerWindowState,
-        FileOperationFlags, FileOperationKind, FileOperationRequest, Generation, HistoryEntry,
-        ItemDescriptor, JournalPreimage, JournalValidation, LocationDescriptor, OperationJournal,
+        BreadcrumbSegmentId, BreadcrumbTerminal, ClipboardMode, ClipboardState,
+        ColumnListingTerminal, ConflictDecision, DataTransferRequest, ExplorerCommand,
+        ExplorerEvent, ExplorerService, ExplorerWindowState, FileEntry, FileOperationFlags,
+        FileOperationKind, FileOperationRequest, Generation, HistoryEntry, ItemDescriptor,
+        JournalPreimage, JournalValidation, LocationDescriptor, OperationJournal,
         OperationTerminal, PreviewHostCommand, RequestContext, ShellItemId, ShellNewItemRecipe,
         TabId, ViewAnchor,
     };
@@ -5168,6 +5382,256 @@ $ok=[Windows.Forms.Clipboard]::ContainsFileDropList() -and [Windows.Forms.Clipbo
             thread::sleep(Duration::from_millis(5));
         }
         assert_eq!(StaResourceSnapshot::capture(), before);
+    }
+
+    fn column_fixture_entry(id: u8, name: &str) -> FileEntry {
+        FileEntry {
+            id: ShellItemId::from_provider_bytes([id]).expect("column entry id"),
+            display_name: name.to_owned(),
+            location: LocationDescriptor::file_system(format!(r"C:\fixture\{name}")),
+            is_container: false,
+            metadata: explorer_model::FileEntryMetadata::default(),
+        }
+    }
+
+    fn relay_column_names(
+        lane: &ReliableTerminalPublisher,
+        fallback: &ReliableTerminalPublisher,
+        names: &[&str],
+    ) -> (RequestContext, Vec<String>) {
+        let context = RequestContext::new(TabId::new(), Generation::new(4));
+        let location = LocationDescriptor::file_system(r"C:\fixture");
+        let mut queued = Vec::new();
+        let mut resource_limited = false;
+        for (index, name) in names.iter().enumerate() {
+            let event = ExplorerEvent::ColumnDirectoryBatch {
+                context: context.clone(),
+                branch_revision: 9,
+                location: location.clone(),
+                entries: vec![column_fixture_entry(index as u8, name)],
+            };
+            if lane.try_publish_batch_reserving_terminal(event).is_err() {
+                resource_limited = true;
+                break;
+            }
+            queued.push((*name).to_owned());
+        }
+        let outcome = if resource_limited {
+            ColumnListingTerminal::Failed(super::column_lane_full_error())
+        } else {
+            ColumnListingTerminal::Finished
+        };
+        super::publish_column_terminal(
+            lane,
+            fallback,
+            &context,
+            9,
+            &location,
+            outcome,
+            queued.len(),
+        );
+        (context, queued)
+    }
+
+    fn drain_column_lane(
+        receiver: &super::ReliableTerminalReceiver,
+    ) -> (Vec<String>, Vec<ColumnListingTerminal>) {
+        let mut names = Vec::new();
+        let mut terminals = Vec::new();
+        while let Ok(event) = receiver.try_recv() {
+            match event {
+                ExplorerEvent::ColumnDirectoryBatch { entries, .. } => {
+                    names.extend(entries.into_iter().map(|entry| entry.display_name));
+                }
+                ExplorerEvent::ColumnDirectoryFinished { outcome, .. } => terminals.push(outcome),
+                _ => {}
+            }
+        }
+        (names, terminals)
+    }
+
+    #[test]
+    fn column_enumeration_slow_consumer_keeps_every_batch_entry_before_the_terminal() {
+        let (lane, receiver) =
+            ReliableTerminalPublisher::ordered_channel(1, 8, &TYPED_TERMINAL_COUNTERS);
+        let (fallback, fallback_receiver) =
+            ReliableTerminalPublisher::channel(1, 1, &TYPED_TERMINAL_COUNTERS);
+        let names = ["a.txt", "b.txt", "c.txt", "d.txt"];
+        let (_context, queued) = relay_column_names(&lane, &fallback, &names);
+        assert_eq!(queued, names);
+        let (delivered, terminals) = drain_column_lane(&receiver);
+        assert_eq!(delivered, names);
+        assert_eq!(terminals.len(), 1);
+        assert!(matches!(terminals[0], ColumnListingTerminal::Finished));
+        let (fallback_names, fallback_terminals) = drain_column_lane(&fallback_receiver);
+        assert!(fallback_names.is_empty());
+        assert!(fallback_terminals.is_empty());
+    }
+
+    #[test]
+    fn column_enumeration_full_lane_is_resource_limited_not_a_user_cancel() {
+        let (lane, receiver) =
+            ReliableTerminalPublisher::ordered_channel(1, 2, &TYPED_TERMINAL_COUNTERS);
+        let (fallback, fallback_receiver) =
+            ReliableTerminalPublisher::channel(1, 1, &TYPED_TERMINAL_COUNTERS);
+        lane.primary()
+            .try_send(ExplorerEvent::DirectoryBatch {
+                context: RequestContext::new(TabId::new(), Generation::new(1)),
+                entries: Vec::new(),
+            })
+            .expect("fill the primary column lane");
+        let (context, queued) = relay_column_names(&lane, &fallback, &["kept.txt", "dropped.txt"]);
+        assert_eq!(queued, vec!["kept.txt".to_owned()]);
+        assert!(matches!(
+            receiver.try_recv().expect("primary filler"),
+            ExplorerEvent::DirectoryBatch { .. }
+        ));
+        let (delivered, terminals) = drain_column_lane(&receiver);
+        assert_eq!(delivered, vec!["kept.txt".to_owned()]);
+        assert_eq!(terminals.len(), 1);
+        match &terminals[0] {
+            ColumnListingTerminal::Failed(error) => {
+                assert_eq!(error.kind, explorer_common::ExplorerErrorKind::Availability);
+                assert_ne!(error.kind, explorer_common::ExplorerErrorKind::Cancellation);
+            }
+            other => panic!("full lane must not look like cancellation: {other:?}"),
+        }
+        assert!(receiver.try_recv().is_err());
+        let (fallback_names, fallback_terminals) = drain_column_lane(&fallback_receiver);
+        assert!(fallback_names.is_empty(), "{fallback_names:?}");
+        assert!(
+            fallback_terminals.is_empty(),
+            "the ordered lane accepted the terminal for {context:?}: {fallback_terminals:?}"
+        );
+    }
+
+    #[test]
+    fn column_enumeration_real_folder_delivers_every_entry_before_one_terminal() {
+        let _test_guard = TEST_LOCK.lock().expect("lock STA tests");
+        let fixture = tempfile::tempdir().expect("create column folder fixture");
+        for index in 0..145 {
+            let suffix = if index == 144 {
+                "x".repeat(180)
+            } else {
+                String::new()
+            };
+            fs::write(
+                fixture
+                    .path()
+                    .join(format!("entry-{index:03}-{suffix}.txt")),
+                format!("fixture-{index}"),
+            )
+            .expect("create column fixture file");
+        }
+        fs::create_dir(fixture.path().join("child-folder")).expect("create column fixture folder");
+
+        let sta = ShellStaHandle::start().expect("start real STA");
+        let context = RequestContext::new(TabId::new(), Generation::new(1));
+        sta.submit(ExplorerCommand::EnumerateColumn {
+            context: context.clone(),
+            location: LocationDescriptor::file_system(fixture.path()),
+            branch_revision: 4,
+        })
+        .expect("submit column enumeration");
+
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let mut batches = 0_usize;
+        let mut entries = 0_usize;
+        let mut terminals = Vec::new();
+        let mut saw_terminal = false;
+        let mut quiet_since = None;
+        while Instant::now() < deadline {
+            match sta.try_recv_event().expect("receive column event") {
+                Some(ExplorerEvent::ColumnDirectoryBatch {
+                    entries: rows,
+                    context: batch,
+                    ..
+                }) => {
+                    assert!(!saw_terminal, "a column batch arrived after its terminal");
+                    assert_eq!(batch.request_id, context.request_id);
+                    assert!(rows.len() <= 64);
+                    batches += 1;
+                    entries += rows.len();
+                    quiet_since = None;
+                }
+                Some(ExplorerEvent::ColumnDirectoryFinished {
+                    context: terminal,
+                    outcome,
+                    ..
+                }) => {
+                    assert_eq!(terminal.request_id, context.request_id);
+                    terminals.push(outcome);
+                    saw_terminal = true;
+                    quiet_since = None;
+                }
+                Some(_) => quiet_since = None,
+                None => {
+                    let since = quiet_since.get_or_insert_with(Instant::now);
+                    if saw_terminal && since.elapsed() >= Duration::from_millis(200) {
+                        break;
+                    }
+                    thread::sleep(Duration::from_millis(2));
+                }
+            }
+        }
+        assert_eq!(terminals.len(), 1, "expected exactly one column terminal");
+        assert!(matches!(terminals[0], ColumnListingTerminal::Finished));
+        assert!(
+            batches >= 3,
+            "expected multiple column batches, got {batches}"
+        );
+        assert_eq!(entries, 146);
+    }
+
+    #[test]
+    fn column_enumeration_cancellation_has_one_cancelled_terminal() {
+        let _test_guard = TEST_LOCK.lock().expect("lock STA tests");
+        let fixture = tempfile::tempdir().expect("create cancelled column fixture");
+        let sta = ShellStaHandle::start().expect("start real STA");
+        let context = RequestContext::new(TabId::new(), Generation::new(2));
+        context.cancellation.cancel();
+        sta.submit(ExplorerCommand::EnumerateColumn {
+            context: context.clone(),
+            location: LocationDescriptor::file_system(fixture.path()),
+            branch_revision: 1,
+        })
+        .expect("submit cancelled column enumeration");
+
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let mut batches = 0_usize;
+        let mut terminals = Vec::new();
+        let mut quiet_since = None;
+        while Instant::now() < deadline {
+            match sta
+                .try_recv_event()
+                .expect("receive cancelled column event")
+            {
+                Some(ExplorerEvent::ColumnDirectoryBatch { .. }) => {
+                    batches += 1;
+                    quiet_since = None;
+                }
+                Some(ExplorerEvent::ColumnDirectoryFinished {
+                    context: terminal,
+                    outcome,
+                    ..
+                }) => {
+                    assert_eq!(terminal.request_id, context.request_id);
+                    terminals.push(outcome);
+                    quiet_since = None;
+                }
+                Some(_) => quiet_since = None,
+                None => {
+                    let since = quiet_since.get_or_insert_with(Instant::now);
+                    if !terminals.is_empty() && since.elapsed() >= Duration::from_millis(200) {
+                        break;
+                    }
+                    thread::sleep(Duration::from_millis(2));
+                }
+            }
+        }
+        assert_eq!(batches, 0);
+        assert_eq!(terminals.len(), 1);
+        assert!(matches!(terminals[0], ColumnListingTerminal::Cancelled));
     }
 
     #[test]

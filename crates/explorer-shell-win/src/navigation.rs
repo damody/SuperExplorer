@@ -1425,26 +1425,54 @@ fn entry_metadata(
     }
 }
 
-fn drive_metadata(path: &Path) -> Option<DriveMetadata> {
-    if path.parent().is_some() {
-        return None;
+pub(crate) fn drive_kind_for_path(path: &Path) -> DriveKind {
+    let mut root = PathBuf::new();
+    for component in path.components() {
+        match component {
+            std::path::Component::Prefix(_) => root.push(component.as_os_str()),
+            std::path::Component::RootDir => {
+                root.push(component.as_os_str());
+                break;
+            }
+            _ => break,
+        }
     }
+    if root.as_os_str().is_empty() {
+        return DriveKind::Unknown;
+    }
+    drive_kind_from_root(&root)
+}
+
+fn drive_kind_from_root(path: &Path) -> DriveKind {
     let wide = path
         .as_os_str()
         .encode_wide()
         .chain(std::iter::once(0))
         .collect::<Vec<_>>();
     let path = PCWSTR(wide.as_ptr());
-    // SAFETY: `wide` is a live NUL-terminated root path for the duration of each call.
+    // SAFETY: `wide` is a live NUL-terminated drive root for the duration of the call.
     let raw_kind = unsafe { GetDriveTypeW(path) };
-    let kind = match raw_kind {
+    match raw_kind {
         2 => DriveKind::Removable,
         3 => DriveKind::Fixed,
         4 => DriveKind::Network,
         5 => DriveKind::Optical,
         6 => DriveKind::RamDisk,
         _ => DriveKind::Unknown,
-    };
+    }
+}
+
+fn drive_metadata(path: &Path) -> Option<DriveMetadata> {
+    if path.parent().is_some() {
+        return None;
+    }
+    let kind = drive_kind_from_root(path);
+    let wide = path
+        .as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect::<Vec<_>>();
+    let path = PCWSTR(wide.as_ptr());
     let mut volume_name = [0u16; 261];
     let mut filesystem_name = [0u16; 64];
     // SAFETY: the mutable label and filesystem-name buffers are valid for the call.

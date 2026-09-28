@@ -271,9 +271,11 @@ pub const fn view_mode_thumbnail_policy(mode: ViewMode) -> (ThumbnailMode, u16) 
         ViewMode::LargeIcons => (ThumbnailMode::Thumbnail, 96),
         ViewMode::MediumIcons => (ThumbnailMode::Thumbnail, 64),
         ViewMode::Content => (ThumbnailMode::Thumbnail, 48),
-        ViewMode::SmallIcons | ViewMode::List | ViewMode::Details | ViewMode::Tiles => {
-            (ThumbnailMode::IconOnly, 16)
-        }
+        ViewMode::SmallIcons
+        | ViewMode::List
+        | ViewMode::Details
+        | ViewMode::Tiles
+        | ViewMode::Columns => (ThumbnailMode::IconOnly, 16),
     }
 }
 

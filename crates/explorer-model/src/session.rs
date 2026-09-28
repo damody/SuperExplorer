@@ -96,6 +96,7 @@ pub enum PersistedViewMode {
     Details,
     Tiles,
     Content,
+    Columns,
 }
 
 /// Stable persisted column identities.
@@ -207,6 +208,18 @@ const fn default_column_visibility() -> u16 {
     0b1111
 }
 
+const fn default_column_width() -> u16 {
+    crate::COLUMN_WIDTH_DEFAULT
+}
+
+const fn default_column_preview_width() -> u16 {
+    crate::COLUMN_PREVIEW_WIDTH_DEFAULT
+}
+
+const fn default_column_preview_visible() -> bool {
+    true
+}
+
 impl Default for PersistedColumnWidths {
     fn default() -> Self {
         Self {
@@ -268,6 +281,14 @@ pub struct PersistedViewSettings {
     pub extension_sort: Option<PersistedExtensionSort>,
     pub details_pane_width: u16,
     pub preview_pane_width: u16,
+    #[serde(default = "default_column_width")]
+    pub column_width: u16,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub column_widths: Vec<u16>,
+    #[serde(default = "default_column_preview_width")]
+    pub column_preview_width: u16,
+    #[serde(default = "default_column_preview_visible")]
+    pub column_preview_visible: bool,
     #[serde(default)]
     pub search_engine: crate::SearchEnginePreference,
     #[serde(default = "default_mft_enabled")]
@@ -311,6 +332,10 @@ impl Default for PersistedViewSettings {
             extension_sort: None,
             details_pane_width: 320,
             preview_pane_width: 360,
+            column_width: crate::COLUMN_WIDTH_DEFAULT,
+            column_widths: Vec::new(),
+            column_preview_width: crate::COLUMN_PREVIEW_WIDTH_DEFAULT,
+            column_preview_visible: true,
             search_engine: crate::SearchEnginePreference::Everything,
             mft_enabled: true,
             tab_min_width: crate::DEFAULT_TAB_MIN_WIDTH,
@@ -1347,6 +1372,10 @@ impl PersistedViewSettings {
             details_layout,
             details_pane_width: self.details_pane_width,
             preview_pane_width: self.preview_pane_width,
+            column_width: crate::normalized_column_width(self.column_width),
+            column_widths: crate::normalized_column_widths(&self.column_widths),
+            column_preview_width: crate::normalized_column_preview_width(self.column_preview_width),
+            column_preview_visible: self.column_preview_visible,
             search_engine: self.search_engine,
             mft_enabled: self.mft_enabled,
             tab_min_width: crate::normalized_tab_min_width(self.tab_min_width),
@@ -1368,6 +1397,7 @@ impl From<PersistedViewMode> for ViewMode {
             PersistedViewMode::Details => Self::Details,
             PersistedViewMode::Tiles => Self::Tiles,
             PersistedViewMode::Content => Self::Content,
+            PersistedViewMode::Columns => Self::Columns,
         }
     }
 }
@@ -1632,6 +1662,12 @@ impl From<ViewSettings> for PersistedViewSettings {
             extension_sort,
             details_pane_width: settings.details_pane_width,
             preview_pane_width: settings.preview_pane_width,
+            column_width: crate::normalized_column_width(settings.column_width),
+            column_widths: crate::normalized_column_widths(&settings.column_widths),
+            column_preview_width: crate::normalized_column_preview_width(
+                settings.column_preview_width,
+            ),
+            column_preview_visible: settings.column_preview_visible,
             search_engine: settings.search_engine,
             mft_enabled: settings.mft_enabled,
             tab_min_width: crate::normalized_tab_min_width(settings.tab_min_width),
@@ -1669,6 +1705,7 @@ impl From<ViewMode> for PersistedViewMode {
             ViewMode::Details => Self::Details,
             ViewMode::Tiles => Self::Tiles,
             ViewMode::Content => Self::Content,
+            ViewMode::Columns => Self::Columns,
         }
     }
 }
@@ -2555,6 +2592,48 @@ mod tests {
         let restored = decoded.to_runtime();
         assert_eq!(restored.extension_view_id, persisted.extension_view_id);
         assert_eq!(restored.mode, ViewMode::Details);
+    }
+
+    #[test]
+    fn old_sessions_load_column_defaults_and_new_column_settings_round_trip() {
+        let mut legacy =
+            serde_json::to_value(PersistedViewSettings::default()).expect("legacy settings");
+        let object = legacy.as_object_mut().expect("settings object");
+        object.remove("column_width");
+        object.remove("column_widths");
+        object.remove("column_preview_width");
+        object.remove("column_preview_visible");
+        let decoded: PersistedViewSettings =
+            serde_json::from_value(legacy).expect("old session without column fields");
+        let restored = decoded.to_runtime();
+        assert_eq!(restored.mode, ViewMode::Details);
+        assert_eq!(restored.column_width, crate::COLUMN_WIDTH_DEFAULT);
+        assert!(restored.column_preview_visible);
+        assert!(restored.column_widths.is_empty());
+
+        let persisted = PersistedViewSettings {
+            mode: PersistedViewMode::Columns,
+            column_width: 12,
+            column_widths: vec![200, 9_000],
+            column_preview_width: 10_000,
+            column_preview_visible: false,
+            ..PersistedViewSettings::default()
+        };
+        let bytes = serde_json::to_vec(&persisted).expect("serialize columns");
+        let decoded: PersistedViewSettings =
+            serde_json::from_slice(&bytes).expect("decode columns");
+        let restored = decoded.to_runtime();
+        assert_eq!(restored.mode, ViewMode::Columns);
+        assert_eq!(restored.column_width, crate::COLUMN_WIDTH_MIN);
+        assert_eq!(restored.column_widths, vec![200, crate::COLUMN_WIDTH_MAX]);
+        assert_eq!(
+            restored.column_preview_width,
+            crate::COLUMN_PREVIEW_WIDTH_MAX
+        );
+        assert!(!restored.column_preview_visible);
+        let encoded = PersistedViewSettings::from(restored);
+        assert_eq!(encoded.mode, PersistedViewMode::Columns);
+        assert!(!encoded.column_preview_visible);
     }
 
     #[test]
