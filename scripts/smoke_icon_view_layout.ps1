@@ -1,7 +1,8 @@
 param(
     [ValidateSet('debug', 'release')][string]$Profile = 'debug',
     [string]$OutputDirectory,
-    [switch]$SkipBuild
+    [switch]$SkipBuild,
+    [switch]$LabelsOnly
 )
 
 $ErrorActionPreference = 'Stop'
@@ -25,6 +26,10 @@ foreach ($name in @(
 }
 foreach ($name in @('appverifUI.dll', 'DumpStack.log', 'vfcompat.dll')) {
     Set-Content -LiteralPath (Join-Path $fixture $name) -Value 'icon view fixture' -Encoding utf8
+}
+# Single-line labels shorten cells; retain enough rows to exercise scrollbar clearance.
+foreach ($index in 1..12) {
+    New-Item -ItemType Directory -Force -Path (Join-Path $fixture ("zz-scroll-fixture-{0:D2}" -f $index)) | Out-Null
 }
 if (-not $SkipBuild) {
     if ($Profile -eq 'release') { cargo build -p explorer-app --release --locked }
@@ -171,7 +176,8 @@ function Measure-ThumbnailSeparation(
     $rowBounds = $row.Current.BoundingRectangle
     $iconBounds = $icon.Current.BoundingRectangle
     $tolerance = 1.5
-    $labelTop = $rowBounds.Bottom - (48.0 * $DpiScale)
+    $labelBottom = $rowBounds.Bottom - (4.0 * $DpiScale)
+    $labelTop = $labelBottom - (16.0 * $DpiScale)
     if ($iconBounds.Bottom -gt $labelTop + $tolerance) {
         throw "thumbnail overlaps its reserved filename region: file=$FileName icon=$iconBounds labelTop=$labelTop row=$rowBounds"
     }
@@ -184,8 +190,8 @@ function Measure-ThumbnailSeparation(
         icon_host=Convert-Bounds $iconBounds
         filename_region=[ordered]@{
             top=$labelTop
-            bottom=$rowBounds.Bottom
-            height=48.0 * $DpiScale
+            bottom=$labelBottom
+            height=16.0 * $DpiScale
         }
         non_overlapping=$true
     }
@@ -221,7 +227,7 @@ function Measure-LongNameCells([Windows.Automation.AutomationElement]$Root) {
     Start-Sleep -Milliseconds 150
     $selectedFirst = (Wait-Element $Root "$($names[0]) Folder" ([Windows.Automation.ControlType]::ListItem)).Current.BoundingRectangle
     if ([Math]::Abs($selectedFirst.Height - $first.Height) -gt $heightTolerance) {
-        throw "selected third-line expansion changed grid height: before=$first after=$selectedFirst"
+        throw "selecting a single-line filename changed grid height: before=$first after=$selectedFirst"
     }
     [ordered]@{
         names=$names
@@ -229,8 +235,8 @@ function Measure-LongNameCells([Windows.Automation.AutomationElement]$Root) {
         second=Convert-Bounds $second
         third=Convert-Bounds $third
         selected_first=Convert-Bounds $selectedFirst
-        normal_lines=2
-        selected_maximum_lines=3
+        normal_lines=1
+        selected_maximum_lines=1
         horizontally_disjoint=$true
         stable_cell_height=$true
     }
@@ -239,7 +245,7 @@ function Measure-LongNameCells([Windows.Automation.AutomationElement]$Root) {
 function Measure-Mode([Windows.Automation.AutomationElement]$Root, [string]$ViewName, [string]$MenuName, [string]$Mode, [string]$OutputDirectory) {
     $view = Wait-Element $Root $ViewName ([Windows.Automation.ControlType]::Button)
     Click-Element $view
-    $item = Wait-Element $Root $MenuName ([Windows.Automation.ControlType]::MenuItem)
+    $item = Wait-Element $Root $MenuName ([Windows.Automation.ControlType]::Button)
     Click-Element $item
     Start-Sleep -Milliseconds 350
     $rows = Wait-FileRows $Root
@@ -343,23 +349,42 @@ $start.UseShellExecute = $false
 $start.Environment['LOCALAPPDATA'] = (Join-Path $OutputDirectory 'localappdata')
 $start.Environment['EXPLORER_INITIAL_PATH'] = $fixture
 $start.Environment['EXPLORER_LOG_DIR'] = $OutputDirectory
+$start.Environment['SUPEREXPLORER_DISABLE_REPEATED_LAUNCH_DETECTION'] = '1'
 $process = [Diagnostics.Process]::Start($start)
 try {
     $deadline = [DateTime]::UtcNow.AddSeconds(20)
+    $viewName = -join ([char]0x6AA2, [char]0x8996)
+    $root = $null
     do {
         if ($process.HasExited) { throw "application exited early: $($process.ExitCode)" }
         $process.Refresh()
         $hwnd = $process.MainWindowHandle
-        if ($hwnd -eq [IntPtr]::Zero) { Start-Sleep -Milliseconds 100 }
-    } while ($hwnd -eq [IntPtr]::Zero -and [DateTime]::UtcNow -lt $deadline)
-    if ($hwnd -eq [IntPtr]::Zero) { throw 'application window did not appear' }
+        if ($hwnd -ne [IntPtr]::Zero) {
+            try {
+                $candidate = [Windows.Automation.AutomationElement]::FromHandle($hwnd)
+                foreach ($candidateName in @($viewName, 'View')) {
+                    $condition = [Windows.Automation.PropertyCondition]::new([Windows.Automation.AutomationElement]::NameProperty, $candidateName)
+                    if ($candidate.FindFirst([Windows.Automation.TreeScope]::Descendants, $condition)) {
+                        $root = $candidate
+                        $viewName = $candidateName
+                        break
+                    }
+                }
+            } catch { $root = $null }
+        }
+        if (-not $root) { Start-Sleep -Milliseconds 100 }
+    } while (-not $root -and [DateTime]::UtcNow -lt $deadline)
+    if (-not $root) { throw 'application file view did not appear' }
     [void][IconViewLayoutSmoke.Native]::SetForegroundWindow($hwnd)
-    $root = [Windows.Automation.AutomationElement]::FromHandle($hwnd)
     $dpiScale = [IconViewLayoutSmoke.Native]::GetDpiForWindow($hwnd) / 96.0
     $smallName = -join ([char]0x5C0F, [char]0x5716, [char]0x793A)
     $mediumName = -join ([char]0x4E2D, [char]0x5716, [char]0x793A)
     $largeName = -join ([char]0x5927, [char]0x5716, [char]0x793A)
-    $viewName = 'View'
+    if ($viewName -eq 'View') {
+        $smallName = 'Small icons'
+        $mediumName = 'Medium icons'
+        $largeName = 'Large icons'
+    }
     $measurements = @(
         Measure-Mode $root $viewName $smallName 'small-icons' $OutputDirectory
         Measure-Mode $root $viewName $mediumName 'medium-icons' $OutputDirectory
@@ -373,7 +398,7 @@ try {
     # Portrait, landscape, and square thumbnails must remain inside the icon host;
     # the independent filename region begins below that host, as in File Explorer.
     Click-Element (Wait-Element $root $viewName ([Windows.Automation.ControlType]::Button))
-    Click-Element (Wait-Element $root $mediumName ([Windows.Automation.ControlType]::MenuItem))
+    Click-Element (Wait-Element $root $mediumName ([Windows.Automation.ControlType]::Button))
     Start-Sleep -Milliseconds 750
     $thumbnailMeasurements = @(
         Measure-ThumbnailSeparation $root 'A.png' 120 480 $dpiScale
@@ -385,12 +410,32 @@ try {
     $longNameMeasurements = Measure-LongNameCells $root
     $longNameScreenshot = Join-Path $OutputDirectory 'medium-icon-long-name-layout.png'
     Save-WindowScreenshot $root $longNameScreenshot
+    if ($LabelsOnly) {
+        [ordered]@{
+            schema_version=1
+            scope='single-line-icon-labels'
+            captured_utc=[DateTime]::UtcNow.ToString('o')
+            fixture=$fixture
+            measurements=$measurements
+            adaptive_grid=$adaptiveGridMeasurements
+            thumbnail_aspect_layout=[ordered]@{
+                measurements=$thumbnailMeasurements
+                screenshot=$thumbnailScreenshot
+            }
+            medium_icon_long_names=[ordered]@{
+                measurements=$longNameMeasurements
+                screenshot=$longNameScreenshot
+            }
+        } | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath (Join-Path $OutputDirectory 'report.json') -Encoding utf8
+        Write-Output "Single-line icon-label headful smoke passed: $OutputDirectory"
+        return
+    }
 
     # Selecting Small Icons enters its middle 32 px notch. One downward notch
     # reaches 24, then upward Ctrl+wheel must expose every requested icon size.
     $view = Wait-Element $root $viewName ([Windows.Automation.ControlType]::Button)
     Click-Element $view
-    Click-Element (Wait-Element $root $smallName ([Windows.Automation.ControlType]::MenuItem))
+    Click-Element (Wait-Element $root $smallName ([Windows.Automation.ControlType]::Button))
     Start-Sleep -Milliseconds 250
     Send-CtrlWheel $root -120
     $notchMeasurements = @()
@@ -418,8 +463,9 @@ try {
 
     # Explorer's downward sequence continues beyond Details to Tiles and Content.
     $detailsName = -join ([char]0x8A73, [char]0x7D30, [char]0x8CC7, [char]0x6599)
+    if ($viewName -eq 'View') { $detailsName = 'Details' }
     Click-Element (Wait-Element $root $viewName ([Windows.Automation.ControlType]::Button))
-    Click-Element (Wait-Element $root $detailsName ([Windows.Automation.ControlType]::MenuItem))
+    Click-Element (Wait-Element $root $detailsName ([Windows.Automation.ControlType]::Button))
     Start-Sleep -Milliseconds 250
     Send-CtrlWheel $root -120
     $tilesBounds = (Wait-FileRows $root)[0].Current.BoundingRectangle
