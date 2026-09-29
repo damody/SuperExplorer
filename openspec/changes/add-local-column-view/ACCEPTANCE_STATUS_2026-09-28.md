@@ -28,6 +28,18 @@
 | 鍵盤與 UIA | `local-column-view-keyboard-headful` PASS：`target/column-view-keyboard-uitest-final-20260928`。五個子案例分別驗證鍵盤開啟分欄、Down/Right/Left 與位址、Shift/Ctrl 欄內選取、欄／列／預覽／狀態的名稱角色，以及 Tab 後的焦點返回。選單勾選狀態因 UIA 沒有 TogglePattern，明確 SKIP。 |
 | 鍵盤修補後回歸 | `local-column-view-commands-headful` PASS：`target/column-view-commands-after-keyboard-20260928`；基本導覽 PASS：`target/column-view-headful-after-keyboard-20260928`；聚焦模型 23 項、UI 32 項及新增的兩項鍵盤單元測試均 PASS。 |
 
+## 邏輯稽核後續修正（本輪）
+
+參考 `docs/COLUMN_VIEW_LOGIC_AUDIT_2026-09-27.md`，本輪接受 C05／C14／C15／C16 的限縮修正：按分頁取消祖先列舉；正式 Shell 檔案身分事件攔截 junction 回指；拒收改選／模式／分頁切換後的過期循環回覆；建立名稱查重使用活動欄完整快照；不可用位置阻擋新 Columns 選擇並恢復已存偏好。
+
+Codex 另以修正前 FAIL／修正後 PASS 重現並修正背景 terminal 截斷活動分支。獨立 workspace check、fmt、OpenSpec strict、模型 25／UI 38 定向測試、兩項鍵盤回歸、Shell 預設 4 PASS／1 ignored、真實 junction opt-in 1 PASS、i18n library 9 PASS 及 binary 重建均通過。
+
+最後九項鍵盤／邏輯 headful 矩陣 PASS：`target/column-logic-keyboard-uitest-final-v4-20260928`；基本導航回歸 PASS：`target/column-logic-basic-headful-20260928`。勾選 UIA 子斷言仍 SKIP，disabled Button 的 UIA `IsEnabled` 仍 true；操作阻擋與偏好恢復已實機驗證，可及性原生語意仍開放。
+
+本輪四項命令回歸尚未全過：`target/column-logic-commands-headful-v2-20260928` 為祖先 Delete PASS、paste／drag FAIL、context SKIP；過程觀察到測試視窗被覆蓋／失去 foreground，需要空閒桌面補跑。先前的四項 PASS 保留為歷史證據，不能取代本輪結果。
+
+HEAD 在 Grok 讀碼期間經外部提交變成 `c984e91f`；起始 12 個原始碼快照與此 HEAD 相同，保留外部提交。詳細修改、Grok 補修、失敗紀錄、重跑指令及剩餘門檻見 `docs/COLUMN_VIEW_LOGIC_FIXES_2026-09-28.md`。本輪不勾選額外的全功能 tasks。
+
 ## 仍需處理
 
 1. **Preview Handler 擴充情境：SKIP。** 同步視窗 resize、真實 DPI 切換、handler 崩潰注入、UIA Tab 焦點讀回未經安全且穩定的實機驗證；目前只有相關狀態測試與 Quick handler 案例。
