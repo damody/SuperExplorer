@@ -30,6 +30,8 @@ abi_stable.workspace = true
 
 [dev-dependencies]
 explorer-test-support = { path = "../explorer-test-support" }
+tempfile.workspace = true
+zip.workspace = true
 gpui = { workspace = true, features = ["test-support"] }
 
 [lints]

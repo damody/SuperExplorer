@@ -1394,6 +1394,7 @@ fn entry_metadata(
             #[cfg(windows)]
             use std::os::windows::fs::MetadataExt as _;
             FileEntryMetadata {
+                archive_member: false,
                 modified_display: metadata.modified().ok().and_then(format_windows_time),
                 modified_sort_key: Some(metadata.last_write_time()),
                 created_display: metadata.created().ok().and_then(format_windows_time),

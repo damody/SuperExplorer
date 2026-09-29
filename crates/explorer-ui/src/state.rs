@@ -1173,6 +1173,7 @@ pub struct AppViewState {
     column_reveal_stamp: Option<ColumnRevealStamp>,
     column_preview_resize: Option<ColumnPreviewResizeSession>,
     column_hscroll_drag: Option<ColumnStripScrollDrag>,
+    column_width_resize: Option<ColumnWidthResizeSession>,
     drive_kinds: HashMap<char, explorer_model::DriveKind>,
 }
 
@@ -1363,6 +1364,17 @@ struct ColumnPreviewResizeSession {
     tab_id: TabId,
     pointer_x: f32,
     width: u16,
+}
+
+/// Left-column right-edge drag. `revision` is the branch identity: a replaced
+/// chain or a refreshed listing bumps it and the pointer session must end.
+#[derive(Clone, Copy, Debug)]
+struct ColumnWidthResizeSession {
+    tab_id: TabId,
+    column_index: usize,
+    pointer_x: f32,
+    width: u16,
+    revision: u64,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -1762,6 +1774,7 @@ impl AppViewState {
             column_reveal_stamp: None,
             column_preview_resize: None,
             column_hscroll_drag: None,
+            column_width_resize: None,
             drive_kinds: HashMap::new(),
         }
     }
@@ -4453,6 +4466,7 @@ impl AppViewState {
         let _ = self.end_scrollbar_drag(ScrollbarTerminal::ViewSwitch);
         self.end_marquee();
         self.end_details_column_resize();
+        self.end_column_width_resize();
         let settings = &mut self.tabs.active_tab_mut().view.settings;
         settings.mode = mode;
         settings.extension_view_id = None;
@@ -4472,6 +4486,7 @@ impl AppViewState {
         let _ = self.end_scrollbar_drag(ScrollbarTerminal::ViewSwitch);
         self.end_marquee();
         self.end_details_column_resize();
+        self.end_column_width_resize();
         let settings = &mut self.tabs.active_tab_mut().view.settings;
         // Details is the stable built-in fallback whenever this extension is
         // missing or faults during rendering.
@@ -5899,12 +5914,14 @@ impl AppViewState {
         } else {
             self.directory_cache.get(&location)
         };
+        let archive_browsing = self.view_settings().mode == explorer_model::ViewMode::Columns;
         let tab = self.tabs.active_tab_mut();
-        let context = if refresh {
+        let mut context = if refresh {
             tab.begin_refresh_request()?
         } else {
             tab.begin_navigation_request_with_snapshot(cached)?
         };
+        context.archive_browsing = archive_browsing;
         Some(if refresh {
             ExplorerCommand::Refresh { context, location }
         } else {
@@ -9044,6 +9061,7 @@ impl AppViewState {
         let _ = self.end_scrollbar_drag(ScrollbarTerminal::WindowClose);
         self.end_details_column_resize();
         self.end_side_pane_resize();
+        self.end_column_width_resize();
         self.end_marquee();
         self.clear_external_drag();
         self.close_requested = true;
@@ -9058,6 +9076,7 @@ impl AppViewState {
         let _ = self.end_scrollbar_drag(ScrollbarTerminal::TabSwitch);
         self.end_details_column_resize();
         self.end_side_pane_resize();
+        self.end_column_width_resize();
         self.end_marquee();
         self.close_navigation_history_menu();
         self.tab_focus
@@ -9086,6 +9105,7 @@ impl AppViewState {
         let _ = self.end_scrollbar_drag(ScrollbarTerminal::TabSwitch);
         self.end_details_column_resize();
         self.end_side_pane_resize();
+        self.end_column_width_resize();
         self.end_marquee();
         self.clear_external_drag();
         self.close_navigation_history_menu();
@@ -9119,6 +9139,7 @@ impl AppViewState {
             let _ = self.end_scrollbar_drag(ScrollbarTerminal::TabSwitch);
             self.end_details_column_resize();
             self.end_side_pane_resize();
+            self.end_column_width_resize();
             self.end_marquee();
             self.clear_external_drag();
             self.close_navigation_history_menu();
@@ -9721,6 +9742,7 @@ impl AppViewState {
             branch.clear_pending_navigation();
             self.column_branches.insert(tab_id, branch);
         }
+        self.cancel_column_width_resize_if_stale();
         self.sync_column_horizontal_reveal();
     }
 
@@ -10159,9 +10181,76 @@ impl AppViewState {
         if let [entry] = selected.as_slice()
             && entry.is_container
         {
+            if entry.metadata.archive_member {
+                return None;
+            }
             return Some(entry.location.clone());
         }
+        let index = self
+            .column_branches
+            .get(self.tabs.active_tab_id())?
+            .active_index();
+        if self.column_is_archive(index) {
+            return None;
+        }
         self.column_command_parent()
+    }
+
+    fn column_is_archive(&self, index: usize) -> bool {
+        let Some(branch) = self.column_branches.get(self.tabs.active_tab_id()) else {
+            return false;
+        };
+        let Some(level) = branch.levels().get(index) else {
+            return false;
+        };
+        if self
+            .tabs
+            .active_tab()
+            .history
+            .current()
+            .is_some_and(|entry| entry.location == level.location)
+            && !self.active_presentation().can_write
+        {
+            return true;
+        }
+        if self
+            .column_directory_snapshot(index)
+            .is_some_and(|snapshot| {
+                snapshot
+                    .entries()
+                    .iter()
+                    .any(|entry| entry.metadata.archive_member)
+            })
+        {
+            // A normal folder can contain archive files. Only archive-member ids indicate
+            // that the listing itself is inside the archive.
+            if self
+                .column_directory_snapshot(index)
+                .is_some_and(|snapshot| {
+                    snapshot.entries().iter().any(|entry| {
+                        entry
+                            .id
+                            .provider_bytes()
+                            .starts_with(b"superexplorer:archive-member:")
+                    })
+                })
+            {
+                return true;
+            }
+        }
+        (0..index).any(|ancestor| {
+            self.column_directory_snapshot(ancestor)
+                .is_some_and(|snapshot| {
+                    snapshot.entries().iter().any(|entry| {
+                        entry.metadata.archive_member
+                            && entry
+                                .location
+                                .path()
+                                .zip(level.location.path())
+                                .is_some_and(|(root, path)| path.starts_with(root))
+                    })
+                })
+        })
     }
 
     fn command_parent_names(&self) -> HashSet<String> {
@@ -10439,10 +10528,13 @@ impl AppViewState {
         }
         if let Some(folder_id) = folder_id {
             let entry = self.column_visible_entry(column_index, folder_id)?;
-            if !entry.is_container {
+            if !entry.is_container || entry.metadata.archive_member {
                 return None;
             }
             return Some(entry.location);
+        }
+        if self.column_is_archive(column_index) {
+            return None;
         }
         self.column_branches
             .get(self.tabs.active_tab_id())
@@ -10643,6 +10735,16 @@ impl AppViewState {
         }
         let tab_id = self.tabs.active_tab().id;
         let width = self.view_settings().column_width;
+        let entry_metadata = self
+            .column_directory_snapshot(column_index)
+            .and_then(|snapshot| {
+                snapshot
+                    .entries()
+                    .iter()
+                    .find(|entry| entry.id == item_id)
+                    .map(|entry| entry.metadata.clone())
+            })
+            .unwrap_or_default();
         let entry = explorer_model::FileEntry {
             id: item_id,
             display_name: location
@@ -10652,7 +10754,7 @@ impl AppViewState {
                 .unwrap_or_else(|| location.editable_text()),
             location: location.clone(),
             is_container,
-            metadata: explorer_model::FileEntryMetadata::default(),
+            metadata: entry_metadata,
         };
         let visual = self.column_visual_row(column_index, &entry.id);
         let shift_order = if shift && !control {
@@ -10720,6 +10822,7 @@ impl AppViewState {
         self.mirror_current_column_selection();
         self.sync_column_horizontal_reveal();
         self.abandon_column_cycle_if_intent_lost();
+        self.cancel_column_width_resize_if_stale();
         command
     }
 
@@ -11336,6 +11439,7 @@ impl AppViewState {
         {
             return false;
         }
+        self.end_column_width_resize();
         self.column_preview_resize = Some(ColumnPreviewResizeSession {
             tab_id: self.tabs.active_tab_id(),
             pointer_x,
@@ -11388,6 +11492,7 @@ impl AppViewState {
         {
             return false;
         }
+        self.end_column_width_resize();
         self.column_hscroll_drag = Some(ColumnStripScrollDrag {
             track_left,
             track_width,
@@ -11433,6 +11538,88 @@ impl AppViewState {
 
     pub(crate) const fn column_horizontal_scroll_active(&self) -> bool {
         self.column_hscroll_drag.is_some()
+    }
+
+    pub(crate) fn begin_column_width_resize(
+        &mut self,
+        column_index: usize,
+        pointer_x: f32,
+    ) -> bool {
+        if !pointer_x.is_finite() || self.effective_view_mode() != explorer_model::ViewMode::Columns
+        {
+            return false;
+        }
+        let tab_id = self.tabs.active_tab_id();
+        let Some(branch) = self.column_branches.get(tab_id) else {
+            return false;
+        };
+        if column_index >= branch.levels().len() {
+            return false;
+        }
+        let width = branch.widths()[column_index];
+        let revision = branch.revision();
+        self.end_column_preview_resize();
+        self.end_column_horizontal_scroll();
+        self.end_marquee();
+        self.column_width_resize = Some(ColumnWidthResizeSession {
+            tab_id,
+            column_index,
+            pointer_x,
+            width,
+            revision,
+        });
+        true
+    }
+
+    pub(crate) fn update_column_width_resize(&mut self, pointer_x: f32) -> bool {
+        let Some(session) = self.column_width_resize else {
+            return false;
+        };
+        if !self.column_width_resize_current(session) || !pointer_x.is_finite() {
+            self.column_width_resize = None;
+            return false;
+        }
+        let delta = (pointer_x - session.pointer_x).round();
+        let next = f32::from(session.width) + delta;
+        if !next.is_finite() {
+            self.column_width_resize = None;
+            return false;
+        }
+        let width = explorer_model::normalized_column_width(
+            next.clamp(0.0, f32::from(u16::MAX)).round() as u16,
+        );
+        let column_index = session.column_index;
+        self.set_column_width(column_index, width);
+        true
+    }
+
+    pub(crate) fn end_column_width_resize(&mut self) {
+        self.column_width_resize = None;
+    }
+
+    pub(crate) const fn column_width_resize_active(&self) -> bool {
+        self.column_width_resize.is_some()
+    }
+
+    fn column_width_resize_current(&self, session: ColumnWidthResizeSession) -> bool {
+        self.effective_view_mode() == explorer_model::ViewMode::Columns
+            && session.tab_id == self.tabs.active_tab_id()
+            && self
+                .column_branches
+                .get(session.tab_id)
+                .is_some_and(|branch| {
+                    branch.revision() == session.revision
+                        && session.column_index < branch.levels().len()
+                })
+    }
+
+    fn cancel_column_width_resize_if_stale(&mut self) {
+        let Some(session) = self.column_width_resize else {
+            return;
+        };
+        if !self.column_width_resize_current(session) {
+            self.column_width_resize = None;
+        }
     }
 
     fn column_strip_span(&self) -> f32 {
@@ -11533,6 +11720,7 @@ impl AppViewState {
         if let Some(current) = current {
             branch.invalidate_location(&current);
         }
+        self.end_column_width_resize();
     }
 
     /// Copies the settled directory onto its column before a child navigation replaces it.
@@ -17428,6 +17616,135 @@ mod tests {
     }
 
     #[test]
+    fn column_view_archive_navigation_keeps_columns_and_previews_members_read_only() {
+        use explorer_model::{
+            DirectorySnapshot, DirectoryState, ExplorerCommand, ExplorerEvent, LocationDescriptor,
+            LocationMetadata, ShellItemId, ViewMode,
+        };
+        let parent = LocationDescriptor::file_system(r"C:\archives");
+        let archive_location = LocationDescriptor::file_system(r"C:\archives\bundle.7z");
+        let mut state = AppViewState::with_initial_location(explorer_model::HistoryEntry::new(
+            parent.clone(),
+            "Archives",
+        ));
+        state.set_drive_kind('C', explorer_model::DriveKind::Fixed);
+        state.set_view_mode(ViewMode::Columns);
+        mark_column_location_writable(&mut state, parent, "Archives");
+        state.ensure_column_branch();
+        let mut archive = column_letter(1, r"C:\archives", "bundle.7z", true);
+        let mut native_file_id = vec![0; 25];
+        native_file_id[0] = b'F';
+        native_file_id[24] = 9;
+        archive.id = ShellItemId::from_provider_bytes(native_file_id).unwrap();
+        archive.metadata.archive_member = true;
+        let mut snapshot = DirectorySnapshot::default();
+        snapshot.upsert_batch(vec![archive.clone()]);
+        state.tabs.active_tab_mut().directory = DirectoryState::Ready(snapshot);
+        let parent_index = state
+            .column_branches
+            .get(state.tabs.active_tab_id())
+            .unwrap()
+            .active_index();
+        let command = state
+            .activate_column_item(
+                parent_index,
+                archive.id,
+                archive.location,
+                true,
+                false,
+                false,
+            )
+            .unwrap();
+        assert!(
+            matches!(&command, ExplorerCommand::Navigate { location, .. } if *location == archive_location),
+            "archive file must bypass native directory identity resolution"
+        );
+        let context = command.context().unwrap().clone();
+        state.apply_service_event(ExplorerEvent::LocationResolved {
+            context: context.clone(),
+            metadata: LocationMetadata {
+                descriptor: archive_location.clone(),
+                display_title: "bundle.7z".to_owned(),
+                can_go_up: true,
+                can_write: false,
+            },
+        });
+        let mut docs = column_letter(2, r"C:\archives\bundle.7z", "docs", true);
+        docs.metadata.archive_member = true;
+        docs.id = ShellItemId::from_provider_bytes(b"superexplorer:archive-member:docs").unwrap();
+        state.apply_service_event(ExplorerEvent::DirectoryBatch {
+            context: context.clone(),
+            entries: vec![docs.clone()],
+        });
+        state.apply_service_event(ExplorerEvent::DirectoryFinished { context });
+        state.ensure_column_branch();
+        assert_eq!(state.effective_view_mode(), ViewMode::Columns);
+        let archive_index = state
+            .column_branches
+            .get(state.tabs.active_tab_id())
+            .unwrap()
+            .active_index();
+        assert!(state.column_drop_destination(archive_index, None).is_none());
+        let command = state
+            .activate_column_item(
+                archive_index,
+                docs.id,
+                docs.location.clone(),
+                true,
+                false,
+                false,
+            )
+            .unwrap();
+        let context = command.context().unwrap().clone();
+        state.apply_service_event(ExplorerEvent::LocationResolved {
+            context: context.clone(),
+            metadata: LocationMetadata {
+                descriptor: docs.location.clone(),
+                display_title: "docs".to_owned(),
+                can_go_up: true,
+                can_write: false,
+            },
+        });
+        let mut readme = column_letter(3, r"C:\archives\bundle.7z\docs", "readme.md", false);
+        readme.metadata.archive_member = true;
+        readme.id =
+            ShellItemId::from_provider_bytes(b"superexplorer:archive-member:readme").unwrap();
+        state.apply_service_event(ExplorerEvent::DirectoryBatch {
+            context: context.clone(),
+            entries: vec![readme.clone()],
+        });
+        state.apply_service_event(ExplorerEvent::DirectoryFinished { context });
+        state.ensure_column_branch();
+        let docs_index = state
+            .column_branches
+            .get(state.tabs.active_tab_id())
+            .unwrap()
+            .active_index();
+        assert!(
+            state
+                .activate_column_item(
+                    docs_index,
+                    readme.id,
+                    readme.location.clone(),
+                    false,
+                    false,
+                    false
+                )
+                .is_none()
+        );
+        assert_eq!(
+            state.column_strip_model().unwrap().preview_route,
+            crate::column_view::ColumnPreviewRoute::PlainText
+        );
+        assert_eq!(
+            state.integrated_preview_entry().unwrap().location,
+            readme.location
+        );
+        assert!(state.column_paste_destination().is_none());
+        assert!(state.column_drop_destination(archive_index, None).is_none());
+    }
+
+    #[test]
     fn column_view_file_open_uses_the_selected_item_and_default_application() {
         let mut state = state_with_rows();
         state.set_drive_kind('C', explorer_model::DriveKind::Fixed);
@@ -17653,6 +17970,170 @@ mod tests {
         state.end_column_horizontal_scroll();
         assert!(!state.column_horizontal_scroll_active());
         assert!(!state.update_column_horizontal_scroll(0.0));
+    }
+
+    #[test]
+    fn column_view_width_drag_clamps_one_column_and_cancels_when_stale() {
+        let widths = |state: &AppViewState| {
+            state
+                .column_branches
+                .get(state.tabs().active_tab_id())
+                .expect("column branch")
+                .widths()
+        };
+        let mut state = AppViewState::with_initial_location(explorer_model::HistoryEntry::new(
+            explorer_model::LocationDescriptor::file_system(r"C:\alpha\beta"),
+            "beta",
+        ));
+        state.set_drive_kind('C', explorer_model::DriveKind::Fixed);
+        state.set_view_mode(explorer_model::ViewMode::Columns);
+        state.ensure_column_branch();
+        let original = state.tabs().active_tab_id();
+        assert_eq!(widths(&state), vec![240, 240, 240]);
+
+        assert!(!state.begin_column_width_resize(0, f32::NAN));
+        assert!(!state.begin_column_width_resize(0, f32::INFINITY));
+        assert!(!state.begin_column_width_resize(3, 40.0));
+        assert!(!state.column_width_resize_active());
+        assert!(!state.update_column_width_resize(80.0));
+
+        assert!(state.begin_column_width_resize(1, 100.0));
+        assert!(state.update_column_width_resize(180.0));
+        assert_eq!(widths(&state), vec![240, 320, 240]);
+        assert!(state.update_column_width_resize(500.0));
+        assert_eq!(
+            widths(&state),
+            vec![240, explorer_model::COLUMN_WIDTH_MAX, 240]
+        );
+        assert!(state.update_column_width_resize(30.0));
+        assert_eq!(
+            widths(&state),
+            vec![240, explorer_model::COLUMN_WIDTH_MIN, 240]
+        );
+        assert_eq!(
+            state.view_settings().column_widths,
+            vec![240, explorer_model::COLUMN_WIDTH_MIN, 240]
+        );
+        assert_eq!(
+            state.view_settings().column_width,
+            explorer_model::COLUMN_WIDTH_DEFAULT,
+            "only the first column writes the legacy single width"
+        );
+        let offset = state
+            .column_branches
+            .get(original)
+            .expect("branch")
+            .horizontal_offset();
+        assert!(offset.is_finite() && offset >= 0.0);
+
+        state.end_column_width_resize();
+        assert!(state.begin_column_width_resize(0, 10.0));
+        assert!(state.update_column_width_resize(50.0));
+        assert_eq!(
+            widths(&state),
+            vec![280, explorer_model::COLUMN_WIDTH_MIN, 240]
+        );
+        assert_eq!(state.view_settings().column_width, 280);
+        assert_eq!(
+            state.view_settings().column_widths,
+            vec![280, explorer_model::COLUMN_WIDTH_MIN, 240]
+        );
+        assert!(!state.update_column_width_resize(f32::NAN));
+        assert!(!state.column_width_resize_active());
+        assert_eq!(widths(&state)[0], 280);
+        assert!(!state.update_column_width_resize(400.0));
+
+        assert!(state.begin_column_width_resize(0, 10.0));
+        state.set_view_mode(explorer_model::ViewMode::Details);
+        assert!(!state.column_width_resize_active());
+        assert!(!state.update_column_width_resize(200.0));
+        assert!(!state.begin_column_width_resize(0, 10.0));
+        assert_eq!(
+            state.view_settings().column_widths,
+            vec![280, explorer_model::COLUMN_WIDTH_MIN, 240]
+        );
+        state.set_view_mode(explorer_model::ViewMode::Columns);
+        state.ensure_column_branch();
+        assert_eq!(
+            widths(&state),
+            vec![280, explorer_model::COLUMN_WIDTH_MIN, 240]
+        );
+
+        assert!(state.begin_column_width_resize(1, 20.0));
+        assert!(state.begin_column_preview_resize(80.0));
+        assert!(!state.column_width_resize_active());
+        assert!(state.column_preview_resize_active());
+        assert!(!state.update_column_width_resize(220.0));
+        assert_eq!(widths(&state)[1], explorer_model::COLUMN_WIDTH_MIN);
+        state.end_column_preview_resize();
+
+        let before_width = widths(&state)[1];
+        let before_revision = state
+            .column_branches
+            .get(original)
+            .expect("branch")
+            .revision();
+        let before_levels = state
+            .column_branches
+            .get(original)
+            .expect("branch")
+            .levels()
+            .len();
+        assert!(state.begin_column_width_resize(1, 40.0));
+        let active = state
+            .column_branches
+            .get(original)
+            .expect("branch")
+            .active_index();
+        let _ = state.activate_column_item(
+            active,
+            explorer_model::ShellItemId::from_provider_bytes([9]).expect("id"),
+            explorer_model::LocationDescriptor::file_system(r"C:\alpha\beta\child"),
+            true,
+            false,
+            false,
+        );
+        let branch = state
+            .column_branches
+            .get(state.tabs().active_tab_id())
+            .expect("branch after child");
+        assert!(
+            branch.revision() != before_revision || branch.levels().len() != before_levels,
+            "opening a child must replace the branch identity"
+        );
+        assert!(!state.column_width_resize_active());
+        let alpha = explorer_model::LocationDescriptor::file_system(r"C:\alpha");
+        assert_eq!(
+            branch
+                .levels()
+                .iter()
+                .find(|level| level.location == alpha)
+                .map(|level| level.width),
+            Some(before_width)
+        );
+        assert!(!state.update_column_width_resize(400.0));
+
+        assert!(state.activate_tab(original));
+        state.ensure_column_branch();
+        assert!(state.begin_column_width_resize(0, 12.0));
+        let other = state.new_tab();
+        assert_ne!(other, original);
+        assert!(!state.column_width_resize_active());
+        assert!(!state.update_column_width_resize(300.0));
+        assert!(state.activate_tab(original));
+        state.ensure_column_branch();
+        let frozen = widths(&state)[0];
+        assert!(state.begin_column_width_resize(0, 12.0));
+        assert!(state.activate_tab(other));
+        assert!(!state.column_width_resize_active());
+        assert!(!state.update_column_width_resize(12.0 + 200.0));
+        assert!(state.activate_tab(original));
+        state.ensure_column_branch();
+        assert_eq!(widths(&state)[0], frozen);
+        assert!(state.begin_column_width_resize(0, 12.0));
+        let _ = state.close_tab(original);
+        assert!(!state.column_width_resize_active());
+        assert!(!state.update_column_width_resize(80.0));
     }
 
     fn column_file(id: u8, name: &str) -> explorer_model::FileEntry {
@@ -18127,7 +18608,7 @@ mod tests {
         );
         assert_eq!(
             selected_preview,
-            crate::column_view::ColumnPreviewRoute::PreviewHandler
+            crate::column_view::ColumnPreviewRoute::PlainText
         );
         assert!(selected_icons.iter().any(|entry| entry.id == far.id));
         assert!(selected_icons.len() <= crate::column_view::COLUMN_ICON_CANDIDATE_LIMIT);
@@ -18610,7 +19091,7 @@ mod tests {
         assert_column_selection_agrees(&state, &[alpha.id.clone()]);
         assert_eq!(
             state.column_strip_model().expect("strip").preview_route,
-            crate::column_view::ColumnPreviewRoute::PreviewHandler
+            crate::column_view::ColumnPreviewRoute::PlainText
         );
         assert_eq!(
             state.tabs().active_tab().selection.len(),
@@ -18885,7 +19366,7 @@ mod tests {
         );
         assert_eq!(
             state.column_strip_model().expect("notes").preview_route,
-            crate::column_view::ColumnPreviewRoute::PreviewHandler
+            crate::column_view::ColumnPreviewRoute::PlainText
         );
         assert!(
             state
@@ -21962,7 +22443,7 @@ mod tests {
         );
         assert_eq!(
             state.column_strip_model().expect("preview").preview_route,
-            crate::column_view::ColumnPreviewRoute::PreviewHandler
+            crate::column_view::ColumnPreviewRoute::PlainText
         );
         let _ = state.activate_column_item(
             current_index,

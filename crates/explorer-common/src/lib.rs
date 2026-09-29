@@ -10,6 +10,7 @@
 )]
 //! Shared domain primitives that do not depend on GPUI or Win32.
 
+pub mod archive;
 pub mod diagnostics;
 pub mod error;
 pub mod process;

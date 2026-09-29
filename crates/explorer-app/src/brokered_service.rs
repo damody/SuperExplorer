@@ -25,9 +25,8 @@ fn decode_trusted_raster(
     key: &explorer_model::ThumbnailRequestKey,
     location: &explorer_model::LocationDescriptor,
     cache_only: bool,
+    cancelled: &dyn Fn() -> bool,
 ) -> Option<explorer_model::ThumbnailTerminal> {
-    use image::ImageDecoder as _;
-
     if cache_only {
         return None;
     }
@@ -39,7 +38,25 @@ fn decode_trusted_raster(
     ) {
         return None;
     }
-    let mut reader = image::ImageReader::open(path).ok()?;
+    if let Some(archive) = explorer_common::archive::ArchivePath::resolve(path)
+        && !archive.member.is_empty()
+    {
+        let bytes =
+            explorer_common::archive::read_member(&archive, 32 * 1024 * 1024, false, cancelled)
+                .ok()?;
+        let reader = image::ImageReader::new(std::io::Cursor::new(bytes))
+            .with_guessed_format()
+            .ok()?;
+        return decode_raster_reader(reader, key);
+    }
+    decode_raster_reader(image::ImageReader::open(path).ok()?, key)
+}
+
+fn decode_raster_reader<R: std::io::BufRead + std::io::Seek>(
+    mut reader: image::ImageReader<R>,
+    key: &explorer_model::ThumbnailRequestKey,
+) -> Option<explorer_model::ThumbnailTerminal> {
+    use image::ImageDecoder as _;
     let mut limits = image::Limits::default();
     limits.max_image_width = Some(32_768);
     limits.max_image_height = Some(32_768);
@@ -79,6 +96,7 @@ impl Drop for ThumbnailSlotGuard {
 /// Routes context-menu provider activation through the disposable broker while retaining the
 /// existing Shell STA for Windows-owned filesystem and namespace operations.
 pub struct BrokeredExplorerService {
+    archive_browser: crate::archive_service::ArchiveBrowser,
     shell: Arc<explorer_shell_win::ShellStaHandle>,
     broker: explorer_extension_broker::BrokerClient,
     sender: SyncSender<ExplorerEvent>,
@@ -648,6 +666,10 @@ impl BrokeredExplorerService {
             }
         });
         Self {
+            archive_browser: crate::archive_service::ArchiveBrowser::new(
+                sender.clone(),
+                shell.clone(),
+            ),
             shell,
             broker,
             sender,
@@ -1895,7 +1917,10 @@ impl BrokeredExplorerService {
         std::thread::spawn(move || {
             let _slot = ThumbnailSlotGuard { counter: in_flight };
             let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                decode_trusted_raster(&key, &location, cache_only).unwrap_or_else(|| {
+                decode_trusted_raster(&key, &location, cache_only, &|| {
+                    context.cancellation.is_cancelled()
+                })
+                .unwrap_or_else(|| {
                     broker
                         .load_thumbnail(&key, &location, cache_only)
                         .unwrap_or(explorer_model::ThumbnailTerminal::Fallback(
@@ -2170,6 +2195,9 @@ impl ExplorerService for BrokeredExplorerService {
     }
 
     fn submit(&self, command: ExplorerCommand) -> Result<(), ExplorerServiceError> {
+        if let Some(result) = self.archive_browser.submit(&command) {
+            return result;
+        }
         match &command {
             ExplorerCommand::Navigate { context, location }
             | ExplorerCommand::Refresh { context, location } => {
@@ -2356,9 +2384,19 @@ impl ExplorerService for BrokeredExplorerService {
             .map_err(|_| ExplorerServiceError::Internal)?
             .try_recv()
         {
-            Ok(event) => Ok(Some(event)),
-            Err(TryRecvError::Empty) => ExplorerService::try_recv(self.shell.as_ref())
-                .map(|event| event.map(|event| self.restore_virtual_icon_key(event))),
+            Ok(mut event) => {
+                crate::archive_service::mark_archive_containers(&mut event);
+                Ok(Some(event))
+            }
+            Err(TryRecvError::Empty) => {
+                ExplorerService::try_recv(self.shell.as_ref()).map(|event| {
+                    event.map(|event| {
+                        let mut event = self.restore_virtual_icon_key(event);
+                        crate::archive_service::mark_archive_containers(&mut event);
+                        event
+                    })
+                })
+            }
             Err(TryRecvError::Disconnected) => Err(ExplorerServiceError::Disconnected),
         }
     }
@@ -2431,6 +2469,7 @@ mod tests {
             &key(512),
             &explorer_model::LocationDescriptor::file_system(path),
             false,
+            &|| false,
         )
         .expect("supported raster");
         let explorer_model::ThumbnailTerminal::Ready { pixels, .. } = outcome else {
@@ -2447,6 +2486,7 @@ mod tests {
                 &key(96),
                 &explorer_model::LocationDescriptor::file_system("photo.jpg"),
                 true,
+                &|| false,
             )
             .is_none()
         );
@@ -2460,6 +2500,39 @@ mod tests {
         let location = explorer_model::LocationDescriptor::file_system("photo.jpg");
         assert!(location.path().is_some());
         assert!(key(512).physical_size > key(96).physical_size);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn archive_image_preview_decodes_member_pixels_with_cancellation_and_limits() {
+        let directory = tempfile::tempdir().unwrap();
+        let image_path = directory.path().join("photo.png");
+        image::DynamicImage::ImageRgb8(image::ImageBuffer::new(320, 160))
+            .save(&image_path)
+            .unwrap();
+        let archive_path = directory.path().join("photos.zip");
+        let tar = std::path::PathBuf::from(std::env::var_os("SystemRoot").unwrap())
+            .join("System32/tar.exe");
+        let mut command = std::process::Command::new(tar);
+        command
+            .arg("-cf")
+            .arg(&archive_path)
+            .arg("--format=zip")
+            .arg("-C")
+            .arg(directory.path())
+            .arg("photo.png");
+        explorer_common::configure_background_command(&mut command);
+        assert!(command.output().unwrap().status.success());
+        let location =
+            explorer_model::LocationDescriptor::file_system(archive_path.join("photo.png"));
+        let explorer_model::ThumbnailTerminal::Ready { pixels, .. } =
+            decode_trusted_raster(&key(96), &location, false, &|| false).unwrap()
+        else {
+            panic!("archive image did not decode")
+        };
+        assert_eq!((pixels.width, pixels.height), (96, 48));
+        pixels.validate(128 * 1024 * 1024).unwrap();
+        assert!(decode_trusted_raster(&key(96), &location, false, &|| true).is_none());
     }
 
     #[test]

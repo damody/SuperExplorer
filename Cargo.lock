@@ -1840,6 +1840,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "uuid",
+ "zip",
 ]
 
 [[package]]
@@ -2049,8 +2050,10 @@ dependencies = [
  "serde",
  "serde_json",
  "smallvec",
+ "tempfile",
  "tracing",
  "windows 0.61.3",
+ "zip",
 ]
 
 [[package]]

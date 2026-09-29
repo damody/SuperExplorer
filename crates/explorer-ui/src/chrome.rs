@@ -293,16 +293,27 @@ fn bookmark_fluent_glyph(asset: &'static str, tokens: UiTokens) -> impl IntoElem
         .text_color(tokens.theme.colors.text_primary.to_gpui())
 }
 
+/// Virtual bookmark folders are not filesystem locations, so the bookmark bar
+/// paints this glyph instead of the shared shell folder texture.
+fn bookmark_fallback_folder_icon(tokens: UiTokens) -> impl IntoElement {
+    bookmark_fluent_glyph("fluent/folder.svg", tokens)
+}
+
+fn bookmark_collection_shell_icon(
+    tokens: UiTokens,
+    shell_icons: BookmarkShellIcons<'_>,
+) -> gpui::AnyElement {
+    shell_icons.generic_folder().map_or_else(
+        || bookmark_fallback_folder_icon(tokens).into_any_element(),
+        |texture| bookmark_shell_image(texture).into_any_element(),
+    )
+}
+
 fn bookmark_collection_label(
     name: impl Into<SharedString>,
     chevron: bool,
-    tokens: UiTokens,
-    shell_icons: BookmarkShellIcons<'_>,
+    icon: impl IntoElement,
 ) -> impl IntoElement {
-    let icon = shell_icons.generic_folder().map_or_else(
-        || bookmark_fluent_glyph("fluent/folder.svg", tokens).into_any_element(),
-        |texture| bookmark_shell_image(texture).into_any_element(),
-    );
     div()
         .flex()
         .items_center()
@@ -774,6 +785,7 @@ pub struct ExplorerWindow {
     file_performance: Option<Arc<crate::performance::FileViewPerformanceCounters>>,
     preview_texture: Option<Arc<RenderImage>>,
     preview_thumbnail_failed: bool,
+    column_preview_content: Option<crate::preview_content::PreviewContent>,
     column_handler_phase: crate::column_view::ColumnHandlerPhase,
     folder_size_visuals: Option<crate::folder_size_column::FolderSizeColumnVisuals>,
     visual_column_runtime: Option<crate::folder_size_column::VisualColumnRuntimeHandleV1>,
@@ -806,6 +818,7 @@ impl ExplorerWindow {
             file_performance: None,
             preview_texture: None,
             preview_thumbnail_failed: false,
+            column_preview_content: None,
             column_handler_phase: crate::column_view::ColumnHandlerPhase::Inactive,
             folder_size_visuals: None,
             visual_column_runtime: None,
@@ -919,6 +932,15 @@ impl ExplorerWindow {
     }
 
     #[must_use]
+    pub(crate) fn with_column_preview_content(
+        mut self,
+        content: Option<crate::preview_content::PreviewContent>,
+    ) -> Self {
+        self.column_preview_content = content;
+        self
+    }
+
+    #[must_use]
     pub fn with_folder_size_visuals(
         mut self,
         visuals: Option<crate::folder_size_column::FolderSizeColumnVisuals>,
@@ -996,6 +1018,7 @@ impl RenderOnce for ExplorerWindow {
         let side_pane_resizing = self.state.side_pane_resize_active();
         let column_preview_resizing = self.state.column_preview_resize_active();
         let column_hscroll_dragging = self.state.column_horizontal_scroll_active();
+        let column_width_resizing = self.state.column_width_resize_active();
         let marquee = self.state.marquee_session().cloned();
         let marquee_active = marquee.is_some();
         let about_dialog_info = self.state.about_dialog().cloned();
@@ -1168,6 +1191,7 @@ impl RenderOnce for ExplorerWindow {
                                         self.column_handler_phase,
                                         explorer_file_viewport_height(window, self.tokens),
                                     )
+                                    .with_content(self.column_preview_content.clone())
                                     .with_rename(
                                         self.state.rename_editor().cloned(),
                                         self.rename_input.clone(),
@@ -1389,6 +1413,7 @@ impl RenderOnce for ExplorerWindow {
                     || side_pane_resizing
                     || column_preview_resizing
                     || column_hscroll_dragging
+                    || column_width_resizing
                     || marquee_active,
                 |element| {
                     element.child(pointer_drag_capture_listener(
@@ -1398,6 +1423,7 @@ impl RenderOnce for ExplorerWindow {
                         side_pane_resizing,
                         column_preview_resizing,
                         column_hscroll_dragging,
+                        column_width_resizing,
                         marquee_active,
                         file_origin_x,
                         file_origin_y,
@@ -1583,8 +1609,7 @@ fn bookmark_bar(
                 .child(bookmark_collection_label(
                     folder.name.clone(),
                     true,
-                    tokens,
-                    shell_icons,
+                    bookmark_fallback_folder_icon(tokens),
                 ))
                 .when_some(callback, move |element, callback| {
                     element.on_click(move |_, window, cx| callback(&action, window, cx))
@@ -1957,8 +1982,7 @@ fn bookmark_bar(
                                     .child(bookmark_collection_label(
                                         folder.name.clone(),
                                         false,
-                                        tokens,
-                                        shell_icons,
+                                        bookmark_fallback_folder_icon(tokens),
                                     ))
                                     .child("›")
                                     .when_some(callback, move |item, cb| {
@@ -2287,8 +2311,7 @@ pub(crate) fn bookmark_manager(
                 .child(bookmark_collection_label(
                     folder.name.clone(),
                     false,
-                    tokens,
-                    shell_icons,
+                    bookmark_collection_shell_icon(tokens, shell_icons),
                 ))
                 .when_some(select_cb, move |element, cb| {
                     element.on_mouse_down(MouseButton::Left, move |_, window, cx| {
@@ -7824,13 +7847,14 @@ fn permanent_delete_dialog_button(
 /// Installs window-wide drag listeners during GPUI's paint phase. Native `SetCapture` routes
 /// pointer messages to this window after the cursor leaves both the thumb and the HWND; this
 /// listener then keeps the typed scrollbar reducer as the sole owner of offset changes.
-fn captured_left_mouse_up_action(
+pub(crate) fn captured_left_mouse_up_action(
     marquee_active: bool,
     scrollbar_dragging: Option<crate::interaction::ScrollbarKind>,
     details_column_resizing: bool,
     side_pane_resizing: bool,
     column_preview_resizing: bool,
     column_hscroll_dragging: bool,
+    column_width_resizing: bool,
 ) -> Option<ExplorerAction> {
     if marquee_active {
         Some(ExplorerAction::EndMarquee)
@@ -7846,18 +7870,21 @@ fn captured_left_mouse_up_action(
         Some(ExplorerAction::EndColumnPreviewResize)
     } else if column_hscroll_dragging {
         Some(ExplorerAction::EndColumnHorizontalScroll)
+    } else if column_width_resizing {
+        Some(ExplorerAction::EndColumnWidthResize)
     } else {
         None
     }
 }
 
-fn pointer_drag_capture_listener(
+pub(crate) fn pointer_drag_capture_listener(
     on_action: Option<ActionCallback>,
     scrollbar_dragging: Option<crate::interaction::ScrollbarKind>,
     details_column_resizing: bool,
     side_pane_resizing: bool,
     column_preview_resizing: bool,
     column_hscroll_dragging: bool,
+    column_width_resizing: bool,
     marquee_active: bool,
     file_origin_x: f32,
     file_origin_y: f32,
@@ -7932,6 +7959,12 @@ fn pointer_drag_capture_listener(
                         }
                     } else if column_hscroll_dragging {
                         ExplorerAction::EndColumnHorizontalScroll
+                    } else if column_width_resizing && event.dragging() {
+                        ExplorerAction::UpdateColumnWidthResize {
+                            pointer_x: f32::from(event.position.x),
+                        }
+                    } else if column_width_resizing {
+                        ExplorerAction::EndColumnWidthResize
                     } else {
                         // External OLE drag-over is also represented as a pressed-button mouse
                         // move. An idle resize-capture listener must not consume that event.
@@ -7955,6 +7988,7 @@ fn pointer_drag_capture_listener(
                         side_pane_resizing,
                         column_preview_resizing,
                         column_hscroll_dragging,
+                        column_width_resizing,
                     ) else {
                         // Windows OLE submits an external file drop to GPUI as a synthetic left
                         // MouseUp.  A capture listener that stops every idle MouseUp prevents the
@@ -12428,8 +12462,7 @@ fn bookmark_navigation_rows(
                         .child(bookmark_collection_label(
                             folder.name.clone(),
                             false,
-                            tokens,
-                            shell_icons,
+                            bookmark_collection_shell_icon(tokens, shell_icons),
                         ))
                         .into_any_element(),
                 ),
@@ -21372,6 +21405,13 @@ mod tests {
             mode: explorer_model::ViewMode::Details,
             ..explorer_model::ViewSettings::default()
         };
+        // This fixture measures four columns. Aggregate columns are now visible by default.
+        let _ = settings
+            .details_layout
+            .set_visible(&explorer_model::ColumnId::FileCount, false);
+        let _ = settings
+            .details_layout
+            .set_visible(&explorer_model::ColumnId::FolderCount, false);
         let _ = settings
             .details_layout
             .set_width(&explorer_model::ColumnId::Name, 700);
@@ -21549,24 +21589,29 @@ mod tests {
     #[test]
     fn idle_pointer_capture_leaves_external_ole_mouse_up_for_drop_target() {
         assert!(
-            super::captured_left_mouse_up_action(false, None, false, false, false, false).is_none(),
+            super::captured_left_mouse_up_action(false, None, false, false, false, false, false)
+                .is_none(),
             "an idle capture listener must not consume the synthetic MouseUp used by OLE Drop"
         );
         assert!(matches!(
-            super::captured_left_mouse_up_action(false, None, true, false, false, false),
+            super::captured_left_mouse_up_action(false, None, true, false, false, false, false),
             Some(ExplorerAction::EndDetailsColumnResize)
         ));
         assert!(matches!(
-            super::captured_left_mouse_up_action(false, None, false, true, false, false),
+            super::captured_left_mouse_up_action(false, None, false, true, false, false, false),
             Some(ExplorerAction::EndSidePaneResize)
         ));
         assert!(matches!(
-            super::captured_left_mouse_up_action(false, None, false, false, true, false),
+            super::captured_left_mouse_up_action(false, None, false, false, true, false, false),
             Some(ExplorerAction::EndColumnPreviewResize)
         ));
         assert!(matches!(
-            super::captured_left_mouse_up_action(false, None, false, false, false, true),
+            super::captured_left_mouse_up_action(false, None, false, false, false, true, false),
             Some(ExplorerAction::EndColumnHorizontalScroll)
+        ));
+        assert!(matches!(
+            super::captured_left_mouse_up_action(false, None, false, false, false, false, true),
+            Some(ExplorerAction::EndColumnWidthResize)
         ));
     }
 
@@ -23433,6 +23478,69 @@ mod tests {
                 explorer_i18n::Catalog::new(explorer_i18n::AppLocale::ZhTw),
             )),
             "portable（工具）"
+        );
+    }
+
+    #[test]
+    fn bookmark_bar_virtual_folders_use_the_fallback_folder_icon() {
+        let production = include_str!("chrome.rs")
+            .split("#[cfg(test)]")
+            .next()
+            .expect("production source");
+        let toolbar = production
+            .split("fn bookmark_bar(")
+            .nth(1)
+            .and_then(|source| source.split("fn bookmark_visible_count(").next())
+            .expect("bookmark toolbar source");
+        assert_eq!(
+            toolbar
+                .matches("bookmark_fallback_folder_icon(tokens)")
+                .count(),
+            2,
+            "toolbar folders and nested folder-menu folders use the fallback glyph"
+        );
+        assert!(
+            !toolbar.contains("bookmark_collection_shell_icon"),
+            "bookmark-bar virtual folders must not use the shell folder texture"
+        );
+        let folders = toolbar
+            .split(".children(root_folders.into_iter()")
+            .nth(1)
+            .and_then(|source| source.split(".children(visible.into_iter()").next())
+            .expect("toolbar folder buttons");
+        assert!(folders.contains("bookmark_fallback_folder_icon(tokens)"));
+        let chips = toolbar
+            .split(".children(visible.into_iter()")
+            .nth(1)
+            .and_then(|source| source.split(".when(overflow > 0").next())
+            .expect("toolbar bookmark chips");
+        assert!(chips.contains("bookmark_label("));
+        assert!(
+            !chips.contains("bookmark_fallback_folder_icon"),
+            "folder bookmarks on the toolbar keep bookmark_label"
+        );
+        let menu_folders = toolbar
+            .split("BookmarkFolderMenuItem::Folder(folder)")
+            .nth(1)
+            .and_then(|source| source.split("BookmarkFolderMenuItem::Bookmark").next())
+            .expect("folder menu children");
+        assert!(menu_folders.contains("bookmark_fallback_folder_icon(tokens)"));
+        let menu_bookmarks = toolbar
+            .split("BookmarkFolderMenuItem::Bookmark(bookmark)")
+            .nth(1)
+            .expect("folder menu bookmarks");
+        assert!(menu_bookmarks.contains("bookmark_label("));
+        assert!(!menu_bookmarks.contains("bookmark_fallback_folder_icon"));
+        let icon = production
+            .split("fn bookmark_icon_element(")
+            .nth(1)
+            .and_then(|source| source.split("fn bookmark_label(").next())
+            .expect("bookmark icon");
+        assert!(icon.contains("shell_icons.for_target(target)"));
+        assert!(icon.contains("bookmark_target_uses_folder_glyph(target)"));
+        assert!(
+            !icon.contains("bookmark_fallback_folder_icon"),
+            "folder bookmarks keep their shell icon path"
         );
     }
 

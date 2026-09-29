@@ -737,6 +737,8 @@ pub struct RequestContext {
     pub generation: Generation,
     pub cancellation: CancellationToken,
     pub deadline: RequestDeadline,
+    /// Prefer the read-only archive browser for column navigation; not part of identity.
+    pub archive_browsing: bool,
 }
 
 impl PartialEq for RequestContext {
@@ -758,6 +760,7 @@ impl RequestContext {
             generation,
             cancellation: CancellationToken::new(),
             deadline: RequestDeadline::none(),
+            archive_browsing: false,
         }
     }
 

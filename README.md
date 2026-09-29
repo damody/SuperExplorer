@@ -108,6 +108,19 @@ Build and finalize the Windows executable, including its manifest and version re
 
 The executable is written to `target/release/SuperExplorer.exe`.
 
+After committing the application inputs, create a SuperExplorer Windows x64 NSIS
+release installer, payload manifest, and SHA-256 checksums:
+
+```powershell
+./scripts/package_superexplorer_release.ps1
+```
+
+The version comes from the HEAD commit date (`1.year.month.day`). Outputs are
+written to `dist/`. This command builds and validates the release binaries and
+packages the eight existing plugins for the current SDK bundle. It does not
+launch the installer. Existing output installers are preserved by rejecting a
+duplicate version. The optional SuperDesktop companion has its separate build.
+
 ## Validation
 
 Run the primary repository checks:

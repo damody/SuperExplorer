@@ -15,6 +15,7 @@
 )]
 
 pub mod application;
+mod archive_service;
 pub mod bookmark_store;
 pub mod branding;
 mod brokered_service;

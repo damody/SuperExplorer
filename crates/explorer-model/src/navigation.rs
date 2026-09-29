@@ -210,6 +210,9 @@ pub struct FileEntry {
 /// the model or UI layers.
 #[derive(Clone, Debug, Default, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
 pub struct FileEntryMetadata {
+    /// Read-only archive container/member handled by the host archive browser.
+    #[serde(default)]
+    pub archive_member: bool,
     pub modified_display: Option<String>,
     pub modified_sort_key: Option<u64>,
     pub created_display: Option<String>,

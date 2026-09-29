@@ -33,6 +33,7 @@ pub mod file_view;
 mod fluent_assets;
 pub mod folder_options_window;
 pub mod folder_size_column;
+mod preview_content;
 pub mod size_map_view;
 pub mod transfer_center_window;
 pub use fluent_assets::ExplorerAssets;
@@ -1323,6 +1324,7 @@ pub struct ExplorerRoot {
     thumbnail_presentations:
         HashMap<explorer_model::ThumbnailRequestKey, explorer_model::ShellIconKey>,
     preview_thumbnail_key: Option<explorer_model::ThumbnailRequestKey>,
+    preview_content: preview_content::PreviewContentController,
     preview_texture: Option<Arc<RenderImage>>,
     preview_thumbnail_failed: bool,
     preview_coordinator: explorer_jobs::PreviewCoordinator,
@@ -1768,6 +1770,8 @@ fn is_passive_pointer_action(action: &ExplorerAction) -> bool {
             | ExplorerAction::EndColumnPreviewResize
             | ExplorerAction::UpdateColumnHorizontalScroll { .. }
             | ExplorerAction::EndColumnHorizontalScroll
+            | ExplorerAction::UpdateColumnWidthResize { .. }
+            | ExplorerAction::EndColumnWidthResize
             | ExplorerAction::UpdateScrollbarDrag { .. }
             | ExplorerAction::EndScrollbarDrag { .. }
             | ExplorerAction::UpdateNavigationPaneResize { .. }
@@ -2060,6 +2064,7 @@ impl ExplorerRoot {
             thumbnail_requests: HashMap::new(),
             thumbnail_presentations: HashMap::new(),
             preview_thumbnail_key: None,
+            preview_content: preview_content::PreviewContentController::default(),
             preview_texture: None,
             preview_thumbnail_failed: false,
             preview_coordinator: explorer_jobs::PreviewCoordinator::new(Duration::from_millis(75)),
@@ -4426,6 +4431,7 @@ impl ExplorerRoot {
             thumbnail_requests: HashMap::new(),
             thumbnail_presentations: HashMap::new(),
             preview_thumbnail_key: None,
+            preview_content: preview_content::PreviewContentController::default(),
             preview_texture: None,
             preview_thumbnail_failed: false,
             preview_coordinator: explorer_jobs::PreviewCoordinator::new(Duration::from_millis(75)),
@@ -4548,6 +4554,7 @@ impl ExplorerRoot {
             thumbnail_requests: HashMap::new(),
             thumbnail_presentations: HashMap::new(),
             preview_thumbnail_key: None,
+            preview_content: preview_content::PreviewContentController::default(),
             preview_texture: None,
             preview_thumbnail_failed: false,
             preview_coordinator: explorer_jobs::PreviewCoordinator::new(Duration::from_millis(75)),
@@ -4906,6 +4913,7 @@ impl ExplorerRoot {
                         let visual_column_changed = this.pump_visual_column_runtime();
                         let code_lines_changed = this.pump_code_lines_runtime();
                         let size_map_changed = this.pump_size_map_runtime();
+                        let preview_content_changed = this.preview_content.poll();
                         let operation_notice_changed =
                             this.state.operation_notice_needs_repaint(Instant::now());
                         let apk_notice_changed =
@@ -4919,6 +4927,7 @@ impl ExplorerRoot {
                             || visual_column_changed
                             || code_lines_changed
                             || size_map_changed
+                            || preview_content_changed
                             || operation_notice_changed
                             || apk_notice_changed
                         {
@@ -6234,6 +6243,7 @@ impl ExplorerRoot {
 
     fn synchronize_integrated_preview(&mut self) {
         let entry = self.state.integrated_preview_entry();
+        self.synchronize_preview_content(entry.as_ref());
         let keeps_image = entry.as_ref().is_some_and(|entry| {
             !entry.is_container
                 && !column_view::offline_placeholder(entry)
@@ -6336,6 +6346,17 @@ impl ExplorerRoot {
         self.pump_thumbnail_scheduler();
     }
 
+    fn synchronize_preview_content(&mut self, entry: Option<&explorer_model::FileEntry>) {
+        let tab = self.state.tabs().active_tab();
+        let epoch = format!("{:?}:{:?}", tab.id, tab.generation);
+        let entry = entry.filter(|entry| {
+            self.state.effective_view_mode() == explorer_model::ViewMode::Columns
+                && self.state.column_preview_open()
+                && self.state.preview_target_matches(&entry.id)
+        });
+        self.preview_content.synchronize(entry, &epoch);
+    }
+
     fn submit_preview_coordinator_action(
         &mut self,
         action: explorer_jobs::PreviewCoordinatorAction,
@@ -6381,7 +6402,11 @@ impl ExplorerRoot {
             self.state.preview_target_matches(&entry.id) && !column_view::offline_placeholder(entry)
         });
         let tab = self.state.tabs().active_tab();
-        let handler_candidate = candidate.filter(|entry| !previewable_image(&entry.location));
+        let handler_candidate = candidate.filter(|entry| {
+            !previewable_image(&entry.location)
+                && !(self.state.effective_view_mode() == explorer_model::ViewMode::Columns
+                    && preview_content::plain_text(&entry.location))
+        });
         let signature = Some((
             tab.id,
             handler_candidate.map(|entry| entry.id.clone()),
@@ -6411,6 +6436,12 @@ impl ExplorerRoot {
             None => explorer_model::PreviewEligibility::None,
             Some(entry) if entry.is_container => explorer_model::PreviewEligibility::Folder,
             Some(entry) if previewable_image(&entry.location) => {
+                explorer_model::PreviewEligibility::Unsupported
+            }
+            Some(entry)
+                if self.state.effective_view_mode() == explorer_model::ViewMode::Columns
+                    && preview_content::plain_text(&entry.location) =>
+            {
                 explorer_model::PreviewEligibility::Unsupported
             }
             Some(entry) => explorer_model::PreviewEligibility::SingleEligible(
@@ -6830,7 +6861,19 @@ impl ExplorerRoot {
         true
     }
 
-    fn submit_command(&mut self, command: explorer_model::ExplorerCommand) -> bool {
+    fn submit_command(&mut self, mut command: explorer_model::ExplorerCommand) -> bool {
+        if self.state.view_settings().mode == explorer_model::ViewMode::Columns {
+            match &mut command {
+                explorer_model::ExplorerCommand::Navigate { context, .. }
+                | explorer_model::ExplorerCommand::Refresh { context, .. }
+                | explorer_model::ExplorerCommand::OpenItem { context, .. }
+                | explorer_model::ExplorerCommand::ExecuteFileOperation { context, .. }
+                | explorer_model::ExplorerCommand::DataTransfer { context, .. } => {
+                    context.archive_browsing = true
+                }
+                _ => {}
+            }
+        }
         let cancel_request_id = match &command {
             explorer_model::ExplorerCommand::Cancel { request_id } => Some(*request_id),
             _ => None,
@@ -7753,6 +7796,7 @@ impl ExplorerRoot {
             self.terminate_details_column_resize();
             self.state.end_column_preview_resize();
             self.state.end_column_horizontal_scroll();
+            self.state.end_column_width_resize();
             if self.state.end_marquee() {
                 self.pointer_capture.take();
             }
@@ -9162,6 +9206,22 @@ impl ExplorerRoot {
             }
             ExplorerAction::EndColumnHorizontalScroll => {
                 self.state.end_column_horizontal_scroll();
+                None
+            }
+            ExplorerAction::BeginColumnWidthResize {
+                column_index,
+                pointer_x,
+            } => {
+                self.state
+                    .begin_column_width_resize(*column_index, *pointer_x);
+                None
+            }
+            ExplorerAction::UpdateColumnWidthResize { pointer_x } => {
+                self.state.update_column_width_resize(*pointer_x);
+                None
+            }
+            ExplorerAction::EndColumnWidthResize => {
+                self.state.end_column_width_resize();
                 None
             }
             _ => None,
@@ -10804,6 +10864,9 @@ impl Render for ExplorerRoot {
         if self.state.details_column_resize_active() && !window.is_window_active() {
             self.terminate_details_column_resize();
         }
+        if self.state.column_width_resize_active() && !window.is_window_active() {
+            self.state.end_column_width_resize();
+        }
         if self.state.marquee_session().is_some() && !window.is_window_active() {
             self.state.end_marquee();
             self.pointer_capture.take();
@@ -10954,6 +11017,7 @@ impl Render for ExplorerRoot {
         }
         self.synchronize_preview_thumbnail(preview_entry.as_ref());
         self.synchronize_preview_handler(preview_entry.as_ref());
+        self.synchronize_preview_content(preview_entry.as_ref());
         self.submit_folder_size_requests();
         self.submit_code_lines_requests();
         self.submit_size_map_requests();
@@ -10986,6 +11050,7 @@ impl Render for ExplorerRoot {
             .with_breadcrumb_menu_focus(self.breadcrumb_menu_focus.clone())
             .with_command_menu_focus(self.command_menu_focus.clone())
             .with_preview_thumbnail(self.preview_texture.clone(), self.preview_thumbnail_failed)
+            .with_column_preview_content(self.preview_content.content())
             .with_column_handler_phase(column_view::column_handler_phase(
                 self.preview_coordinator.lifecycle(),
             ))
@@ -11307,6 +11372,15 @@ impl Render for ExplorerRoot {
             )
             .on_action(
                 cx.listener(|this, _: &actions::CancelScrollbarDrag, window, cx| {
+                    if this.state.column_width_resize_active() {
+                        this.handle_action(
+                            ExplorerAction::EndColumnWidthResize,
+                            ActionSource::Keyboard,
+                            window,
+                            cx,
+                        );
+                        return;
+                    }
                     if this.state.context_menu_pending() {
                         if let Some(command) = this.state.cancel_pending_context_menu() {
                             this.submit_command(command);
@@ -14409,7 +14483,7 @@ mod tests {
                 }),
             explorer_model::WindowEventOutcome::Applied
         );
-        let entries = [(1, "first.jpg"), (2, "second.png"), (3, "unsupported.txt")]
+        let entries = [(1, "first.jpg"), (2, "second.png"), (3, "unsupported.pdf")]
             .into_iter()
             .map(|(id, name)| explorer_model::FileEntry {
                 id: explorer_model::ShellItemId::from_provider_bytes([id]).expect("preview id"),

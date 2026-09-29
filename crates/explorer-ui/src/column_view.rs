@@ -1,12 +1,6 @@
 //! Finder-style local column strip. Rows are realized only for the visible range of each column.
 
-use std::{
-    cell::{Cell, RefCell},
-    collections::HashMap,
-    ops::Range,
-    rc::Rc,
-    sync::Arc,
-};
+use std::{cell::Cell, collections::HashMap, ops::Range, rc::Rc, sync::Arc};
 
 use explorer_i18n::Catalog;
 use explorer_model::{ColumnFault, ColumnPhase, DirectoryState, FileEntry, ShellItemId};
@@ -27,6 +21,11 @@ pub(crate) const COLUMN_ROW_OVERSCAN_VIEWPORTS: usize = 2;
 pub(crate) const COLUMN_ICON_CANDIDATE_LIMIT: usize = 96;
 
 pub const COLUMN_ROW_HEIGHT: f32 = explorer_model::COLUMN_ROW_HEIGHT;
+
+/// One filename line. The font size stays the inherited 12px file-row size.
+const COLUMN_FILENAME_LINE_HEIGHT: f32 = 16.0;
+const COLUMN_FILENAME_MAX_LINES: usize = 2;
+const _: () = assert!(COLUMN_FILENAME_LINE_HEIGHT * 2.0 + 4.0 == COLUMN_ROW_HEIGHT);
 
 /// `SetColumnScroll` has no viewport field. This index publishes the measured
 /// list height instead of moving a column. Real columns never use it.
@@ -227,7 +226,7 @@ fn ordered_column_rows(
 
 #[allow(
     clippy::cast_precision_loss,
-    reason = "a column gap is a row count times the fixed 24px row height"
+    reason = "a column gap is a row count times the fixed row height"
 )]
 fn column_gap_height(rows: usize) -> f32 {
     ((rows as f64) * f64::from(COLUMN_ROW_HEIGHT))
@@ -264,6 +263,7 @@ pub struct ColumnStrip {
     preview_broker: Option<&'static str>,
     preview_handler: ColumnHandlerPhase,
     preview_pane_height: f32,
+    preview_content: Option<crate::preview_content::PreviewContent>,
     rename_editor: Option<explorer_model::RenameEditorState>,
     rename_input: Option<gpui::WeakEntity<EditableTextState>>,
 }
@@ -293,6 +293,7 @@ impl ColumnStrip {
             preview_broker: None,
             preview_handler: ColumnHandlerPhase::Inactive,
             preview_pane_height: 0.0,
+            preview_content: None,
             rename_editor: None,
             rename_input: None,
         }
@@ -323,6 +324,14 @@ impl ColumnStrip {
         self.preview_broker = broker;
         self.preview_handler = handler;
         self.preview_pane_height = pane_height;
+        self
+    }
+
+    pub(crate) fn with_content(
+        mut self,
+        content: Option<crate::preview_content::PreviewContent>,
+    ) -> Self {
+        self.preview_content = content;
         self
     }
 }
@@ -535,6 +544,7 @@ impl RenderOnce for ColumnStrip {
         let preview_broker = self.preview_broker;
         let preview_handler = self.preview_handler;
         let preview_pane_height = self.preview_pane_height;
+        let preview_content = self.preview_content;
         let icons = self.icons;
         let icon_dpi = self.icon_dpi;
         let icon_logical = self.icon_logical;
@@ -660,6 +670,7 @@ impl RenderOnce for ColumnStrip {
                     preview_handler,
                     preview_pane_height,
                     on_action,
+                    preview_content,
                 ))
             })
     }
@@ -835,7 +846,6 @@ fn column_pane(
     let list_name = column_level_accessible_name(catalog, index, &title, &status);
     let scroll_action = on_action.clone();
     let resize_action = on_action.clone();
-    let column_drag = Rc::new(RefCell::new(None::<(f32, f32)>));
     div()
         .id(SharedString::from(format!("column-level-{index}")))
         .debug_selector({
@@ -922,65 +932,39 @@ fn column_pane(
             catalog,
             on_action.clone(),
         ))
-        .child(
+        .child({
+            let hit = tokens.layout.divider_width.value().max(6.0);
             div()
                 .id(SharedString::from(format!("column-divider-{index}")))
+                .debug_selector(move || format!("column-divider-{index}"))
                 .role(Role::Splitter)
                 .aria_label(catalog.t("a11y-column-divider"))
+                .aria_numeric_value(f64::from(width))
+                .aria_min_numeric_value(f64::from(explorer_model::COLUMN_WIDTH_MIN))
+                .aria_max_numeric_value(f64::from(explorer_model::COLUMN_WIDTH_MAX))
                 .absolute()
                 .right_0()
                 .top_0()
                 .bottom_0()
-                .w(px(4.0))
+                .w(px(hit))
                 .cursor_col_resize()
-                .on_mouse_down(MouseButton::Left, {
-                    let callback = resize_action.clone();
-                    let drag = Rc::clone(&column_drag);
-                    move |event, window, cx| {
+                .bg(colors.divider.to_gpui())
+                .hover(move |style| style.bg(colors.focus.to_gpui()))
+                .active(move |style| style.bg(colors.accent.to_gpui()))
+                .when_some(resize_action, |divider, callback| {
+                    divider.on_mouse_down(MouseButton::Left, move |event, window, cx| {
                         cx.stop_propagation();
-                        *drag.borrow_mut() = Some((f32::from(event.position.x), width));
-                        if let Some(callback) = callback.clone() {
-                            callback(
-                                &ExplorerAction::SetColumnWidth {
-                                    column_index: index,
-                                    width: width.round() as u16,
-                                },
-                                window,
-                                cx,
-                            );
-                        }
-                    }
-                })
-                .on_mouse_move({
-                    let callback = resize_action;
-                    let drag = Rc::clone(&column_drag);
-                    move |event: &gpui::MouseMoveEvent, window, cx| {
-                        let Some((start_x, start_width)) = *drag.borrow() else {
-                            return;
-                        };
-                        let next = (start_width + f32::from(event.position.x) - start_x).clamp(
-                            f32::from(explorer_model::COLUMN_WIDTH_MIN),
-                            f32::from(explorer_model::COLUMN_WIDTH_MAX),
+                        callback(
+                            &ExplorerAction::BeginColumnWidthResize {
+                                column_index: index,
+                                pointer_x: f32::from(event.position.x),
+                            },
+                            window,
+                            cx,
                         );
-                        if let Some(callback) = callback.clone() {
-                            callback(
-                                &ExplorerAction::SetColumnWidth {
-                                    column_index: index,
-                                    width: next.round() as u16,
-                                },
-                                window,
-                                cx,
-                            );
-                        }
-                    }
+                    })
                 })
-                .on_mouse_up(MouseButton::Left, {
-                    let drag = column_drag;
-                    move |_, _, _| {
-                        *drag.borrow_mut() = None;
-                    }
-                }),
-        )
+        })
         .into_any_element()
 }
 
@@ -1090,6 +1074,14 @@ fn column_background(
         .into_any_element()
 }
 
+fn column_debug_key(kind: &str, column_index: usize, id: &ShellItemId) -> String {
+    let mut key = format!("{kind}-{column_index}-");
+    for byte in id.provider_bytes() {
+        key.push_str(&format!("{byte:02x}"));
+    }
+    key
+}
+
 fn column_row(
     column_index: usize,
     row: ColumnRowModel,
@@ -1108,11 +1100,8 @@ fn column_row(
     let name = row.name.clone();
     let is_container = row.is_container;
     let icon = column_row_icon(&row, icons, icon_dpi, icon_logical, theme);
-    let icon_id = format!(
-        "column-row-icon-{column_index}-{:02x?}",
-        row.id.provider_bytes()
-    );
     let item_id = row.id.clone();
+    let icon_id = column_debug_key("column-row-icon", column_index, &item_id);
     let location = row.location.clone();
     let renaming = rename_editor.filter(|editor| editor.item.id == item_id);
     let open = ExplorerAction::OpenColumnItem {
@@ -1127,11 +1116,19 @@ fn column_row(
     );
     div()
         .id(SharedString::from(row_id))
+        .debug_selector({
+            let id = item_id.clone();
+            move || column_debug_key("column-row", column_index, &id)
+        })
         .role(Role::ListItem)
         .aria_label(format!("{} {name}", catalog.t("a11y-column-row")))
         .aria_selected(selected)
         .h(px(COLUMN_ROW_HEIGHT))
+        .min_h(px(COLUMN_ROW_HEIGHT))
+        .max_h(px(COLUMN_ROW_HEIGHT))
         .w_full()
+        .flex_none()
+        .overflow_hidden()
         .flex()
         .items_center()
         .px(px(8.0))
@@ -1296,18 +1293,32 @@ fn column_row(
             column_rename_editor(editor, rename_input, tokens)
         } else {
             div()
+                .debug_selector({
+                    let id = item_id.clone();
+                    move || column_debug_key("column-filename", column_index, &id)
+                })
                 .flex_1()
+                .min_w(px(0.0))
+                .max_h(px(COLUMN_FILENAME_LINE_HEIGHT * 2.0))
                 .overflow_hidden()
+                .line_height(px(COLUMN_FILENAME_LINE_HEIGHT))
+                .whitespace_normal()
+                .text_ellipsis()
+                .line_clamp(COLUMN_FILENAME_MAX_LINES)
                 .text_color(colors.text_primary.to_gpui())
-                .child(name)
+                .child(column_filename_text(name))
                 .into_any_element()
         })
-        .child(
+        .child({
+            let chevron_id = item_id.clone();
             div()
+                .debug_selector(move || {
+                    column_debug_key("column-chevron", column_index, &chevron_id)
+                })
                 .flex_none()
                 .text_color(colors.text_secondary.to_gpui())
-                .child(if is_container { "›" } else { "" }),
-        )
+                .child(if is_container { "›" } else { "" })
+        })
         .into_any_element()
 }
 
@@ -1319,8 +1330,16 @@ fn column_rename_editor(
     let colors = tokens.theme.colors;
     div()
         .id("column-inline-rename")
+        .debug_selector(|| "column-inline-rename".to_owned())
         .flex_1()
-        .h(px(COLUMN_ROW_HEIGHT - 4.0))
+        .min_w(px(0.0))
+        // One 16px line plus the previous 4px inset. The row is taller so a
+        // filename can wrap; the editor stays a single line inside that row.
+        .h(px(COLUMN_FILENAME_LINE_HEIGHT + 4.0))
+        .max_h(px(COLUMN_ROW_HEIGHT))
+        .overflow_hidden()
+        .flex()
+        .items_center()
         .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
         .on_mouse_up(MouseButton::Left, |_, _, cx| cx.stop_propagation())
         .on_mouse_down(MouseButton::Right, |_, _, cx| cx.stop_propagation())
@@ -1329,9 +1348,14 @@ fn column_rename_editor(
                 .state(input)
                 .multiline(false)
                 .w_full()
-                .h(px(COLUMN_ROW_HEIGHT - 6.0))
+                .min_w(px(0.0))
+                .h(px(COLUMN_FILENAME_LINE_HEIGHT + 2.0))
                 .px(px(4.0))
                 .text_size(px(tokens.typography.file_row.size.value()))
+                .line_height(px(COLUMN_FILENAME_LINE_HEIGHT))
+                .whitespace_nowrap()
+                .text_ellipsis()
+                .overflow_hidden()
                 .bg(colors.control_fill.to_gpui())
                 .text_color(colors.text_primary.to_gpui())
                 .border(px(1.0))
@@ -1339,6 +1363,13 @@ fn column_rename_editor(
                 .into_any_element()
         } else {
             div()
+                .debug_selector(|| "column-inline-rename-text".to_owned())
+                .w_full()
+                .min_w(px(0.0))
+                .line_height(px(COLUMN_FILENAME_LINE_HEIGHT))
+                .whitespace_nowrap()
+                .text_ellipsis()
+                .overflow_hidden()
                 .px(px(4.0))
                 .border(px(1.0))
                 .border_color(colors.focus.to_gpui())
@@ -1388,8 +1419,10 @@ fn column_row_icon_element(
     icon: Option<Arc<RenderImage>>,
 ) -> gpui::AnyElement {
     const ICON: f32 = 16.0;
+    let icon_selector = element_id.to_owned();
     div()
         .id(SharedString::from(element_id.to_owned()))
+        .debug_selector(move || icon_selector)
         .role(Role::Image)
         .aria_label(format!("column-icon {name}"))
         .w(px(ICON))
@@ -1486,6 +1519,12 @@ pub fn column_preview_chrome(
             host_handler: false,
             show_retry: false,
             status_id: "column-preview-multiple",
+        },
+        ColumnPreviewRoute::PlainText => ColumnPreviewChrome {
+            show_image: false,
+            host_handler: false,
+            show_retry: false,
+            status_id: "status-preview-loading",
         },
         ColumnPreviewRoute::OfflineBlocked => ColumnPreviewChrome {
             show_image: false,
@@ -1600,13 +1639,18 @@ fn column_preview(
     handler: ColumnHandlerPhase,
     pane_height: f32,
     on_action: Option<ActionCallback>,
+    content: Option<crate::preview_content::PreviewContent>,
 ) -> impl IntoElement {
     let colors = tokens.theme.colors;
     let (source_width, source_height) = texture
         .as_ref()
         .map(|texture| texture_pixel_size(texture))
         .unwrap_or((0, 0));
-    let (slot_width, slot_height) = preview_content_slot(width, pane_height);
+    let (slot_width, mut slot_height) = preview_content_slot(width, pane_height);
+    let has_image_info = route == ColumnPreviewRoute::ImageThumbnail && content.is_some();
+    if has_image_info {
+        slot_height = (slot_height - (pane_height * 0.4).min(240.0)).max(0.0);
+    }
     let frame = integrated_preview_frame(
         route,
         source_width,
@@ -1617,11 +1661,18 @@ fn column_preview(
         slot_width,
         slot_height,
     );
-    let status = catalog.t(frame.status_id);
+    let native_content = route == ColumnPreviewRoute::PlainText || has_image_info;
+    let status = match content.as_ref() {
+        Some(crate::preview_content::PreviewContent::Failed(message)) if native_content => {
+            message.clone()
+        }
+        _ => catalog.t(frame.status_id),
+    };
     let image_label = catalog.t("chrome-preview-image-loaded");
     let retry_label = catalog.t("menu-retry-preview");
     div()
         .id("column-preview")
+        .debug_selector(|| "column-preview".to_owned())
         .role(Role::Complementary)
         .aria_label(catalog.t("a11y-column-preview"))
         .relative()
@@ -1648,6 +1699,9 @@ fn column_preview(
                         (delta.x * COLUMN_ROW_HEIGHT, delta.y * COLUMN_ROW_HEIGHT)
                     }
                 };
+                if native_content && !event.modifiers.shift && delta_y.abs() >= delta_x.abs() {
+                    return;
+                }
                 let Some(action) = column_wheel_action(
                     delta_x,
                     delta_y,
@@ -1700,11 +1754,18 @@ fn column_preview(
                 .id("column-preview-name")
                 .role(Role::Label)
                 .aria_label(title.clone())
+                .flex_none()
+                .line_height(px(18.0))
+                .line_clamp(2)
+                .max_h(px(36.0))
+                .overflow_hidden()
                 .child(title),
         )
         .child(
             div()
                 .id("column-preview-detail")
+                .flex_none()
+                .line_clamp(2)
                 .text_color(colors.text_secondary.to_gpui())
                 .child(detail),
         )
@@ -1733,33 +1794,49 @@ fn column_preview(
                     ),
             )
         })
-        .when(!frame.show_image, |pane| {
-            pane.child(
-                div()
-                    .id("column-preview-status")
-                    .role(Role::Status)
-                    .aria_label(status.clone())
-                    .relative()
-                    .w_full()
-                    .flex_1()
-                    .min_h(px(0.0))
-                    .overflow_hidden()
-                    .child(status)
-                    .when(frame.host_handler, |host| {
-                        host.child(
-                            div()
-                                .id("column-preview-host")
-                                .absolute()
-                                .inset_0()
-                                .size_full()
-                                .overflow_hidden()
-                                .child(crate::chrome::preview_host_boundary_probe(
-                                    on_action.clone(),
-                                )),
-                        )
-                    }),
-            )
-        })
+        .when(
+            !frame.show_image && route != ColumnPreviewRoute::PlainText,
+            |pane| {
+                pane.child(
+                    div()
+                        .id("column-preview-status")
+                        .role(Role::Status)
+                        .aria_label(status.clone())
+                        .relative()
+                        .w_full()
+                        .flex_1()
+                        .min_h(px(0.0))
+                        .overflow_hidden()
+                        .child(status)
+                        .when(frame.host_handler, |host| {
+                            host.child(
+                                div()
+                                    .id("column-preview-host")
+                                    .debug_selector(|| "column-preview-host".to_owned())
+                                    .absolute()
+                                    .inset_0()
+                                    .size_full()
+                                    .overflow_hidden()
+                                    .child(crate::chrome::preview_host_boundary_probe(
+                                        on_action.clone(),
+                                    )),
+                            )
+                        }),
+                )
+            },
+        )
+        .when(
+            route == ColumnPreviewRoute::PlainText || has_image_info,
+            |pane| {
+                pane.child(native_preview_content(
+                    content,
+                    route == ColumnPreviewRoute::ImageThumbnail,
+                    pane_height,
+                    colors,
+                    catalog,
+                ))
+            },
+        )
         .when(frame.show_retry, |pane| {
             pane.child(
                 div()
@@ -1789,6 +1866,110 @@ fn column_preview(
                 )
             })
         })
+}
+
+fn native_preview_content(
+    content: Option<crate::preview_content::PreviewContent>,
+    image: bool,
+    pane_height: f32,
+    colors: crate::theme::SemanticColors,
+    catalog: Catalog,
+) -> impl IntoElement {
+    use crate::preview_content::PreviewContent;
+    let mut body = div()
+        .flex()
+        .flex_col()
+        .gap(px(6.0))
+        .text_size(px(13.0))
+        .line_height(px(18.0));
+    match content {
+        Some(PreviewContent::Text {
+            text,
+            truncated,
+            encoding,
+        }) => {
+            let count = text.chars().count();
+            body = body
+                .child(
+                    div()
+                        .text_color(colors.text_secondary.to_gpui())
+                        .child(format!("{encoding} · {count} 字")),
+                )
+                .child(
+                    div()
+                        .id("column-preview-plain-text")
+                        .debug_selector(|| "column-preview-plain-text".to_owned())
+                        .text_color(colors.text_primary.to_gpui())
+                        .child(if text.is_empty() {
+                            "（空白檔案）".to_owned()
+                        } else {
+                            text
+                        }),
+                );
+            if truncated {
+                body = body.child(
+                    div()
+                        .id("column-preview-text-limit")
+                        .text_color(colors.text_secondary.to_gpui())
+                        .child("僅顯示前 3000 字"),
+                );
+            }
+        }
+        Some(PreviewContent::Image {
+            width,
+            height,
+            bits_per_pixel,
+            color,
+            size,
+            exif,
+            metadata_note,
+        }) => {
+            let size = size.map_or_else(
+                || "未知".to_owned(),
+                |size| format!("{size} bytes ({:.2} MiB)", size as f64 / 1_048_576.0),
+            );
+            body = body
+                .child(div().child(format!("尺寸：{width} × {height} px")))
+                .child(div().child(format!("檔案大小：{size}")))
+                .child(div().child(format!("色彩深度：{bits_per_pixel} bits/pixel")))
+                .child(div().child(format!("色彩格式：{color}")))
+                .child(div().child("EXIF"));
+            for (tag, value) in exif {
+                body = body.child(div().child(format!("{tag}：{value}")));
+            }
+            if let Some(note) = metadata_note {
+                body = body.child(
+                    div()
+                        .text_color(colors.text_secondary.to_gpui())
+                        .child(note),
+                );
+            }
+        }
+        Some(PreviewContent::Failed(message)) => {
+            body = body.child(div().child(message));
+        }
+        _ => {
+            body = body.child(div().child(catalog.t("status-preview-loading")));
+        }
+    }
+    div()
+        .id("column-preview-native-content")
+        .debug_selector(|| "column-preview-native-content".to_owned())
+        .role(Role::Group)
+        .aria_label(if image {
+            "圖片資訊與 EXIF"
+        } else {
+            "純文字預覽"
+        })
+        .w_full()
+        .min_h(px(0.0))
+        .overflow_y_scroll()
+        .when(image, |pane| {
+            pane.h(px((pane_height * 0.4).clamp(48.0, 240.0)))
+                .flex_none()
+        })
+        .when(!image, |pane| pane.flex_1())
+        .child(body)
 }
 
 fn column_status_elements(
@@ -1851,6 +2032,7 @@ pub enum ColumnPreviewRoute {
     Multiple,
     OfflineBlocked,
     ImageThumbnail,
+    PlainText,
     PreviewHandler,
 }
 
@@ -1860,6 +2042,9 @@ pub fn column_preview_route(entries: &[FileEntry]) -> ColumnPreviewRoute {
         [entry] if entry.is_container => ColumnPreviewRoute::FolderSummary,
         [entry] if offline_placeholder(entry) => ColumnPreviewRoute::OfflineBlocked,
         [entry] if previewable_image(&entry.location) => ColumnPreviewRoute::ImageThumbnail,
+        [entry] if crate::preview_content::plain_text(&entry.location) => {
+            ColumnPreviewRoute::PlainText
+        }
         [_] => ColumnPreviewRoute::PreviewHandler,
         _ => ColumnPreviewRoute::Multiple,
     }
@@ -1911,6 +2096,23 @@ pub fn column_accessible_names(
     )
 }
 
+fn column_filename_text(name: String) -> gpui::StyledText {
+    let text = gpui::StyledText::new(name);
+    #[cfg(test)]
+    FILENAME_LAYOUT_PROBE.with(|probe| {
+        if let Some(records) = probe.borrow().as_ref() {
+            records.borrow_mut().push(text.layout().clone());
+        }
+    });
+    text
+}
+
+#[cfg(test)]
+thread_local! {
+    static FILENAME_LAYOUT_PROBE: std::cell::RefCell<Option<Rc<std::cell::RefCell<Vec<gpui::TextLayout>>>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
@@ -1921,6 +2123,8 @@ mod tests {
     };
     use crate::actions::ExplorerAction;
     use explorer_model::{FileEntry, FileEntryMetadata, LocationDescriptor, ShellItemId};
+    use gpui::{MouseButton, div, prelude::*, px};
+    use std::{cell::RefCell, rc::Rc};
 
     fn entry(name: &str, container: bool, attributes: u32) -> FileEntry {
         FileEntry {
@@ -1948,7 +2152,7 @@ mod tests {
         );
         assert_eq!(
             column_preview_route(&[entry("notes.txt", false, 0)]),
-            ColumnPreviewRoute::PreviewHandler
+            ColumnPreviewRoute::PlainText
         );
         assert_eq!(
             column_preview_route(&[entry("cloud.docx", false, 0x1000)]),
@@ -2001,6 +2205,7 @@ mod tests {
             ColumnPreviewRoute::FolderSummary,
             ColumnPreviewRoute::Multiple,
             ColumnPreviewRoute::OfflineBlocked,
+            ColumnPreviewRoute::PlainText,
         ] {
             let chrome =
                 column_preview_chrome(route, true, false, super::ColumnHandlerPhase::Ready);
@@ -2010,7 +2215,14 @@ mod tests {
                 "{route:?} must not host a preview handler"
             );
             assert!(!chrome.show_retry, "{route:?} must not offer retry");
-            assert_ne!(chrome.status_id, "status-preview-loading");
+            if route == ColumnPreviewRoute::PlainText {
+                assert_eq!(
+                    chrome.status_id, "status-preview-loading",
+                    "plain text waits for its bounded reader"
+                );
+            } else {
+                assert_ne!(chrome.status_id, "status-preview-loading");
+            }
         }
 
         let handler = column_preview_chrome(
@@ -2646,7 +2858,10 @@ mod tests {
         assert_eq!(column_list_viewport_height(-4.0, 0.0), 0.0);
         assert_eq!(column_vertical_wheel_offset(0.0, -400.0, 0, 48.0), 0.0);
         assert_eq!(column_vertical_wheel_offset(12.0, -400.0, 1, 80.0), 0.0);
-        assert_eq!(column_vertical_wheel_offset(0.0, -10_000.0, 3, 8.0), 64.0);
+        assert_eq!(
+            column_vertical_wheel_offset(0.0, -10_000.0, 3, 8.0),
+            (3.0 * row - 8.0).max(0.0)
+        );
         assert_eq!(
             column_wheel_action(0.0, -400.0, false, Some(0), 0.0, 0.0, Some((0, 48.0))),
             Some(ExplorerAction::SetColumnScroll {
@@ -2749,6 +2964,649 @@ mod tests {
             gaps.iter().sum::<usize>() + 4,
             183,
             "gaps plus realized rows reach the last index"
+        );
+    }
+
+    struct ColumnFilenameProbe {
+        tokens: crate::UiTokens,
+        model: super::ColumnStripModel,
+        rename: Option<explorer_model::RenameEditorState>,
+    }
+
+    impl Render for ColumnFilenameProbe {
+        fn render(
+            &mut self,
+            _window: &mut gpui::Window,
+            _cx: &mut Context<Self>,
+        ) -> impl IntoElement {
+            div()
+                .size_full()
+                .font_family(self.tokens.typography.family.primary)
+                .text_size(px(self.tokens.typography.file_row.size.value()))
+                // Not 16. A filename that forgets its own line height inherits this and
+                // no longer fits the 36px row.
+                .line_height(px(22.0))
+                .child(
+                    super::ColumnStrip::new(
+                        self.tokens,
+                        self.model.clone(),
+                        explorer_i18n::Catalog::new(explorer_i18n::AppLocale::En),
+                        200.0,
+                        std::collections::HashMap::new(),
+                        96,
+                        16,
+                        None,
+                    )
+                    .with_rename(self.rename.clone(), None),
+                )
+        }
+    }
+
+    fn edge_right(bounds: gpui::Bounds<gpui::Pixels>) -> f32 {
+        f32::from(bounds.origin.x) + f32::from(bounds.size.width)
+    }
+
+    fn edge_bottom(bounds: gpui::Bounds<gpui::Pixels>) -> f32 {
+        f32::from(bounds.origin.y) + f32::from(bounds.size.height)
+    }
+
+    fn mid_y(bounds: gpui::Bounds<gpui::Pixels>) -> f32 {
+        f32::from(bounds.origin.y) + f32::from(bounds.size.height) / 2.0
+    }
+
+    fn inside(outer: gpui::Bounds<gpui::Pixels>, inner: gpui::Bounds<gpui::Pixels>) -> bool {
+        f32::from(inner.origin.x) >= f32::from(outer.origin.x) - 0.5
+            && f32::from(inner.origin.y) >= f32::from(outer.origin.y) - 0.5
+            && edge_right(inner) <= edge_right(outer) + 0.5
+            && edge_bottom(inner) <= edge_bottom(outer) + 0.5
+    }
+
+    #[gpui::test]
+    fn wrapped_column_filenames_stay_inside_adjacent_rows(cx: &mut gpui::TestAppContext) {
+        use explorer_model::{ItemDescriptor, RenameEditorState};
+
+        let short_id = ShellItemId::from_provider_bytes(b"s").expect("id");
+        let wrapped_id = ShellItemId::from_provider_bytes(b"w").expect("id");
+        let folder_id = ShellItemId::from_provider_bytes(b"n").expect("id");
+        let rename_id = ShellItemId::from_provider_bytes(b"r").expect("id");
+        assert_eq!(
+            super::column_debug_key("column-row", 0, &short_id),
+            "column-row-0-73"
+        );
+        assert_eq!(
+            super::column_debug_key("column-filename", 0, &wrapped_id),
+            "column-filename-0-77"
+        );
+        assert_eq!(
+            super::column_debug_key("column-chevron", 0, &folder_id),
+            "column-chevron-0-6e"
+        );
+        assert_eq!(
+            super::column_debug_key("column-row-icon", 0, &rename_id),
+            "column-row-icon-0-72"
+        );
+        let wrapped_name =
+            "Quarterly Financial Report Final Approved by Finance and Legal September 2026.pdf";
+        let rename_name = format!("{wrapped_name} draft copy");
+        let mut rows = vec![
+            filename_row(short_id.clone(), "Notes.txt", false),
+            filename_row(wrapped_id.clone(), wrapped_name, false),
+            filename_row(folder_id.clone(), "Plans", true),
+            filename_row(rename_id.clone(), &rename_name, false),
+        ];
+        for index in 0..8 {
+            let id =
+                ShellItemId::from_provider_bytes(format!("f{index}").into_bytes()).expect("id");
+            rows.push(filename_row(id, &format!("extra-{index}.txt"), false));
+        }
+        let row_count = rows.len();
+        let directory = LocationDescriptor::file_system(r"C:\docs");
+        let rename = RenameEditorState::begin(
+            ItemDescriptor {
+                id: rename_id.clone(),
+                location: directory.clone(),
+            },
+            rename_name,
+            false,
+        );
+        let model = super::ColumnStripModel {
+            panes: vec![super::ColumnPaneModel {
+                index: 0,
+                title: "Docs".to_owned(),
+                directory,
+                width: 180.0,
+                vertical_offset: 0.0,
+                row_count,
+                row_origin: 0,
+                rows,
+                pinned_row: None,
+                status: super::ColumnPaneStatus::Ready,
+                status_detail: None,
+            }],
+            active: 0,
+            horizontal_offset: 0.0,
+            preview_visible: false,
+            preview_width: 280.0,
+            file_surface_width: 420.0,
+            list_viewport_height: 200.0,
+            preview_title: String::new(),
+            preview_detail: String::new(),
+            preview_status: String::new(),
+            preview_route: ColumnPreviewRoute::None,
+        };
+        let window = cx.open_window(gpui::size(px(420.0), px(200.0)), |_, _| {
+            ColumnFilenameProbe {
+                tokens: crate::UiTokens::default(),
+                model,
+                rename: Some(rename),
+            }
+        });
+        let any_window = window.into();
+        cx.update_window(any_window, |_, window, cx| window.draw(cx).clear())
+            .expect("test window remains available");
+        let mut visual = gpui::VisualTestContext::from_window(any_window, cx);
+        let read = |visual: &mut gpui::VisualTestContext, selector: &'static str| {
+            visual
+                .debug_bounds(selector)
+                .unwrap_or_else(|| panic!("missing selector {selector}"))
+        };
+        let short_row = read(&mut visual, "column-row-0-73");
+        let wrapped_row = read(&mut visual, "column-row-0-77");
+        let folder_row = read(&mut visual, "column-row-0-6e");
+        let rename_row = read(&mut visual, "column-row-0-72");
+        let short_label = read(&mut visual, "column-filename-0-73");
+        let wrapped_label = read(&mut visual, "column-filename-0-77");
+        let folder_label = read(&mut visual, "column-filename-0-6e");
+        let short_icon = read(&mut visual, "column-row-icon-0-73");
+        let wrapped_icon = read(&mut visual, "column-row-icon-0-77");
+        let folder_chevron = read(&mut visual, "column-chevron-0-6e");
+        let rename_editor = read(&mut visual, "column-inline-rename");
+        let rename_text = read(&mut visual, "column-inline-rename-text");
+
+        for (name, row) in [
+            ("short", short_row),
+            ("wrapped", wrapped_row),
+            ("folder", folder_row),
+            ("rename", rename_row),
+        ] {
+            assert!(
+                (f32::from(row.size.height) - COLUMN_ROW_HEIGHT).abs() <= 0.5,
+                "{name} row height {} collapsed below the shared {}",
+                f32::from(row.size.height),
+                COLUMN_ROW_HEIGHT
+            );
+            assert!(
+                (f32::from(row.size.width) - 180.0).abs() <= 2.0,
+                "{name} row width {}",
+                f32::from(row.size.width)
+            );
+        }
+        assert!(
+            (f32::from(wrapped_row.origin.y) - f32::from(short_row.origin.y) - COLUMN_ROW_HEIGHT)
+                .abs()
+                <= 0.5,
+            "wrapped row does not start on the next fixed boundary: short {:?} wrapped {:?}",
+            short_row,
+            wrapped_row
+        );
+        assert!(
+            (f32::from(folder_row.origin.y) - f32::from(wrapped_row.origin.y) - COLUMN_ROW_HEIGHT)
+                .abs()
+                <= 0.5,
+            "folder row collided with the wrapped filename: wrapped {:?} folder {:?}",
+            wrapped_row,
+            folder_row
+        );
+        assert!(
+            (f32::from(rename_row.origin.y) - f32::from(folder_row.origin.y) - COLUMN_ROW_HEIGHT)
+                .abs()
+                <= 0.5
+        );
+
+        let short_h = f32::from(short_label.size.height);
+        let wrapped_h = f32::from(wrapped_label.size.height);
+        let folder_h = f32::from(folder_label.size.height);
+        assert!(
+            (short_h - super::COLUMN_FILENAME_LINE_HEIGHT).abs() <= 1.0,
+            "single-line filename should be one 16px line, got {short_h}"
+        );
+        assert!(
+            (folder_h - super::COLUMN_FILENAME_LINE_HEIGHT).abs() <= 1.0,
+            "folder filename should be one 16px line, got {folder_h}"
+        );
+        assert!(
+            wrapped_h > super::COLUMN_FILENAME_LINE_HEIGHT + 8.0,
+            "long PDF name did not wrap, height {wrapped_h}"
+        );
+        assert!(
+            wrapped_h <= super::COLUMN_FILENAME_LINE_HEIGHT * 2.0 + 0.5,
+            "wrapped PDF name exceeded two 16px lines, height {wrapped_h}"
+        );
+        assert!(
+            inside(short_row, short_label),
+            "short label {:?} escaped {:?}",
+            short_label,
+            short_row
+        );
+        assert!(
+            inside(wrapped_row, wrapped_label),
+            "wrapped label {:?} escaped {:?}",
+            wrapped_label,
+            wrapped_row
+        );
+        assert!(
+            inside(folder_row, folder_label),
+            "folder label {:?} escaped {:?}",
+            folder_label,
+            folder_row
+        );
+        assert!(
+            edge_bottom(wrapped_label) <= f32::from(folder_row.origin.y) + 0.5,
+            "wrapped label bottom {} entered the next row at {}",
+            edge_bottom(wrapped_label),
+            f32::from(folder_row.origin.y)
+        );
+        assert!((mid_y(short_label) - mid_y(short_row)).abs() <= 1.0);
+        assert!((mid_y(wrapped_label) - mid_y(wrapped_row)).abs() <= 1.0);
+        assert!((mid_y(short_icon) - mid_y(short_row)).abs() <= 1.0);
+        assert!((mid_y(wrapped_icon) - mid_y(wrapped_row)).abs() <= 1.0);
+        assert!(
+            (mid_y(folder_chevron) - mid_y(folder_row)).abs() <= 1.0,
+            "chevron {:?} is not centered on {:?}",
+            folder_chevron,
+            folder_row
+        );
+        assert!(
+            inside(rename_row, rename_editor),
+            "rename editor {:?} escaped {:?}",
+            rename_editor,
+            rename_row
+        );
+        let editor_h = f32::from(rename_editor.size.height);
+        let rename_text_h = f32::from(rename_text.size.height);
+        assert!(
+            editor_h < COLUMN_ROW_HEIGHT,
+            "rename editor filled more than the row: {editor_h}"
+        );
+        assert!(
+            (editor_h - (super::COLUMN_FILENAME_LINE_HEIGHT + 4.0)).abs() <= 0.5,
+            "rename editor should stay a single-line field, got {editor_h}"
+        );
+        assert!(
+            rename_text_h <= super::COLUMN_FILENAME_LINE_HEIGHT + 4.0,
+            "rename text wrapped past one line, height {rename_text_h}"
+        );
+        assert!(
+            inside(rename_editor, rename_text),
+            "rename text {:?} escaped {:?}",
+            rename_text,
+            rename_editor
+        );
+        assert!((mid_y(rename_text) - mid_y(rename_row)).abs() <= 1.0);
+    }
+
+    fn filename_row(id: ShellItemId, name: &str, is_container: bool) -> ColumnRowModel {
+        ColumnRowModel {
+            id,
+            name: name.to_owned(),
+            location: LocationDescriptor::file_system(format!(r"C:\docs\{name}")),
+            is_container,
+            metadata: FileEntryMetadata::default(),
+            selected: false,
+            branch_selected: false,
+        }
+    }
+
+    struct FilenameLayoutProbe(Rc<RefCell<Vec<gpui::TextLayout>>>);
+
+    impl FilenameLayoutProbe {
+        fn install() -> Self {
+            let records = Rc::new(RefCell::new(Vec::new()));
+            super::FILENAME_LAYOUT_PROBE.with(|slot| {
+                assert!(slot.borrow().is_none());
+                *slot.borrow_mut() = Some(Rc::clone(&records));
+            });
+            Self(records)
+        }
+
+        fn take(&self) -> Vec<gpui::TextLayout> {
+            let mut records = std::mem::take(&mut *self.0.borrow_mut());
+            // Input simulation may render before our explicit draw. Keep the latest
+            // complete frame, whose four rows are all inside the viewport.
+            if records.len() > 4 {
+                records.drain(..records.len() - 4);
+            }
+            records
+        }
+    }
+
+    impl Drop for FilenameLayoutProbe {
+        fn drop(&mut self) {
+            super::FILENAME_LAYOUT_PROBE.with(|slot| *slot.borrow_mut() = None);
+        }
+    }
+
+    fn assert_filename_layout(layout: &gpui::TextLayout, original: &str, truncated: bool) {
+        let text = layout.text();
+        let wrapped = layout.wrapped_text();
+        assert!(wrapped.lines().count() <= 2, "{original}: {wrapped:?}");
+        assert!(f32::from(layout.bounds().size.height) <= 32.5);
+        if truncated {
+            assert!(
+                text.ends_with('…'),
+                "missing ellipsis for {original}: {text:?}"
+            );
+            assert!(original.len() > text.len());
+            let bounds = layout.bounds();
+            let ellipsis = layout
+                .position_for_index(text.rfind('…').expect("ellipsis"))
+                .expect("ellipsis has a shaped position");
+            assert!(ellipsis.x >= bounds.left() && ellipsis.x < bounds.right());
+            assert!(ellipsis.y >= bounds.top() && ellipsis.y < bounds.bottom());
+        } else {
+            assert_eq!(text, original);
+        }
+    }
+
+    const LONG_APK_NAME: &str =
+        "mdtq8u1e1nr1eu2op15f0nghacapp4qio8e4eu1nre4t4e5t875dj33fed88f9bd9.apk";
+    const UUID_IMAGE_NAME: &str =
+        "grok-image-33bf8e83-3299-4e5f-869a-bf1784b98669_upscayl_2x_upscayl-standard-4x.jpg";
+    const CJK_NAME: &str = "這是一個非常長的檔案名稱用來確認中文字換行之後超過兩行能夠正確截斷並且不會影響下一個檔案以及其他語言的測試檔案與資料夾顯示結果.pdf";
+
+    struct ColumnResizeProbe {
+        state: crate::state::AppViewState,
+        actions: Vec<ExplorerAction>,
+    }
+
+    impl Render for ColumnResizeProbe {
+        fn render(&mut self, _: &mut gpui::Window, cx: &mut Context<Self>) -> impl IntoElement {
+            let tokens = crate::UiTokens::default();
+            let callback: crate::chrome::ActionCallback =
+                Rc::new(cx.listener(|this, action: &ExplorerAction, _, cx| {
+                    match action {
+                        ExplorerAction::BeginColumnWidthResize {
+                            column_index,
+                            pointer_x,
+                        } => {
+                            this.state
+                                .begin_column_width_resize(*column_index, *pointer_x);
+                        }
+                        ExplorerAction::UpdateColumnWidthResize { pointer_x } => {
+                            this.state.update_column_width_resize(*pointer_x);
+                        }
+                        ExplorerAction::EndColumnWidthResize => {
+                            this.state.end_column_width_resize();
+                        }
+                        _ => return,
+                    }
+                    this.actions.push(action.clone());
+                    cx.notify();
+                }));
+            let mut model = self.state.column_strip_model().expect("column model");
+            model.active = 0;
+            model.horizontal_offset = 0.0;
+            model.preview_visible = false;
+            model.file_surface_width = 1000.0;
+            model.list_viewport_height = 200.0;
+            let names = ["Notes.txt", LONG_APK_NAME, UUID_IMAGE_NAME, CJK_NAME];
+            let pane = &mut model.panes[0];
+            pane.title = "Names".to_owned();
+            pane.rows = names
+                .iter()
+                .enumerate()
+                .map(|(index, name)| {
+                    filename_row(
+                        ShellItemId::from_provider_bytes(vec![index as u8]).expect("id"),
+                        name,
+                        false,
+                    )
+                })
+                .collect();
+            pane.row_count = names.len();
+            pane.row_origin = 0;
+            pane.status = super::ColumnPaneStatus::Ready;
+            pane.status_detail = None;
+            div()
+                .size_full()
+                .relative()
+                .font_family(tokens.typography.family.primary)
+                .text_size(px(tokens.typography.file_row.size.value()))
+                .line_height(px(22.0))
+                .child(super::ColumnStrip::new(
+                    tokens,
+                    model,
+                    explorer_i18n::Catalog::new(explorer_i18n::AppLocale::En),
+                    200.0,
+                    std::collections::HashMap::new(),
+                    96,
+                    16,
+                    Some(callback.clone()),
+                ))
+                .when(self.state.column_width_resize_active(), |element| {
+                    element.child(crate::chrome::pointer_drag_capture_listener(
+                        Some(callback),
+                        None,
+                        false,
+                        false,
+                        false,
+                        false,
+                        true,
+                        false,
+                        0.0,
+                        0.0,
+                        None,
+                        1000.0,
+                    ))
+                })
+        }
+    }
+
+    #[gpui::test]
+    fn column_view_long_names_truncate_and_divider_drag_survives_rerenders(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let probe = FilenameLayoutProbe::install();
+        let mut state = crate::state::AppViewState::with_initial_location(
+            explorer_model::HistoryEntry::new(LocationDescriptor::file_system(r"C:\docs"), "Docs"),
+        );
+        state.set_drive_kind('C', explorer_model::DriveKind::Fixed);
+        state.set_view_mode(explorer_model::ViewMode::Columns);
+        state.ensure_column_branch();
+        state.set_column_file_viewport_width(1000.0);
+        state.set_column_list_viewport_height(200.0);
+        let window = cx.open_window(gpui::size(px(1000.0), px(200.0)), |_, _| {
+            ColumnResizeProbe {
+                state,
+                actions: Vec::new(),
+            }
+        });
+        let mut visual = gpui::VisualTestContext::from_window(window.into(), cx);
+        visual.update(|window, cx| window.draw(cx).clear());
+        let names = ["Notes.txt", LONG_APK_NAME, UUID_IMAGE_NAME, CJK_NAME];
+        let layouts = probe.take();
+        assert_eq!(layouts.len(), names.len());
+        for (layout, name) in layouts.iter().zip(names) {
+            assert_filename_layout(layout, name, name != "Notes.txt");
+        }
+        let divider = visual.debug_bounds("column-divider-0").expect("divider");
+        assert!(f32::from(divider.size.width) >= 6.0);
+        let start = gpui::point(divider.center().x, px(120.0));
+        let width = |visual: &gpui::VisualTestContext| {
+            window
+                .read_with(visual, |view, _| view.state.view_settings().column_width)
+                .expect("window")
+        };
+        visual.simulate_mouse_down(start, MouseButton::Left, gpui::Modifiers::default());
+        visual.update(|window, cx| window.draw(cx).clear());
+        assert!(
+            window
+                .read_with(&visual, |view, _| view.state.column_width_resize_active())
+                .unwrap()
+        );
+        probe.take();
+        visual.simulate_mouse_move(
+            start - gpui::point(px(40.0), px(0.0)),
+            Some(MouseButton::Left),
+            gpui::Modifiers::default(),
+        );
+        visual.update(|window, cx| window.draw(cx).clear());
+        assert_eq!(width(&visual), 200);
+        let narrow = probe.take();
+        for (layout, name) in narrow.iter().zip(names) {
+            assert_filename_layout(layout, name, name != "Notes.txt");
+        }
+        let narrow_text = narrow[1].text();
+        visual.simulate_mouse_move(
+            start + gpui::point(px(180.0), px(0.0)),
+            Some(MouseButton::Left),
+            gpui::Modifiers::default(),
+        );
+        visual.update(|window, cx| window.draw(cx).clear());
+        assert_eq!(
+            width(&visual),
+            420,
+            "global capture continues outside the narrow divider after rerender"
+        );
+        let wide = probe.take();
+        assert!(
+            wide[1].text().len() > narrow_text.len(),
+            "widening recalculates truncation"
+        );
+        assert_eq!(wide[0].text(), "Notes.txt");
+        for layout in &wide {
+            assert!(layout.wrapped_text().lines().count() <= 2);
+        }
+        for selector in [
+            "column-row-0-00",
+            "column-row-0-01",
+            "column-row-0-02",
+            "column-row-0-03",
+        ] {
+            let row = visual.debug_bounds(selector).expect("row");
+            assert!((f32::from(row.size.height) - COLUMN_ROW_HEIGHT).abs() < 0.5);
+        }
+        let outside = gpui::point(px(900.0), px(150.0));
+        visual.simulate_mouse_up(outside, MouseButton::Left, gpui::Modifiers::default());
+        visual.update(|window, cx| window.draw(cx).clear());
+        assert!(
+            !window
+                .read_with(&visual, |view, _| view.state.column_width_resize_active())
+                .unwrap()
+        );
+        visual.simulate_mouse_move(
+            gpui::point(px(50.0), px(150.0)),
+            None,
+            gpui::Modifiers::default(),
+        );
+        visual.update(|window, cx| window.draw(cx).clear());
+        assert_eq!(
+            width(&visual),
+            420,
+            "move after outside release does not resize"
+        );
+        let actions = window
+            .read_with(&visual, |view, _| view.actions.clone())
+            .unwrap();
+        assert!(matches!(
+            actions.first(),
+            Some(ExplorerAction::BeginColumnWidthResize {
+                column_index: 0,
+                ..
+            })
+        ));
+        assert!(matches!(
+            actions.last(),
+            Some(ExplorerAction::EndColumnWidthResize)
+        ));
+    }
+
+    struct NativePreviewProbe {
+        content: crate::preview_content::PreviewContent,
+        route: ColumnPreviewRoute,
+    }
+
+    impl Render for NativePreviewProbe {
+        fn render(&mut self, _: &mut gpui::Window, _: &mut Context<Self>) -> impl IntoElement {
+            div().size_full().child(super::column_preview(
+                crate::UiTokens::default(),
+                explorer_i18n::Catalog::new(explorer_i18n::AppLocale::En),
+                320.0,
+                0.0,
+                "preview.md".to_owned(),
+                String::new(),
+                self.route,
+                None,
+                false,
+                None,
+                super::ColumnHandlerPhase::Inactive,
+                600.0,
+                None,
+                Some(self.content.clone()),
+            ))
+        }
+    }
+
+    #[gpui::test]
+    fn column_preview_native_text_and_image_information_render_inside_scrollable_slots(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let text = "# Raw markdown\n**plain text**\n"
+            .repeat(100)
+            .chars()
+            .take(3_000)
+            .collect::<String>();
+        let window = cx.open_window(gpui::size(px(320.0), px(600.0)), |_, _| {
+            NativePreviewProbe {
+                content: crate::preview_content::PreviewContent::Text {
+                    text,
+                    truncated: true,
+                    encoding: "UTF-8".to_owned(),
+                },
+                route: ColumnPreviewRoute::PlainText,
+            }
+        });
+        let mut visual = gpui::VisualTestContext::from_window(window.into(), cx);
+        visual.update(|window, cx| window.draw(cx).clear());
+        let pane = visual.debug_bounds("column-preview").unwrap();
+        let slot = visual
+            .debug_bounds("column-preview-native-content")
+            .unwrap();
+        let body = visual.debug_bounds("column-preview-plain-text").unwrap();
+        assert!(slot.left() >= pane.left() && slot.right() <= pane.right());
+        assert!(slot.top() >= pane.top() && slot.bottom() <= pane.bottom());
+        assert!(
+            body.size.height > slot.size.height,
+            "long plain text must scroll instead of expanding the pane"
+        );
+        assert!(
+            visual.debug_bounds("column-preview-host").is_none(),
+            "text must not activate a native handler"
+        );
+        window
+            .update(&mut visual, |view, _, cx| {
+                view.route = ColumnPreviewRoute::ImageThumbnail;
+                view.content = crate::preview_content::PreviewContent::Image {
+                    width: 800,
+                    height: 600,
+                    bits_per_pixel: 24,
+                    color: "Rgb8".to_owned(),
+                    size: Some(123_456),
+                    exif: vec![("Make".to_owned(), "Camera".to_owned())],
+                    metadata_note: None,
+                };
+                cx.notify();
+            })
+            .unwrap();
+        visual.update(|window, cx| window.draw(cx).clear());
+        let info = visual
+            .debug_bounds("column-preview-native-content")
+            .unwrap();
+        assert!(f32::from(info.size.height) <= 240.0);
+        assert!(info.bottom() <= pane.bottom());
+        assert!(
+            visual.debug_bounds("column-preview-plain-text").is_none(),
+            "old text content is removed on image selection"
         );
     }
 }

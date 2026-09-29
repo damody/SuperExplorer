@@ -813,6 +813,14 @@ pub enum ExplorerAction {
         column_index: usize,
         width: u16,
     },
+    BeginColumnWidthResize {
+        column_index: usize,
+        pointer_x: f32,
+    },
+    UpdateColumnWidthResize {
+        pointer_x: f32,
+    },
+    EndColumnWidthResize,
     SetColumnPreviewWidth {
         width: u16,
     },
@@ -1138,6 +1146,9 @@ impl ExplorerAction {
             Self::OpenColumnItem { .. } => "OpenColumnItem",
             Self::MoveColumnCursor { .. } => "MoveColumnCursor",
             Self::SetColumnWidth { .. } => "SetColumnWidth",
+            Self::BeginColumnWidthResize { .. } => "BeginColumnWidthResize",
+            Self::UpdateColumnWidthResize { .. } => "UpdateColumnWidthResize",
+            Self::EndColumnWidthResize => "EndColumnWidthResize",
             Self::SetColumnPreviewWidth { .. } => "SetColumnPreviewWidth",
             Self::SetColumnScroll { .. } => "SetColumnScroll",
             Self::SetColumnHorizontalOffset { .. } => "SetColumnHorizontalOffset",
@@ -1461,6 +1472,8 @@ fn is_high_frequency_pointer_action(action: &ExplorerAction) -> bool {
             | ExplorerAction::EndColumnPreviewResize
             | ExplorerAction::UpdateColumnHorizontalScroll { .. }
             | ExplorerAction::EndColumnHorizontalScroll
+            | ExplorerAction::UpdateColumnWidthResize { .. }
+            | ExplorerAction::EndColumnWidthResize
             | ExplorerAction::UpdateScrollbarDrag { .. }
             | ExplorerAction::EndScrollbarDrag { .. }
             | ExplorerAction::UpdateNavigationPaneResize { .. }
@@ -2098,6 +2111,9 @@ fn action_available(state: &AppViewState, action: &ExplorerAction) -> bool {
         | ExplorerAction::OpenColumnItem { .. }
         | ExplorerAction::MoveColumnCursor { .. }
         | ExplorerAction::SetColumnWidth { .. }
+        | ExplorerAction::BeginColumnWidthResize { .. }
+        | ExplorerAction::UpdateColumnWidthResize { .. }
+        | ExplorerAction::EndColumnWidthResize
         | ExplorerAction::SetColumnPreviewWidth { .. }
         | ExplorerAction::SetColumnScroll { .. }
         | ExplorerAction::SetColumnHorizontalOffset { .. }
@@ -3205,6 +3221,9 @@ fn apply_action(state: &mut AppViewState, action: ExplorerAction) -> FocusSurfac
         | ExplorerAction::OpenColumnItem { .. }
         | ExplorerAction::MoveColumnCursor { .. }
         | ExplorerAction::SetColumnWidth { .. }
+        | ExplorerAction::BeginColumnWidthResize { .. }
+        | ExplorerAction::UpdateColumnWidthResize { .. }
+        | ExplorerAction::EndColumnWidthResize
         | ExplorerAction::SetColumnPreviewWidth { .. }
         | ExplorerAction::SetColumnScroll { .. }
         | ExplorerAction::SetColumnHorizontalOffset { .. }

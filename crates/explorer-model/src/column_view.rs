@@ -23,7 +23,9 @@ pub const COLUMN_PREVIEW_WIDTH_DEFAULT: u16 = 280;
 pub const COLUMN_PREVIEW_WIDTH_MIN: u16 = 180;
 pub const COLUMN_PREVIEW_WIDTH_MAX: u16 = 640;
 pub const COLUMN_LOAD_CONCURRENCY: usize = 2;
-pub const COLUMN_ROW_HEIGHT: f32 = 24.0;
+/// Two 16px filename lines plus 4px of breathing room. Scroll, virtualization,
+/// keyboard reveal, and hit testing all use this fixed height.
+pub const COLUMN_ROW_HEIGHT: f32 = 36.0;
 const MAX_PERSISTED_COLUMN_WIDTHS: usize = 32;
 
 pub const fn normalized_column_width(value: u16) -> u16 {
@@ -75,22 +77,13 @@ pub fn columns_location_eligible(location: &LocationDescriptor, media: DriveKind
     let LocationDescriptor::FileSystem(path) = location else {
         return false;
     };
-    if is_wsl_unc_path(path) || network_unc_parts(path).is_some() || is_archive_location(path) {
+    if is_wsl_unc_path(path) || network_unc_parts(path).is_some() {
         return false;
     }
     if !is_drive_letter_directory(path) {
         return false;
     }
     matches!(media, DriveKind::Fixed | DriveKind::Removable)
-}
-
-fn is_archive_location(path: &Path) -> bool {
-    path.extension().is_some_and(|extension| {
-        matches!(
-            extension.to_string_lossy().to_ascii_lowercase().as_str(),
-            "zip" | "rar" | "7z" | "tar" | "gz" | "tgz"
-        )
-    })
 }
 
 fn is_drive_letter_directory(path: &Path) -> bool {
@@ -539,7 +532,7 @@ impl ColumnBranch {
     /// Literal path cycles and already-known file identities are decided here. A shell file id
     /// whose ancestors are not all known must not extend the branch on the UI thread.
     pub fn needs_filesystem_cycle_resolution(&self, column: usize, entry: &FileEntry) -> bool {
-        if !entry.is_container || column >= self.levels.len() {
+        if !entry.is_container || entry.metadata.archive_member || column >= self.levels.len() {
             return false;
         }
         let key = entry
@@ -1599,7 +1592,7 @@ mod tests {
             &path_location(r"\\wsl$\Ubuntu\home"),
             DriveKind::Fixed
         ));
-        assert!(!columns_location_eligible(
+        assert!(columns_location_eligible(
             &path_location(r"C:\archives\bundle.zip"),
             DriveKind::Fixed
         ));
@@ -2266,11 +2259,11 @@ mod tests {
         );
         assert_eq!(
             ColumnBranch::clamp_vertical_offset(4_000.0, 2, row, 48.0),
-            0.0
+            (2.0 * row - 48.0).max(0.0)
         );
         assert_eq!(
             ColumnBranch::clamp_vertical_offset(10_000.0, 3, row, 8.0),
-            64.0
+            (3.0 * row - 8.0).max(0.0)
         );
         assert_eq!(
             ColumnBranch::clamp_vertical_offset(-8.0, 10, row, 48.0),
@@ -2295,11 +2288,20 @@ mod tests {
         );
         assert_eq!(
             ColumnBranch::reveal_row_offset(19, 20, row, 48.0, 0.0),
-            432.0
+            (20.0 * row - 48.0).max(0.0)
         );
-        assert_eq!(ColumnBranch::reveal_row_offset(1, 20, row, 48.0, 0.0), 0.0);
-        assert_eq!(ColumnBranch::reveal_row_offset(2, 20, row, 48.0, 0.0), 24.0);
-        assert_eq!(ColumnBranch::reveal_row_offset(2, 3, row, 8.0, 0.0), 64.0);
+        assert_eq!(
+            ColumnBranch::reveal_row_offset(1, 20, row, 48.0, 0.0),
+            (2.0 * row - 48.0).max(0.0)
+        );
+        assert_eq!(
+            ColumnBranch::reveal_row_offset(2, 20, row, 48.0, 0.0),
+            (3.0 * row - 48.0).max(0.0)
+        );
+        assert_eq!(
+            ColumnBranch::reveal_row_offset(2, 3, row, 8.0, 0.0),
+            (3.0 * row - 8.0).max(0.0)
+        );
         assert_eq!(ColumnBranch::reveal_row_offset(0, 3, row, 8.0, 64.0), 0.0);
         assert_eq!(ColumnBranch::reveal_row_offset(0, 0, row, 48.0, 80.0), 0.0);
 
