@@ -1,19 +1,16 @@
-# Grok task 12 repair: stale cycle replies and opt-in fixture
+# Current column-view handoff — Codex implementation complete
 
-Resume your completed task. Codex reviewed the source and found two concrete contract defects. Scope only these repairs, keep C05/C15/C16 and all other user edits. Primary owns final acceptance. HEAD is now c984e91f0f4a8f1d9a94b534d9eb69ad36cd7dd2 on master: external commits at 22:31 saved the preexisting tree. Codex verified all 12 preserved baseline source snapshots exactly match this HEAD. You did not commit. Do not revert those commits.
+The user explicitly requested that Codex implement this work itself instead of Grok. Do not resume or delegate this column truncation/width-drag work to Grok.
 
-## Finding R1 (C14): pending identity request outlives user intent
+Outcome: native GPUI filenames stay within two16px lines in fixed36px rows, with actual ellipsis on overflow. Each file pane's right-edge splitter uses a persistent tab/column/branch-scoped drag session and global capture across rerenders. Widths180–480, outside release, stale context, window deactivation and Esc terminate correctly.
 
-apply_column_cycle_resolution checks request/tab/generation/revision but not effective mode, cancellation, active column or current selection intent. pending_column_cycle is cleared only on replacement resolve and close. Ctrl/Shift selection and keyboard cursor/focus changes need not bump branch revision. Example: click a folder (ResolveColumnCycle), Ctrl-click it to deselect or Shift-select something else, then deliver the old Distinct result: current code still navigates. Switch to Details before the reply: same generation/revision still permits the old navigation. Switching away and back can also reactivate old pending intent. A cancellation terminal is represented as ColumnCycleOutcome::Failed, whose model fallback currently navigates literally.
+Codex removed Grok's custom text renderer, repaired incomplete callback/test code, added actual GPUI shaping and mouse-event regression, independently reviewed changes, and rebuilt the debug app. Related tests: model25 + UI41 + idle OLE capture1 =67 PASS. Workspace check, scoped fmt, diff check and app build PASS.
 
-Add a small explicit cancel/clear routine. Invoke it on actual selection intent changes (including modifier click, background clear, Ctrl+Space, cursor/focus-level changes), mode changes, tab switch/new tab/close/window close and ordinary navigation/refresh as appropriate. Cancel the RequestContext token immediately and enqueue the existing Cancel command for flush; clear staged stale navigation too. The consumer must independently reject cancellation, non-Columns mode and changed selection/active-column intent, not rely only on a later render. Drain/clear invalid pending state without losing valid same-intent replies. A cancellation Failed outcome must never navigate; keep Availability failure's current literal-navigation fallback. No filesystem IO on UI thread.
+Full review, exact evidence, version metadata and delivery limits:
+D:/SuperExplorer/docs/COLUMN_VIEW_TRUNCATION_RESIZE_FIX_2026-09-29.md
 
-Add targeted tests with production activate_column_item, then actual public state mutation, then late event. Cover Ctrl deselect, Shift selection, Ctrl+Space/keyboard row or level change, background deselect, Details, A to B to A, close, generation navigation/refresh, cancellation terminal, duplicate reply. Assert no Navigate is staged, no descendant/history/address change from late event; unchanged valid request still navigates/cycles correctly. Name tests with column_view. Avoid broad architecture changes or generic preview changes.
+Build: D:/SuperExplorer/target/debug/SuperExplorer.exe
+Baseline and final branch: master / ce466cf5b998071d5cce1554d4e6913c730d3b6f.
+Preserved existing user bookmark changes in chrome.rs and previously accepted36px model/UI layout work. No commit/push/install/branch changes performed by this task.
 
-## Finding R2: new real fixture test breaks default Shell unit tests
-
-column_enumeration_column_view_cycle_fixture_identity_event_consumer currently panics whenever SUPEREXPLORER_COLUMN_CYCLE_FIXTURE is absent. A normal cargo test -p explorer-shell-win --lib must not require a particular developer's target directory. Make this an explicitly opt-in/ignored integration fixture test with a clear reason; retain hard failure if explicitly executed without the required env or malformed junctions. Do not turn absent fixture into a silent PASS. Run the opted-in test with --ignored (or --include-ignored) and the env set, recording that it actually executed. Ordinary column_enumeration tests must still run without the env.
-
-Read only relevant sections of state.rs, column_view.rs and sta.rs plus affected keyboard dispatch methods. Do not reread unrelated modules or whole large files. Preserve all changes. No headful scripts, deletion/move/junction creation, credentials, external services, installation, commit, push, rebase, reset, clean, restore, branch switch or vendor redesign. You are not alone; do not overwrite other work. Privileged operations must be returned to Codex with exact targets/action, rationale and reversible alternative.
-
-Validation: cargo fmt --all -- --check; cargo check --workspace; cargo test -p explorer-model -p explorer-ui --lib column_view -- --test-threads=8; ordinary cargo test -p explorer-shell-win --lib column_enumeration -- --test-threads=1 with env removed; explicit real fixture test with env D:/SuperExplorer/target/column-logic-cycle-fixture-20260928-487f24cb and --ignored --nocapture; git diff --check. Report exact counts, commands and remaining risks. No unrun PASS claims.
+Historical Grok job run-mum33akr-c1dq2b was cancelled by Codex after24m22s; incomplete result was not accepted. No terminal usage metrics available. Earlier unrelated global feature gates remain tracked in their original documents.
