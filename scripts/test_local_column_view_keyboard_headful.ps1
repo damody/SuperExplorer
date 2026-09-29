@@ -2,12 +2,12 @@
     [Parameter(Mandatory = $true)]
     [string] $OutputDirectory,
     [string] $Executable = "",
-    [ValidateSet("all", "view-menu-keyboard", "arrow-address", "shift-ctrl-selection", "accessible-names", "focus-return")]
+    [ValidateSet("all", "view-menu-keyboard", "arrow-address", "shift-ctrl-selection", "accessible-names", "focus-return", "cycle-back", "junction-normal", "disabled-menu-new", "disabled-menu-saved")]
     [string] $Case = "all",
     [switch] $Worker
 )
 
-# Keyboard and UIA acceptance for the local Columns view.
+# Keyboard, menu eligibility, real junction and UIA acceptance for Columns.
 # Files are created only under this invocation's -OutputDirectory.
 # Each subcase runs in its own process. The parent kills that process when
 # its wall clock expires, because a UIA tree walk can block. This script does
@@ -20,7 +20,11 @@ $CaseOrder = @(
     "arrow-address",
     "shift-ctrl-selection",
     "accessible-names",
-    "focus-return"
+    "focus-return",
+    "cycle-back",
+    "junction-normal",
+    "disabled-menu-new",
+    "disabled-menu-saved"
 )
 $CaseWallClockSeconds = @{
     "view-menu-keyboard" = 110
@@ -28,6 +32,10 @@ $CaseWallClockSeconds = @{
     "shift-ctrl-selection" = 110
     "accessible-names" = 110
     "focus-return" = 110
+    "cycle-back" = 110
+    "junction-normal" = 110
+    "disabled-menu-new" = 110
+    "disabled-menu-saved" = 110
 }
 
 function Assert-RunnerDirectory([string] $Path, [string] $Label) {
@@ -201,13 +209,19 @@ Add-Type -AssemblyName UIAutomationClient
 Add-Type -AssemblyName UIAutomationTypes
 Add-Type -AssemblyName System.Drawing
 Add-Type -AssemblyName System.Windows.Forms
+Import-Module (Join-Path $PSScriptRoot "UitestHeadful.psm1") -Force
+Initialize-UitestHeadful
 if (-not ("ColumnKeyboardSmoke.Native" -as [type])) {
     Add-Type -TypeDefinition @"
 using System;
 using System.Runtime.InteropServices;
 namespace ColumnKeyboardSmoke {
     public static class Native {
+        [StructLayout(LayoutKind.Sequential)] public struct POINT { public int X, Y; }
         [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr hwnd);
+        [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
+        [DllImport("user32.dll")] public static extern IntPtr WindowFromPoint(POINT point);
+        [DllImport("user32.dll")] public static extern IntPtr GetAncestor(IntPtr hwnd, uint flags);
         [DllImport("user32.dll")] public static extern bool SetWindowPos(IntPtr hwnd, IntPtr insertAfter, int x, int y, int cx, int cy, uint flags);
         [DllImport("user32.dll")] public static extern bool SetCursorPos(int x, int y);
         [DllImport("user32.dll")] public static extern void mouse_event(uint flags, uint dx, uint dy, uint data, UIntPtr extra);
@@ -454,21 +468,41 @@ function Wait-ColumnRows([string] $Title, [string[]] $Required, [int] $TimeoutMs
     return @()
 }
 
-function Click-Element([Windows.Automation.AutomationElement] $Element) {
-    try {
-        $pattern = $Element.GetCurrentPattern([Windows.Automation.InvokePattern]::Pattern)
-        $pattern.Invoke()
-        return "invoke"
-    } catch {
-        $bounds = $Element.Current.BoundingRectangle
-        if ($bounds.Width -lt 2 -or $bounds.Height -lt 2) { throw "element has no clickable bounds" }
-        $x = [int]($bounds.Left + ($bounds.Width / 2))
-        $y = [int]($bounds.Top + ($bounds.Height / 2))
-        [void][ColumnKeyboardSmoke.Native]::SetCursorPos($x, $y)
-        [ColumnKeyboardSmoke.Native]::mouse_event(0x0002, 0, 0, 0, [UIntPtr]::Zero)
-        [ColumnKeyboardSmoke.Native]::mouse_event(0x0004, 0, 0, 0, [UIntPtr]::Zero)
-        return "pointer"
+function Click-Element([Windows.Automation.AutomationElement] $Element, [switch] $Pointer) {
+    if (-not $Pointer) {
+        try {
+            $pattern = $Element.GetCurrentPattern([Windows.Automation.InvokePattern]::Pattern)
+            $pattern.Invoke()
+            return "invoke"
+        } catch { }
     }
+    $bounds = $Element.Current.BoundingRectangle
+    if ($bounds.Width -lt 2 -or $bounds.Height -lt 2) { throw "element has no clickable bounds" }
+    $x = [int]($bounds.Left + ($bounds.Width / 2))
+    $y = [int]($bounds.Top + ($bounds.Height / 2))
+    if ([ColumnKeyboardSmoke.Native]::GetForegroundWindow() -ne $script:App.MainWindowHandle) {
+        [ColumnKeyboardSmoke.Native]::keybd_event(0x12, 0, 0, [UIntPtr]::Zero)
+        [ColumnKeyboardSmoke.Native]::keybd_event(0x12, 0, 2, [UIntPtr]::Zero)
+        [void][ColumnKeyboardSmoke.Native]::SetForegroundWindow($script:App.MainWindowHandle)
+        Start-Sleep -Milliseconds 150
+    }
+    if ([ColumnKeyboardSmoke.Native]::GetForegroundWindow() -ne $script:App.MainWindowHandle) {
+        throw "runner-owned app is not foreground before pointer input"
+    }
+    $hitPoint = [ColumnKeyboardSmoke.Native+POINT]::new()
+    $hitPoint.X = $x
+    $hitPoint.Y = $y
+    $hitWindow = [ColumnKeyboardSmoke.Native]::WindowFromPoint($hitPoint)
+    if ([ColumnKeyboardSmoke.Native]::GetAncestor($hitWindow, 2) -ne $script:App.MainWindowHandle) {
+        throw "runner-owned target is covered before pointer input at ${x},${y}"
+    }
+    [void][RustExplorerUitest.Native]::SetCursorPosDpiAware($x, $y)
+    Start-Sleep -Milliseconds 80
+    [ColumnKeyboardSmoke.Native]::mouse_event(0x0002, 0, 0, 0, [UIntPtr]::Zero)
+    Start-Sleep -Milliseconds 80
+    [ColumnKeyboardSmoke.Native]::mouse_event(0x0004, 0, 0, 0, [UIntPtr]::Zero)
+    Start-Sleep -Milliseconds 120
+    return "pointer"
 }
 
 function New-KeyboardFixture {
@@ -540,12 +574,21 @@ function Open-ColumnsByKeyboard([System.Collections.Generic.List[string]] $Evide
     if ($null -eq $view) { throw "view menu button was not found" }
     [void]$Evidence.Add("view button: $($view.Current.Name) enabled=$($view.Current.IsEnabled)")
     if (-not $view.Current.IsEnabled) { throw "view menu button is disabled" }
-    $opened = Click-Element $view
-    [void][ColumnKeyboardSmoke.Native]::SetCursorPos(1, 1)
-    [void]$Evidence.Add("view open: $opened")
     $columnsName = [string]::new(@([char]0x5206, [char]0x6B04))
-    $columns = Wait-ByName $columnsName 4000
-    if ($null -eq $columns) { $columns = Wait-ByName "Columns" 1500 }
+    $columns = $null
+    foreach ($openAttempt in 1..3) {
+        $opened = Click-Element $view -Pointer
+        [void][RustExplorerUitest.Native]::SetCursorPosDpiAware(1, 1)
+        [void]$Evidence.Add("view open attempt ${openAttempt}: $opened")
+        $columns = Wait-ByName $columnsName 3000
+        if ($null -eq $columns) { $columns = Wait-ByName "Columns" 500 }
+        if ($null -ne $columns) { break }
+        # Retry only the missing menu, before sending activation keys or changing mode.
+        Send-Key 0x1B
+        $view = Wait-ByName "檢視" 1000
+        if ($null -eq $view) { $view = Wait-ByName "View" 1000 }
+        if ($null -eq $view) { throw "View button disappeared during bounded menu retry" }
+    }
     if ($null -eq $columns) { throw "columns menu item was not found" }
     [void]$Evidence.Add("columns item: $($columns.Current.Name) enabled=$($columns.Current.IsEnabled) role=$($columns.Current.ControlType.ProgrammaticName)")
     if (-not $columns.Current.IsEnabled) { throw "columns menu item is disabled" }
@@ -571,7 +614,7 @@ function Measure-CheckedState([System.Collections.Generic.List[string]] $Evidenc
         return "SKIP"
     }
     [void](Click-Element $view)
-    [void][ColumnKeyboardSmoke.Native]::SetCursorPos(1, 1)
+    [void][RustExplorerUitest.Native]::SetCursorPosDpiAware(1, 1)
     $columns = Wait-ByName ([string]::new(@([char]0x5206, [char]0x6B04))) 3000
     if ($null -eq $columns) { $columns = Wait-ByName "Columns" 1000 }
     if ($null -eq $columns) {
@@ -919,8 +962,141 @@ function Invoke-FocusCase {
     }
 }
 
+function Invoke-LogicCase {
+    $evidence = New-Object System.Collections.Generic.List[string]
+    try {
+        New-KeyboardFixture
+        $outside = Join-Path $OutputDirectory "outside"
+        New-Item -ItemType Directory -Path $outside -Force | Out-Null
+        Set-Content -LiteralPath (Join-Path $outside "outside.txt") -Value "safe" -Encoding utf8
+        $link = if ($Case -eq "cycle-back") { "back" } else { "elsewhere" }
+        $linkPath = Join-Path $script:Nest $link
+        if (Test-Path -LiteralPath $linkPath) { throw "fixture link already exists; use a fresh output directory" }
+        $destination = if ($Case -eq "cycle-back") { $script:Fixture } else { $outside }
+        New-Item -ItemType Junction -Path $linkPath -Target $destination | Out-Null
+        [void]$evidence.Add("junction=$linkPath target=$destination")
+        [void]$evidence.Add("initial address=$(Start-ColumnApp)")
+        [void](Open-ColumnsByKeyboard $evidence)
+        [void](Select-FixtureLeaf "nest")
+        Send-Key 0x27
+        if ($null -eq (Wait-AddressEnding "\fixture\nest" 8000)) { throw "Right did not enter nest" }
+        if (@(Wait-ColumnRows "nest" @("leaf.txt", $link) 8000).Count -eq 0) { throw "nest did not expose real junction" }
+        $nestList = $script:ColumnListCache["nest"]
+        $linkElement = @(Get-ListItems $nestList | Where-Object { (Split-RowLeaf ([string]$_.Current.Name)) -eq $link }) | Select-Object -First 1
+        if ($null -eq $linkElement) { throw "real junction ListItem absent" }
+        [void](Click-Element $linkElement)
+        if ($Case -eq "cycle-back") {
+            $cycleLabel = "此資料夾連結回先前的欄位"
+            $cycleNode = Wait-ByName $cycleLabel 8000
+            if ($null -eq $cycleNode) { $cycleNode = Wait-ByName "This folder links back to an earlier column" 1500 }
+            if ($null -eq $cycleNode) { throw "production click did not show Cycle status; address=$(Get-AddressText)" }
+            for ($check = 0; $check -lt 4; $check++) {
+                $address = Get-AddressText
+                if (-not $address.TrimEnd("\").EndsWith("\fixture\nest", [StringComparison]::OrdinalIgnoreCase)) {
+                    throw "cycle click changed validated address: $address"
+                }
+                Start-Sleep -Milliseconds 200
+            }
+            [void]$evidence.Add("cycle status=$($cycleNode.Current.Name); address=$address")
+            if (@(Get-ColumnRows "fixture" | Where-Object { $_.Leaf -eq "nest" }).Count -ne 1) { throw "usable parent column lost nest" }
+            [void]$evidence.Add("parent column still exposes nest")
+        } else {
+            $address = Wait-AddressEnding "\nest\elsewhere" 8000
+            if ($null -eq $address) { $address = Wait-AddressEnding "\outside" 1000 }
+            if ($null -eq $address) { throw "ordinary junction did not navigate: $(Get-AddressText)" }
+            if (@(Wait-ColumnRows "elsewhere" @("outside.txt") 5000).Count -eq 0 -and
+                @(Wait-ColumnRows "outside" @("outside.txt") 1500).Count -eq 0) { throw "junction child content absent" }
+            [void]$evidence.Add("normal junction navigated=$address; outside.txt visible")
+        }
+        Save-Shot
+        return @(New-Step $Case "PASS" $evidence.ToArray())
+    } catch {
+        [void]$evidence.Add($_.Exception.Message)
+        Save-Shot
+        return @(New-Step $Case "FAIL" $evidence.ToArray())
+    } finally {
+        Stop-App
+    }
+}
+
+function Invoke-MenuAvailabilityCase {
+    $evidence = New-Object System.Collections.Generic.List[string]
+    try {
+        New-KeyboardFixture
+        [void]$evidence.Add("initial address=$(Start-ColumnApp)")
+        $saved = $Case -eq "disabled-menu-saved"
+        if ($saved) { [void](Open-ColumnsByKeyboard $evidence) }
+        $homeNavElement = Wait-ByName "常用" 2000
+        if ($null -eq $homeNavElement) { $homeNavElement = Wait-ByName "Home" 1000 }
+        if ($null -eq $homeNavElement) { throw "Home navigation item absent" }
+        [void](Click-Element $homeNavElement -Pointer)
+        $homeDeadline = [DateTime]::UtcNow.AddSeconds(8)
+        do {
+            $address = Get-AddressText
+            if ($address -and ($address -match 'Home|常用|首頁|super-explorer:home')) { break }
+            Start-Sleep -Milliseconds 100
+        } while ([DateTime]::UtcNow -lt $homeDeadline)
+        if (-not $address -or $address -notmatch 'Home|常用|首頁|super-explorer:home') { throw "Home navigation failed: $address" }
+        [void]$evidence.Add("unsupported address=$address savedColumns=$saved")
+        $view = Wait-ByName "檢視" 2000
+        if ($null -eq $view) { $view = Wait-ByName "View" 1000 }
+        if ($null -eq $view) { throw "View button absent" }
+        [void](Click-Element $view -Pointer)
+        [void][RustExplorerUitest.Native]::SetCursorPosDpiAware(1,1)
+        Start-Sleep -Milliseconds 200
+        $buttons = (Get-Root).FindAll([Windows.Automation.TreeScope]::Descendants,
+            (New-Object Windows.Automation.PropertyCondition(
+                [Windows.Automation.AutomationElement]::ControlTypeProperty,
+                [Windows.Automation.ControlType]::Button)))
+        $columns = @($buttons | Where-Object { ([string]$_.Current.Name -replace '[\u2066-\u2069]', '') -match '^(分欄|Columns)' }) | Select-Object -First 1
+        if ($null -eq $columns) { throw "unsupported Columns menu item absent" }
+        [void]$evidence.Add("Columns label=$($columns.Current.Name) UIA-enabled=$($columns.Current.IsEnabled)")
+        $script:Shot = Join-Path $OutputDirectory "disabled-menu.png"
+        Save-Shot
+        [void](Click-Element $columns)
+        Start-Sleep -Milliseconds 250
+        Send-Key 0x1B
+        [void](Click-Element $view -Pointer)
+        [void][RustExplorerUitest.Native]::SetCursorPosDpiAware(1,1)
+        Send-Key 0x24
+        foreach ($unused in 1..8) { Send-Key 0x28 }
+        Send-Key 0x0D
+        Send-Key 0x1B
+        $surface = Find-Control "分欄檢視" ([Windows.Automation.ControlType]::Pane)
+        if ($null -eq $surface) { $surface = Find-Control "Column view" ([Windows.Automation.ControlType]::Pane) }
+        if ($null -ne $surface) { throw "unsupported location exposed Columns" }
+        $back = Wait-ByName "上一頁" 2000
+        if ($null -eq $back) { $back = Wait-ByName "Back" 1000 }
+        if ($null -eq $back) { throw "Back navigation button absent" }
+        [void](Click-Element $back -Pointer)
+        if ($null -eq (Wait-AddressEnding "\fixture" 8000)) { throw "return to fixture failed" }
+        if ($saved) {
+            $surface = Wait-Control "分欄檢視" ([Windows.Automation.ControlType]::Pane) 8000
+            if ($null -eq $surface) { $surface = Wait-Control "Column view" ([Windows.Automation.ControlType]::Pane) 1000 }
+            if ($null -eq $surface) { throw "saved Columns preference did not restore" }
+        } else {
+            Start-Sleep -Milliseconds 800
+            $surface = Find-Control "分欄檢視" ([Windows.Automation.ControlType]::Pane)
+            if ($null -eq $surface) { $surface = Find-Control "Column view" ([Windows.Automation.ControlType]::Pane) }
+            if ($null -ne $surface) { throw "disabled action saved new Columns preference" }
+        }
+        [void]$evidence.Add("mouse/keyboard did not alter preference; returned Columns=$saved")
+        $script:Shot = Join-Path $OutputDirectory "return-local.png"
+        Save-Shot
+        return @(New-Step $Case "PASS" $evidence.ToArray())
+    } catch {
+        [void]$evidence.Add($_.Exception.Message)
+        Save-Shot
+        return @(New-Step $Case "FAIL" $evidence.ToArray())
+    } finally { Stop-App }
+}
+
 $produced = @()
 switch ($Case) {
+    "cycle-back" { $produced = @(Invoke-LogicCase) }
+    "junction-normal" { $produced = @(Invoke-LogicCase) }
+    "disabled-menu-new" { $produced = @(Invoke-MenuAvailabilityCase) }
+    "disabled-menu-saved" { $produced = @(Invoke-MenuAvailabilityCase) }
     "view-menu-keyboard" { $produced = @(Invoke-ViewMenuCase) }
     "arrow-address" { $produced = @(Invoke-ArrowCase) }
     "shift-ctrl-selection" { $produced = @(Invoke-SelectionCase) }

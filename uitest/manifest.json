@@ -157,7 +157,7 @@
     },
     {
       "id": "local-column-view-keyboard-headful",
-      "description": "以鍵盤開啟分欄，並檢查方向鍵與地址、欄內 Shift/Ctrl 選取、輔助名稱角色狀態，以及切換層級後焦點回到作用中欄。檢視選單的勾選狀態只有在 UIA 讀得到時才斷言。",
+      "description": "九個獨立夾具驗證鍵盤開啟分欄、方向鍵與地址、Shift/Ctrl 選取、輔助名稱角色、焦點返回、真實 junction 回指阻擋及正常導航，以及不可用位置的選單阻擋與偏好恢復。檢視選單的勾選狀態只有在 UIA 讀得到時才斷言。",
       "suites": ["full"],
       "program": "powershell.exe",
       "arguments": ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "{workspace_root}\\scripts\\test_local_column_view_keyboard_headful.ps1", "-OutputDirectory", "{evidence_dir}"],

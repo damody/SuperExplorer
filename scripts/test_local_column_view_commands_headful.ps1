@@ -422,6 +422,7 @@ function Find-NamedElement([Windows.Automation.AutomationElement] $Root, [string
 function Save-WindowShot([IntPtr] $Hwnd, [string] $Name) {
     try {
         if ($Hwnd -eq [IntPtr]::Zero) { return }
+        if ([RustExplorerUitest.Native]::GetForegroundWindow() -ne $Hwnd) { return }
         $rect = [ColumnCommandAcceptance.Native+RECT]::new()
         if (-not [ColumnCommandAcceptance.Native]::GetWindowRect($Hwnd, [ref]$rect)) { return }
         $width = [Math]::Max(1, $rect.Right - $rect.Left)
@@ -434,6 +435,45 @@ function Save-WindowShot([IntPtr] $Hwnd, [string] $Name) {
         $shot.Dispose()
     } catch {
     }
+}
+
+function Invoke-OwnedColumnClick {
+    param([Parameter(Mandatory)][Windows.Automation.AutomationElement]$Element, [switch]$Right)
+    if ([RustExplorerUitest.Native]::GetForegroundWindow() -ne $script:Hwnd) {
+        [RustExplorerUitest.Native]::keybd_event(0x12, 0, 0, [UIntPtr]::Zero)
+        [RustExplorerUitest.Native]::keybd_event(0x12, 0, 2, [UIntPtr]::Zero)
+        [void][RustExplorerUitest.Native]::SetForegroundWindow($script:Hwnd)
+        Start-Sleep -Milliseconds 150
+    }
+    if ([RustExplorerUitest.Native]::GetForegroundWindow() -ne $script:Hwnd) {
+        throw "runner-owned app is not foreground before pointer input"
+    }
+    $point = Get-UitestPhysicalPoint -Element $Element -HorizontalOffset 100
+    $hitPoint = [ColumnCommandAcceptance.Native+POINT]::new()
+    $hitPoint.X = $point.X
+    $hitPoint.Y = $point.Y
+    $hit = [ColumnCommandAcceptance.Native]::WindowFromPoint($hitPoint)
+    if ([ColumnCommandAcceptance.Native]::GetAncestor($hit, 2) -ne $script:Hwnd) {
+        throw "runner-owned target is covered before pointer input"
+    }
+    if (-not [RustExplorerUitest.Native]::SetCursorPosDpiAware($point.X, $point.Y)) {
+        throw "DPI-aware cursor positioning failed"
+    }
+    Start-Sleep -Milliseconds 80
+    $down = if ($Right) { 0x0008 } else { 0x0002 }
+    $up = if ($Right) { 0x0010 } else { 0x0004 }
+    [RustExplorerUitest.Native]::mouse_event($down, 0, 0, 0, [UIntPtr]::Zero)
+    Start-Sleep -Milliseconds 80
+    [RustExplorerUitest.Native]::mouse_event($up, 0, 0, 0, [UIntPtr]::Zero)
+    Start-Sleep -Milliseconds 220
+}
+
+function Send-OwnedColumnKey {
+    param([Parameter(Mandatory)][byte]$Key, [byte[]]$Modifiers = @())
+    if ([RustExplorerUitest.Native]::GetForegroundWindow() -ne $script:Hwnd) {
+        throw "runner-owned app lost foreground before keyboard input"
+    }
+    Send-UitestKey -Key $Key -Modifiers $Modifiers
 }
 
 function Start-ColumnsSession {
@@ -471,7 +511,7 @@ function Start-ColumnsSession {
         if ($null -ne $view) { break }
     }
     if ($null -eq $view) { throw "View control missing" }
-    Invoke-UitestClick -Element $view
+    Invoke-OwnedColumnClick -Element $view
     $root = [Windows.Automation.AutomationElement]::FromHandle($script:Hwnd)
     $columns = $null
     $menuDeadline = [DateTime]::UtcNow.AddSeconds(6)
@@ -487,7 +527,7 @@ function Start-ColumnsSession {
         Save-WindowShot $script:Hwnd "columns-menu-missing.png"
         throw "Columns menu item missing"
     }
-    Invoke-UitestClick -Element $columns
+    Invoke-OwnedColumnClick -Element $columns
     $root = [Windows.Automation.AutomationElement]::FromHandle($script:Hwnd)
     $surface = $null
     $surfaceDeadline = [DateTime]::UtcNow.AddSeconds(6)
@@ -502,7 +542,7 @@ function Start-ColumnsSession {
     if ($null -eq $surface) { throw "Columns surface missing" }
     $openedRow = Wait-ColumnRow $root "opened" 6000
     if ($null -eq $openedRow) { throw "opened folder row missing in Columns" }
-    Invoke-UitestClick -Element $openedRow
+    Invoke-OwnedColumnClick -Element $openedRow
     $root = [Windows.Automation.AutomationElement]::FromHandle($script:Hwnd)
     $decoy = Wait-ColumnRow $root "decoy-selected.txt" 8000
     $ancestor = Wait-ColumnRow $root "ancestor-file.txt" 2000
@@ -564,9 +604,9 @@ function Invoke-AncestorDelete {
     if ($null -eq $deleteRow) { throw "delete-me.txt was not visible in the ancestor column" }
     $deleteName = $deleteRow.Current.Name
     $deleteLeft = $deleteRow.Current.BoundingRectangle.Left
-    Invoke-UitestClick -Element $deleteRow
+    Invoke-OwnedColumnClick -Element $deleteRow
     [void][RustExplorerUitest.Native]::SetForegroundWindow($script:Hwnd)
-    Send-UitestKey -Key 0x2E
+    Send-OwnedColumnKey -Key 0x2E
     $dialogReason = $null
     $gone = $false
     $rowGone = $false
@@ -620,18 +660,18 @@ function Invoke-PasteIntoSelectedFolder {
         throw "paste-me.txt is not in the ancestor column beside paste-dest"
     }
     $sourceName = $source.Current.Name
-    Invoke-UitestClick -Element $source
+    Invoke-OwnedColumnClick -Element $source
     [void][RustExplorerUitest.Native]::SetForegroundWindow($script:Hwnd)
-    Send-UitestKey -Key 0x43 -Modifiers @(0x11)
+    Send-OwnedColumnKey -Key 0x43 -Modifiers @(0x11)
     Start-Sleep -Milliseconds 400
     # Selecting the source may horizontally reveal another column, so acquire
     # the destination row again before navigating. The outer watchdog bounds UIA.
     $root = [Windows.Automation.AutomationElement]::FromHandle($script:Hwnd)
     $folder = Wait-ColumnRow $root "paste-dest" 4000
     if ($null -eq $folder) { throw "paste-dest disappeared after copying source" }
-    Invoke-UitestClick -Element $folder
+    Invoke-OwnedColumnClick -Element $folder
     Start-Sleep -Milliseconds 1200
-    Send-UitestKey -Key 0x56 -Modifiers @(0x11)
+    Send-OwnedColumnKey -Key 0x56 -Modifiers @(0x11)
     $copied = Join-Path $pasteDest "paste-me.txt"
     $dialogReason = $null
     $landed = $false
@@ -731,7 +771,7 @@ function Invoke-DragBetweenFolders {
     $root = [Windows.Automation.AutomationElement]::FromHandle($script:Hwnd)
     $dragSrcRow = Wait-ColumnRow $root "drag-src" 4000
     if ($null -eq $dragSrcRow) { throw "drag-src folder row missing" }
-    Invoke-UitestClick -Element $dragSrcRow
+    Invoke-OwnedColumnClick -Element $dragSrcRow
     $root = [Windows.Automation.AutomationElement]::FromHandle($script:Hwnd)
     $dragFile = Wait-ColumnRow $root "drag-me.txt" 8000
     $dragDstRow = Wait-ColumnRow $root "drag-dst" 4000
@@ -795,8 +835,8 @@ function Invoke-AncestorContextMenu {
     $clickedName = $ancestor.Current.Name
     # Left-click the child first so a wrong menu target would be that file.
     # This UIA interaction finishes before the native menu opens.
-    Invoke-UitestClick -Element $decoy
-    Invoke-UitestClick -Element $ancestor -Right
+    Invoke-OwnedColumnClick -Element $decoy
+    Invoke-OwnedColumnClick -Element $ancestor -Right
     $popup = [IntPtr]::Zero
     $popupDeadline = [DateTime]::UtcNow.AddSeconds(8)
     do {
