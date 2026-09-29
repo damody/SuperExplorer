@@ -249,7 +249,8 @@ impl ExplorerWindowState {
             | ExplorerEvent::LockOwnersDiscovered { .. }
             | ExplorerEvent::LockOwnersClosed { .. }
             | ExplorerEvent::ColumnDirectoryBatch { .. }
-            | ExplorerEvent::ColumnDirectoryFinished { .. } => WindowEventOutcome::IgnoredUnrelated,
+            | ExplorerEvent::ColumnDirectoryFinished { .. }
+            | ExplorerEvent::ColumnCycleResolved { .. } => WindowEventOutcome::IgnoredUnrelated,
         }
     }
 

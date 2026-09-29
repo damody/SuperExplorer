@@ -1262,6 +1262,7 @@ fn required_terminal_lane(command: &ExplorerCommand) -> Option<RequiredTerminalL
         | ExplorerCommand::ResolveAncestry { .. }
         | ExplorerCommand::EnumerateChildContainers { .. }
         | ExplorerCommand::EnumerateColumn { .. }
+        | ExplorerCommand::ResolveColumnCycle { .. }
         | ExplorerCommand::StartSearch { .. }
         | ExplorerCommand::LoadShellIcon { .. }
         | ExplorerCommand::LoadThumbnail { .. }
@@ -1465,6 +1466,22 @@ fn process_command(
             location,
             *branch_revision,
             background_terminals,
+            typed_terminals,
+        ),
+        ExplorerCommand::ResolveColumnCycle {
+            location,
+            ancestors,
+            branch_revision,
+            column,
+            item,
+            ..
+        } => process_column_cycle(
+            &context,
+            location,
+            ancestors,
+            *branch_revision,
+            *column,
+            item,
             typed_terminals,
         ),
         ExplorerCommand::OpenItem {
@@ -1722,6 +1739,7 @@ fn process_command(
             | ExplorerCommand::ResolveAncestry { .. }
             | ExplorerCommand::EnumerateChildContainers { .. }
             | ExplorerCommand::EnumerateColumn { .. }
+            | ExplorerCommand::ResolveColumnCycle { .. }
             | ExplorerCommand::Cancel { .. }
             | ExplorerCommand::ShowContextMenu { .. }
             | ExplorerCommand::StartSearch { .. }
@@ -1820,6 +1838,20 @@ fn command_terminal_failure(
                 outcome,
             }
         }
+        ExplorerCommand::ResolveColumnCycle {
+            location,
+            branch_revision,
+            column,
+            item,
+            ..
+        } => ExplorerEvent::ColumnCycleResolved {
+            context,
+            branch_revision: *branch_revision,
+            column: *column,
+            item: item.clone(),
+            location: location.clone(),
+            outcome: explorer_model::ColumnCycleOutcome::Failed(error),
+        },
         ExplorerCommand::EnumerateChildContainers {
             segment_id,
             menu_generation,
@@ -2842,6 +2874,112 @@ fn publish_column_terminal(
     ));
 }
 
+fn process_column_cycle(
+    context: &explorer_model::RequestContext,
+    location: &LocationDescriptor,
+    ancestors: &[LocationDescriptor],
+    branch_revision: u64,
+    column: usize,
+    item: &explorer_model::ShellItemId,
+    terminals: &ReliableTerminalPublisher,
+) -> Result<(), ExplorerError> {
+    if context.cancellation.is_cancelled() {
+        return Err(cancelled_error());
+    }
+    let outcome = column_cycle_outcome(context, location, ancestors)?;
+    terminals.publish(ExplorerEvent::ColumnCycleResolved {
+        context: context.clone(),
+        branch_revision,
+        column,
+        item: item.clone(),
+        location: location.clone(),
+        outcome,
+    });
+    Ok(())
+}
+
+fn column_cycle_outcome(
+    context: &explorer_model::RequestContext,
+    location: &LocationDescriptor,
+    ancestors: &[LocationDescriptor],
+) -> Result<explorer_model::ColumnCycleOutcome, ExplorerError> {
+    let media = location
+        .path()
+        .map(crate::navigation::drive_kind_for_path)
+        .unwrap_or(explorer_model::DriveKind::Unknown);
+    if let Some(error) = explorer_model::column_listing_rejected(location, media) {
+        return Ok(explorer_model::ColumnCycleOutcome::Unsupported(error));
+    }
+    let Some(path) = location.path() else {
+        return Ok(explorer_model::ColumnCycleOutcome::Unsupported(
+            explorer_model::column_listing_rejected(location, media).unwrap_or_else(|| {
+                ExplorerError::new(
+                    ExplorerErrorKind::Input,
+                    "resolve column cycle",
+                    false,
+                    "分欄檢視只支援本機磁碟資料夾。",
+                    "column cycle resolution requires a filesystem path",
+                )
+            }),
+        ));
+    };
+    let child = match column_filesystem_identity(path) {
+        Ok(identity) => identity,
+        Err(error) => return Ok(explorer_model::ColumnCycleOutcome::Failed(error)),
+    };
+    let mut identities = Vec::with_capacity(ancestors.len().saturating_add(1));
+    for ancestor in ancestors {
+        if context.cancellation.is_cancelled() {
+            return Err(cancelled_error());
+        }
+        let ancestor_media = ancestor
+            .path()
+            .map(crate::navigation::drive_kind_for_path)
+            .unwrap_or(explorer_model::DriveKind::Unknown);
+        if let Some(error) = explorer_model::column_listing_rejected(ancestor, ancestor_media) {
+            return Ok(explorer_model::ColumnCycleOutcome::Unsupported(error));
+        }
+        let Some(ancestor_path) = ancestor.path() else {
+            return Ok(explorer_model::ColumnCycleOutcome::Failed(
+                ExplorerError::new(
+                    ExplorerErrorKind::Input,
+                    "resolve column cycle",
+                    false,
+                    "無法確認這個資料夾是否指回上層。",
+                    "column ancestor has no filesystem path",
+                ),
+            ));
+        };
+        let identity = match column_filesystem_identity(ancestor_path) {
+            Ok(identity) => identity,
+            Err(error) => return Ok(explorer_model::ColumnCycleOutcome::Failed(error)),
+        };
+        if identity == child {
+            return Ok(explorer_model::ColumnCycleOutcome::Cycle {
+                matched: ancestor.clone(),
+            });
+        }
+        identities.push((ancestor.clone(), identity));
+    }
+    identities.push((location.clone(), child));
+    Ok(explorer_model::ColumnCycleOutcome::Distinct { identities })
+}
+
+fn column_filesystem_identity(
+    path: &std::path::Path,
+) -> Result<explorer_model::ColumnFilesystemIdentity, ExplorerError> {
+    let bytes = crate::navigation::filesystem_identity(path, true)?;
+    explorer_model::ColumnFilesystemIdentity::from_bytes(&bytes).ok_or_else(|| {
+        ExplorerError::new(
+            ExplorerErrorKind::Availability,
+            "read item identity",
+            true,
+            "無法確認這個資料夾是否指回上層。",
+            "filesystem identity was not a resolved file id",
+        )
+    })
+}
+
 fn process_column_enumeration(
     context: &explorer_model::RequestContext,
     location: &LocationDescriptor,
@@ -3071,13 +3209,14 @@ mod tests {
         ExplorerError as TestExplorerError, ExplorerErrorKind as TestExplorerErrorKind,
     };
     use explorer_model::{
-        BreadcrumbSegmentId, BreadcrumbTerminal, ClipboardMode, ClipboardState,
-        ColumnListingTerminal, ConflictDecision, DataTransferRequest, ExplorerCommand,
-        ExplorerEvent, ExplorerService, ExplorerWindowState, FileEntry, FileOperationFlags,
-        FileOperationKind, FileOperationRequest, Generation, HistoryEntry, ItemDescriptor,
-        JournalPreimage, JournalValidation, LocationDescriptor, OperationJournal,
-        OperationTerminal, PreviewHostCommand, RequestContext, ShellItemId, ShellNewItemRecipe,
-        TabId, ViewAnchor,
+        BreadcrumbSegmentId, BreadcrumbTerminal, ClipboardMode, ClipboardState, ColumnBranch,
+        ColumnCycleOutcome, ColumnFault, ColumnFilesystemIdentity, ColumnListingTerminal,
+        ColumnPhase, ConflictDecision, DataTransferRequest, ExplorerCommand, ExplorerEvent,
+        ExplorerService, ExplorerWindowState, FileEntry, FileOperationFlags, FileOperationKind,
+        FileOperationRequest, Generation, HistoryEntry, ItemDescriptor, JournalPreimage,
+        JournalValidation, LocationDescriptor, OperationJournal, OperationTerminal,
+        PreviewHostCommand, RequestContext, ShellItemId, ShellNewItemRecipe, TabId, ViewAnchor,
+        column_resolved_key, filesystem_column_chain,
     };
     use explorer_test_support::{OwnedTempFixture, validate_breadcrumb_contract};
     use std::{
@@ -5632,6 +5771,209 @@ $ok=[Windows.Forms.Clipboard]::ContainsFileDropList() -and [Windows.Forms.Clipbo
         assert_eq!(batches, 0);
         assert_eq!(terminals.len(), 1);
         assert!(matches!(terminals[0], ColumnListingTerminal::Cancelled));
+    }
+
+    /// Opt-in junction fixture. A normal `cargo test -p explorer-shell-win --lib` run ignores
+    /// this test. `--ignored` without `SUPEREXPLORER_COLUMN_CYCLE_FIXTURE`, or with a directory
+    /// that is not the real `a/b/back` and `a/b/elsewhere` junctions, fails instead of passing.
+    #[test]
+    #[ignore = "opt-in column cycle fixture; set SUPEREXPLORER_COLUMN_CYCLE_FIXTURE to the runner-owned junction directory"]
+    fn column_enumeration_column_view_cycle_fixture_identity_event_consumer() {
+        let root = std::env::var("SUPEREXPLORER_COLUMN_CYCLE_FIXTURE").unwrap_or_else(|_| {
+            panic!(
+                "SUPEREXPLORER_COLUMN_CYCLE_FIXTURE must be set when this ignored fixture test is run explicitly; refusing to pass without the real junctions"
+            )
+        });
+        let root = PathBuf::from(root);
+        let ancestor_a = root.join("a");
+        let parent = ancestor_a.join("b");
+        let back = parent.join("back");
+        let elsewhere = parent.join("elsewhere");
+        let ordinary = parent.clone();
+        assert!(back.is_dir(), "missing junction {}", back.display());
+        assert!(
+            elsewhere.is_dir(),
+            "missing junction {}",
+            elsewhere.display()
+        );
+        assert!(
+            ordinary.is_dir(),
+            "missing ordinary folder {}",
+            ordinary.display()
+        );
+        assert_ne!(
+            column_resolved_key(&back),
+            column_resolved_key(&ancestor_a),
+            "the literal path key must not be treated as proof of the cycle"
+        );
+
+        let _test_guard = TEST_LOCK.lock().expect("lock STA tests");
+        let sta = ShellStaHandle::start().expect("start real STA");
+        let back_ancestors = filesystem_column_chain(&parent);
+        let elsewhere_ancestors = back_ancestors.clone();
+        let ordinary_ancestors = filesystem_column_chain(&ancestor_a);
+        let back_event = submit_column_cycle(&sta, &back, &back_ancestors);
+        let elsewhere_event = submit_column_cycle(&sta, &elsewhere, &elsewhere_ancestors);
+        let ordinary_event = submit_column_cycle(&sta, &ordinary, &ordinary_ancestors);
+        sta.shutdown_and_join(Duration::from_secs(2))
+            .expect("stop cycle identity STA");
+
+        let back_outcome = cycle_outcome(&back_event);
+        let elsewhere_outcome = cycle_outcome(&elsewhere_event);
+        let ordinary_outcome = cycle_outcome(&ordinary_event);
+        assert!(
+            matches!(back_outcome, ColumnCycleOutcome::Cycle { matched } if matched.path() == Some(ancestor_a.as_path())),
+            "back junction must cycle to a, got {back_outcome:?}"
+        );
+        assert!(
+            matches!(elsewhere_outcome, ColumnCycleOutcome::Distinct { .. }),
+            "noncyclic junction must stay distinct, got {elsewhere_outcome:?}"
+        );
+        assert!(
+            matches!(ordinary_outcome, ColumnCycleOutcome::Distinct { .. }),
+            "ordinary folder must stay distinct, got {ordinary_outcome:?}"
+        );
+
+        let mut back_branch =
+            ColumnBranch::from_location(LocationDescriptor::file_system(&parent), 240);
+        let back_column = back_branch.levels().len() - 1;
+        let before = back_branch.levels().len();
+        let back_entry = cycle_entry(&back, back_outcome);
+        let back_effect =
+            back_branch.consume_cycle_resolution(back_column, &back_entry, back_outcome, 240);
+        assert!(back_effect.navigate_to.is_none());
+        assert!(!back_effect.record_history);
+        assert_eq!(back_branch.levels().len(), before);
+        assert!(matches!(
+            back_branch.levels()[back_column].phase,
+            ColumnPhase::Error(ColumnFault::Cycle)
+        ));
+        assert!(back_branch.levels().iter().any(|level| {
+            level.location.path() == Some(ancestor_a.as_path())
+                && !matches!(level.phase, ColumnPhase::Error(ColumnFault::Cycle))
+        }));
+
+        let mut elsewhere_branch =
+            ColumnBranch::from_location(LocationDescriptor::file_system(&parent), 240);
+        let elsewhere_column = elsewhere_branch.levels().len() - 1;
+        let elsewhere_entry = cycle_entry(&elsewhere, elsewhere_outcome);
+        let elsewhere_effect = elsewhere_branch.consume_cycle_resolution(
+            elsewhere_column,
+            &elsewhere_entry,
+            elsewhere_outcome,
+            240,
+        );
+        assert_eq!(
+            elsewhere_effect
+                .navigate_to
+                .as_ref()
+                .and_then(|location| location.path().map(|path| path.to_path_buf())),
+            Some(elsewhere.clone())
+        );
+        assert!(elsewhere_branch.levels().len() > elsewhere_column + 1);
+        assert!(
+            elsewhere_branch
+                .levels()
+                .iter()
+                .all(|level| !matches!(level.phase, ColumnPhase::Error(ColumnFault::Cycle)))
+        );
+
+        let mut ordinary_branch =
+            ColumnBranch::from_location(LocationDescriptor::file_system(&ancestor_a), 240);
+        let ordinary_column = ordinary_branch.levels().len() - 1;
+        let ordinary_entry = cycle_entry(&ordinary, ordinary_outcome);
+        let ordinary_effect = ordinary_branch.consume_cycle_resolution(
+            ordinary_column,
+            &ordinary_entry,
+            ordinary_outcome,
+            240,
+        );
+        assert_eq!(
+            ordinary_effect
+                .navigate_to
+                .as_ref()
+                .and_then(|location| location.path().map(|path| path.to_path_buf())),
+            Some(ordinary.clone())
+        );
+        assert!(
+            ordinary_branch
+                .levels()
+                .last()
+                .is_some_and(|level| level.location.path() == Some(ordinary.as_path()))
+        );
+        let _ = ColumnFilesystemIdentity::from_shell_item(&ordinary_entry.id);
+    }
+
+    fn submit_column_cycle(
+        sta: &ShellStaHandle,
+        location: &std::path::Path,
+        ancestors: &[PathBuf],
+    ) -> ExplorerEvent {
+        let context = RequestContext::new(TabId::new(), Generation::new(1));
+        let item = ShellItemId::from_provider_bytes(b"column-cycle-request".to_vec()).expect("id");
+        sta.submit(ExplorerCommand::ResolveColumnCycle {
+            context: context.clone(),
+            location: LocationDescriptor::file_system(location),
+            ancestors: ancestors
+                .iter()
+                .map(LocationDescriptor::file_system)
+                .collect(),
+            branch_revision: 3,
+            column: ancestors.len().saturating_sub(1),
+            item,
+        })
+        .expect("submit column cycle resolve");
+        let deadline = Instant::now() + Duration::from_secs(8);
+        while Instant::now() < deadline {
+            match sta.try_recv_event().expect("receive column cycle event") {
+                Some(event @ ExplorerEvent::ColumnCycleResolved { .. })
+                    if event.context().is_some_and(|event_context| {
+                        event_context.request_id == context.request_id
+                    }) =>
+                {
+                    return event;
+                }
+                Some(_) => {}
+                None => thread::sleep(Duration::from_millis(2)),
+            }
+        }
+        panic!(
+            "timed out waiting for column cycle identity {}",
+            location.display()
+        );
+    }
+
+    fn cycle_outcome(event: &ExplorerEvent) -> &ColumnCycleOutcome {
+        match event {
+            ExplorerEvent::ColumnCycleResolved { outcome, .. } => outcome,
+            other => panic!("expected column cycle event, got {other:?}"),
+        }
+    }
+
+    fn cycle_entry(location: &std::path::Path, outcome: &ColumnCycleOutcome) -> FileEntry {
+        let identity = match outcome {
+            ColumnCycleOutcome::Distinct { identities } => identities
+                .iter()
+                .find(|(resolved, _)| resolved.path() == Some(location))
+                .map(|(_, identity)| identity.as_bytes().to_vec()),
+            ColumnCycleOutcome::Cycle { .. }
+            | ColumnCycleOutcome::Unsupported(_)
+            | ColumnCycleOutcome::Failed(_) => None,
+        };
+        let id = identity
+            .and_then(ShellItemId::from_provider_bytes)
+            .or_else(|| ShellItemId::from_provider_bytes(b"column-cycle-row".to_vec()))
+            .expect("cycle row id");
+        FileEntry {
+            id,
+            display_name: location
+                .file_name()
+                .map(|name| name.to_string_lossy().into_owned())
+                .unwrap_or_else(|| "folder".to_owned()),
+            location: LocationDescriptor::file_system(location),
+            is_container: true,
+            metadata: explorer_model::FileEntryMetadata::default(),
+        }
     }
 
     #[test]

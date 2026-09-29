@@ -328,6 +328,52 @@ impl explorer_model::ExplorerService for ImmediateNavigationService {
                 });
                 Ok(())
             }
+            ExplorerCommand::ResolveColumnCycle {
+                context,
+                location,
+                branch_revision,
+                column,
+                item,
+                ..
+            } => {
+                let outcome = if context.cancellation.is_cancelled() {
+                    explorer_model::ColumnCycleOutcome::Failed(explorer_common::ExplorerError::new(
+                        explorer_common::ExplorerErrorKind::Cancellation,
+                        "resolve column cycle",
+                        true,
+                        "已取消資料夾載入。",
+                        "deterministic cancellation",
+                    ))
+                } else if explorer_model::column_listing_rejected(
+                    &location,
+                    explorer_model::DriveKind::Fixed,
+                )
+                .is_some()
+                {
+                    explorer_model::ColumnCycleOutcome::Unsupported(
+                        explorer_common::ExplorerError::new(
+                            explorer_common::ExplorerErrorKind::Input,
+                            "enumerate column",
+                            false,
+                            "分欄檢視只支援本機磁碟資料夾。",
+                            "deterministic column rejection",
+                        ),
+                    )
+                } else {
+                    explorer_model::ColumnCycleOutcome::Distinct {
+                        identities: Vec::new(),
+                    }
+                };
+                events.push_back(ExplorerEvent::ColumnCycleResolved {
+                    context,
+                    branch_revision,
+                    column,
+                    item,
+                    location,
+                    outcome,
+                });
+                Ok(())
+            }
             ExplorerCommand::EnumerateChildContainers {
                 context,
                 segment_id,
@@ -781,6 +827,21 @@ impl DeterministicShellService {
                     branch_revision,
                     location,
                     outcome: explorer_model::ColumnListingTerminal::Failed(error),
+                },
+                ExplorerCommand::ResolveColumnCycle {
+                    context,
+                    location,
+                    branch_revision,
+                    column,
+                    item,
+                    ..
+                } => ExplorerEvent::ColumnCycleResolved {
+                    context,
+                    branch_revision,
+                    column,
+                    item,
+                    location,
+                    outcome: explorer_model::ColumnCycleOutcome::Failed(error),
                 },
                 ExplorerCommand::EnumerateChildContainers {
                     segment_id,

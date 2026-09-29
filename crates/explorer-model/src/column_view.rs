@@ -131,6 +131,47 @@ pub fn column_resolved_key(path: &Path) -> String {
     text.to_ascii_lowercase()
 }
 
+/// Volume and file identity produced by `filesystem_identity` on the shell thread.
+///
+/// The leading `F` distinguishes a resolved file id from a path fallback. Comparing these
+/// values detects a junction that points at an ancestor even when the literal paths differ.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ColumnFilesystemIdentity(Vec<u8>);
+
+impl ColumnFilesystemIdentity {
+    pub fn from_bytes(bytes: &[u8]) -> Option<Self> {
+        if bytes.first() == Some(&b'F') && bytes.len() >= 25 {
+            Some(Self(bytes.to_vec()))
+        } else {
+            None
+        }
+    }
+
+    pub fn from_shell_item(id: &ShellItemId) -> Option<Self> {
+        Self::from_bytes(id.provider_bytes())
+    }
+
+    pub fn as_bytes(&self) -> &[u8] {
+        &self.0
+    }
+}
+
+/// Result of resolving one clicked folder against its column ancestors off the UI thread.
+#[derive(Clone, Debug)]
+pub enum ColumnCycleOutcome {
+    /// The clicked folder is the same file as `matched`.
+    Cycle { matched: LocationDescriptor },
+    /// Identities for the compared locations, including the clicked folder when it resolved.
+    Distinct {
+        identities: Vec<(LocationDescriptor, ColumnFilesystemIdentity)>,
+    },
+    /// The location is not a local column target. Do not open it.
+    Unsupported(ExplorerError),
+    /// Identity could not be read. Availability still opens the literal folder.
+    /// Cancellation must not.
+    Failed(ExplorerError),
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ColumnPhase {
     Pending,
@@ -152,6 +193,8 @@ pub struct ColumnLevel {
     pub location: LocationDescriptor,
     pub resolved_key: String,
     pub branch_child: Option<ShellItemId>,
+    /// Resolved file identity of this directory, when the shell has already produced one.
+    pub filesystem_id: Option<ColumnFilesystemIdentity>,
     pub phase: ColumnPhase,
     pub vertical_offset: f32,
     pub request_id: Option<RequestId>,
@@ -364,6 +407,9 @@ impl ColumnBranch {
                     open_file: false,
                 };
             }
+            if self.filesystem_identity_cycles(column, entry) {
+                return self.mark_cycle(column, &entry.id);
+            }
             let key = resolved_key
                 .map(str::to_owned)
                 .or_else(|| entry.location.path().map(column_resolved_key))
@@ -375,17 +421,7 @@ impl ColumnBranch {
                     .take(column + 1)
                     .any(|level| level.resolved_key == key)
             {
-                self.levels[column].phase = ColumnPhase::Error(ColumnFault::Cycle);
-                self.truncate_after(column);
-                self.set_single_selection(column, entry.id.clone());
-                self.bump();
-                return ColumnSelectEffect {
-                    navigate_to: None,
-                    record_history: false,
-                    pending_file: None,
-                    clear_preview: true,
-                    open_file: false,
-                };
+                return self.mark_cycle(column, &entry.id);
             }
             self.truncate_after(column);
             self.levels[column].branch_child = Some(entry.id.clone());
@@ -394,8 +430,9 @@ impl ColumnBranch {
                 .get(column)
                 .map(|level| level.width)
                 .unwrap_or(default_width);
-            self.levels
-                .push(self.level(entry.location.clone(), key, width, ColumnPhase::Pending));
+            let mut child = self.level(entry.location.clone(), key, width, ColumnPhase::Pending);
+            child.filesystem_id = ColumnFilesystemIdentity::from_shell_item(&entry.id);
+            self.levels.push(child);
             self.active = self.levels.len() - 1;
             self.selected.clear();
             self.anchor = None;
@@ -495,6 +532,62 @@ impl ColumnBranch {
 
     pub fn select_only(&mut self, column: usize, item_id: ShellItemId) {
         self.set_single_selection(column, item_id);
+    }
+
+    /// True when a container click must wait for a shell identity event.
+    ///
+    /// Literal path cycles and already-known file identities are decided here. A shell file id
+    /// whose ancestors are not all known must not extend the branch on the UI thread.
+    pub fn needs_filesystem_cycle_resolution(&self, column: usize, entry: &FileEntry) -> bool {
+        if !entry.is_container || column >= self.levels.len() {
+            return false;
+        }
+        let key = entry
+            .location
+            .path()
+            .map(column_resolved_key)
+            .unwrap_or_default();
+        if !key.is_empty()
+            && self
+                .levels
+                .iter()
+                .take(column + 1)
+                .any(|level| level.resolved_key == key)
+        {
+            return false;
+        }
+        if ColumnFilesystemIdentity::from_shell_item(&entry.id).is_none() {
+            return false;
+        }
+        if self.filesystem_identity_cycles(column, entry) {
+            return false;
+        }
+        self.levels
+            .iter()
+            .take(column + 1)
+            .any(|level| level.filesystem_id.is_none())
+    }
+
+    /// Applies one shell identity result. A cycle never extends the branch.
+    pub fn consume_cycle_resolution(
+        &mut self,
+        column: usize,
+        entry: &FileEntry,
+        outcome: &ColumnCycleOutcome,
+        default_width: u16,
+    ) -> ColumnSelectEffect {
+        match outcome {
+            ColumnCycleOutcome::Cycle { .. } => self.mark_cycle(column, &entry.id),
+            ColumnCycleOutcome::Unsupported(_) => self.inert_effect(),
+            ColumnCycleOutcome::Distinct { identities } => {
+                self.note_filesystem_identities(identities);
+                self.select_child(column, entry, None, default_width)
+            }
+            ColumnCycleOutcome::Failed(error) if error.kind == ExplorerErrorKind::Cancellation => {
+                self.inert_effect()
+            }
+            ColumnCycleOutcome::Failed(_) => self.select_child(column, entry, None, default_width),
+        }
     }
 
     /// Moves keyboard focus to a column without truncating descendants or clearing selection.
@@ -857,6 +950,50 @@ impl ColumnBranch {
         )
     }
 
+    fn filesystem_identity_cycles(&self, column: usize, entry: &FileEntry) -> bool {
+        let Some(identity) = ColumnFilesystemIdentity::from_shell_item(&entry.id) else {
+            return false;
+        };
+        self.levels
+            .iter()
+            .take(column + 1)
+            .any(|level| level.filesystem_id.as_ref() == Some(&identity))
+    }
+
+    fn note_filesystem_identities(
+        &mut self,
+        identities: &[(LocationDescriptor, ColumnFilesystemIdentity)],
+    ) {
+        for (location, identity) in identities {
+            if let Some(level) = self
+                .levels
+                .iter_mut()
+                .find(|level| &level.location == location)
+            {
+                level.filesystem_id = Some(identity.clone());
+            }
+        }
+    }
+
+    fn mark_cycle(&mut self, column: usize, item_id: &ShellItemId) -> ColumnSelectEffect {
+        if column >= self.levels.len() {
+            return self.inert_effect();
+        }
+        self.levels[column].phase = ColumnPhase::Error(ColumnFault::Cycle);
+        self.truncate_after(column);
+        self.set_single_selection(column, item_id.clone());
+        self.pending_file = None;
+        self.pending_navigation = None;
+        self.bump();
+        ColumnSelectEffect {
+            navigate_to: None,
+            record_history: false,
+            pending_file: None,
+            clear_preview: true,
+            open_file: false,
+        }
+    }
+
     fn truncate_after(&mut self, column: usize) {
         if column + 1 < self.levels.len() {
             self.levels.truncate(column + 1);
@@ -894,6 +1031,7 @@ impl ColumnBranch {
             location,
             resolved_key,
             branch_child: None,
+            filesystem_id: None,
             phase,
             vertical_offset: 0.0,
             request_id: None,
@@ -925,6 +1063,7 @@ pub struct ColumnLoadRequest {
 struct ColumnInFlight {
     tab_id: TabId,
     revision: u64,
+    generation: Generation,
     request_id: RequestId,
     /// The branch no longer wants this result. The slot stays until its one terminal.
     superseded: bool,
@@ -953,7 +1092,7 @@ impl ColumnLoadCoordinator {
         cached: impl Fn(&LocationDescriptor) -> Option<DirectorySnapshot>,
     ) -> (Vec<RequestId>, Vec<ColumnLoadRequest>) {
         let revision = branch.revision();
-        let cancel = self.supersede_stale(tab_id, revision);
+        let cancel = self.supersede_stale(tab_id, revision, generation);
         for request_id in &cancel {
             branch.abandon_load(*request_id);
         }
@@ -1004,6 +1143,7 @@ impl ColumnLoadCoordinator {
             self.in_flight.push(ColumnInFlight {
                 tab_id,
                 revision,
+                generation,
                 request_id: context.request_id,
                 superseded: false,
             });
@@ -1017,12 +1157,33 @@ impl ColumnLoadCoordinator {
         (cancel, requests)
     }
 
-    /// Mark listings for another tab or branch revision as cancelled without freeing their slots.
-    pub fn supersede_stale(&mut self, tab_id: TabId, revision: u64) -> Vec<RequestId> {
+    /// Mark this tab's outdated revision or generation listings without freeing their slots.
+    ///
+    /// Another tab's running ancestor listing stays active. A batch never releases a slot, and
+    /// exactly one terminal does, including a terminal for a listing this method superseded.
+    pub fn supersede_stale(
+        &mut self,
+        tab_id: TabId,
+        revision: u64,
+        generation: Generation,
+    ) -> Vec<RequestId> {
         let mut cancel = Vec::new();
         for flight in &mut self.in_flight {
-            let stale = flight.tab_id != tab_id || flight.revision != revision;
+            let stale = flight.tab_id == tab_id
+                && (flight.revision != revision || flight.generation != generation);
             if stale && !flight.superseded {
+                flight.superseded = true;
+                cancel.push(flight.request_id);
+            }
+        }
+        cancel
+    }
+
+    /// Cancel one tab's auxiliary listings and leave every other tab alone.
+    pub fn supersede_tab(&mut self, tab_id: TabId) -> Vec<RequestId> {
+        let mut cancel = Vec::new();
+        for flight in &mut self.in_flight {
+            if flight.tab_id == tab_id && !flight.superseded {
                 flight.superseded = true;
                 cancel.push(flight.request_id);
             }
@@ -1593,6 +1754,44 @@ mod tests {
     }
 
     #[test]
+    fn column_view_cancellation_failure_does_not_open_the_literal_folder() {
+        let mut branch = ColumnBranch::from_location(path_location(r"C:\a"), 240);
+        let before = branch.levels().len();
+        let folder = entry(3, r"C:\a\child", true);
+        let column = branch.levels().len() - 1;
+        let cancelled = branch.consume_cycle_resolution(
+            column,
+            &folder,
+            &ColumnCycleOutcome::Failed(ExplorerError::new(
+                ExplorerErrorKind::Cancellation,
+                "resolve column cycle",
+                true,
+                "已取消資料夾載入。",
+                "cancelled",
+            )),
+            240,
+        );
+        assert!(cancelled.navigate_to.is_none());
+        assert_eq!(branch.levels().len(), before);
+        let unavailable = branch.consume_cycle_resolution(
+            column,
+            &folder,
+            &ColumnCycleOutcome::Failed(ExplorerError::new(
+                ExplorerErrorKind::Availability,
+                "read item identity",
+                true,
+                "無法確認這個資料夾是否指回上層。",
+                "unavailable",
+            )),
+            240,
+        );
+        assert_eq!(
+            unavailable.navigate_to.as_ref(),
+            Some(&path_location(r"C:\a\child"))
+        );
+    }
+
+    #[test]
     fn refresh_drops_invalid_descendants_and_keeps_a_navigable_ancestor() {
         let mut branch = ColumnBranch::from_location(path_location(r"C:\a\b\c"), 240);
         let ancestor = 1;
@@ -1707,18 +1906,142 @@ mod tests {
         assert!(coordinator.complete(stale.context.request_id));
         let other = TabId::new();
         let mut other_branch = ColumnBranch::from_location(path_location(r"C:\a\b\c\d\e\f"), 240);
-        let (cancel, _) = coordinator.plan(other, generation, &mut other_branch, 0..1, |_| None);
-        assert!(cancel.contains(&first[1].context.request_id));
-        assert_eq!(coordinator.active_count(), COLUMN_LOAD_CONCURRENCY);
-        branch.abandon_load(first[1].context.request_id);
-        assert!(!branch.apply_batch(
+        let (cancel, other_requests) =
+            coordinator.plan(other, generation, &mut other_branch, 0..1, |_| None);
+        assert!(
+            !cancel.contains(&first[1].context.request_id),
+            "planning another tab must not cancel this tab's ancestor listing"
+        );
+        assert_eq!(other_requests.len(), 1);
+        assert!(coordinator.active_count() <= COLUMN_LOAD_CONCURRENCY);
+        assert!(branch.apply_batch(
             first[1].branch_revision,
             first[1].context.request_id,
             &first[1].location,
-            vec![entry(41, r"C:\a\b\c\late.txt", false)]
+            vec![entry(41, r"C:\a\b\c\kept.txt", false)]
         ));
         assert!(coordinator.complete(first[1].context.request_id));
-        assert_eq!(coordinator.active_count(), 1);
+        assert!(!coordinator.complete(first[1].context.request_id));
+        assert_eq!(coordinator.active_count(), other_requests.len());
+    }
+
+    #[test]
+    fn column_view_load_isolation_keeps_other_tabs_until_one_terminal() {
+        let tab_a = TabId::new();
+        let tab_b = TabId::new();
+        let mut branch_a = ColumnBranch::from_location(path_location(r"C:\a\b\c\d"), 240);
+        let mut branch_b = ColumnBranch::from_location(path_location(r"C:\a\b\c\d"), 240);
+        let mut coordinator = ColumnLoadCoordinator::new(COLUMN_LOAD_CONCURRENCY);
+        let generation_a = Generation::new(4);
+        let generation_b = Generation::new(7);
+        let (cancel, first) = coordinator.plan(tab_a, generation_a, &mut branch_a, 0..2, |_| None);
+        assert!(cancel.is_empty());
+        assert_eq!(first.len(), COLUMN_LOAD_CONCURRENCY);
+        let kept = first[0].clone();
+        assert!(branch_a.apply_batch(
+            kept.branch_revision,
+            kept.context.request_id,
+            &kept.location,
+            vec![entry(1, r"C:\a\b\one.txt", false)]
+        ));
+        assert_eq!(coordinator.active_count(), COLUMN_LOAD_CONCURRENCY);
+
+        let (switch_cancel, blocked) =
+            coordinator.plan(tab_b, generation_b, &mut branch_b, 0..2, |_| None);
+        assert!(switch_cancel.is_empty());
+        assert!(
+            blocked.is_empty(),
+            "shared cap stays full while A is running"
+        );
+        assert!(branch_a.apply_batch(
+            kept.branch_revision,
+            kept.context.request_id,
+            &kept.location,
+            vec![entry(2, r"C:\a\b\two.txt", false)]
+        ));
+        assert!(branch_a.apply_terminal(
+            kept.branch_revision,
+            kept.context.request_id,
+            &kept.location,
+            &ColumnListingTerminal::Finished
+        ));
+        assert!(coordinator.complete(kept.context.request_id));
+        assert!(!coordinator.complete(kept.context.request_id));
+
+        let (again_cancel, started_b) =
+            coordinator.plan(tab_b, generation_b, &mut branch_b, 0..2, |_| None);
+        assert!(again_cancel.is_empty());
+        assert_eq!(started_b.len(), 1);
+        assert!(coordinator.active_count() <= COLUMN_LOAD_CONCURRENCY);
+        assert!(branch_b.apply_batch(
+            started_b[0].branch_revision,
+            started_b[0].context.request_id,
+            &started_b[0].location,
+            vec![entry(3, r"C:\a\b\from-b.txt", false)]
+        ));
+        assert_eq!(coordinator.active_count(), COLUMN_LOAD_CONCURRENCY);
+
+        let (return_cancel, _) =
+            coordinator.plan(tab_a, generation_a, &mut branch_a, 0..2, |_| None);
+        assert!(
+            !return_cancel.contains(&started_b[0].context.request_id),
+            "returning to A must not cancel B"
+        );
+        assert!(branch_b.apply_terminal(
+            started_b[0].branch_revision,
+            started_b[0].context.request_id,
+            &started_b[0].location,
+            &ColumnListingTerminal::Finished
+        ));
+        assert!(coordinator.complete(started_b[0].context.request_id));
+
+        branch_a.align_to_location(path_location(r"C:\a\z"), 240, None);
+        let (replaced, replacement_requests) =
+            coordinator.plan(tab_a, generation_a, &mut branch_a, 0..1, |_| None);
+        assert!(replaced.contains(&first[1].context.request_id));
+        assert!(!replacement_requests.is_empty());
+        assert!(!branch_a.apply_batch(
+            first[1].branch_revision,
+            first[1].context.request_id,
+            &first[1].location,
+            vec![entry(4, r"C:\a\stale.txt", false)]
+        ));
+        let (generation_cancel, _) =
+            coordinator.plan(tab_a, Generation::new(9), &mut branch_a, 0..1, |_| None);
+        for request in &replacement_requests {
+            assert!(
+                generation_cancel.contains(&request.context.request_id),
+                "a new generation supersedes only this tab's previous listings"
+            );
+        }
+        assert!(!generation_cancel.contains(&first[1].context.request_id));
+        assert!(coordinator.complete(first[1].context.request_id));
+        assert!(!coordinator.complete(first[1].context.request_id));
+        let (_b_cancel, b_requests) =
+            coordinator.plan(tab_b, generation_b, &mut branch_b, 0..1, |_| None);
+        assert_eq!(
+            b_requests.len(),
+            1,
+            "a freed slot lets the other tab continue"
+        );
+        let closed = coordinator.supersede_tab(tab_b);
+        assert_eq!(
+            closed,
+            b_requests
+                .iter()
+                .map(|request| request.context.request_id)
+                .collect::<Vec<_>>()
+        );
+        assert!(
+            closed
+                .iter()
+                .all(|request_id| *request_id != first[1].context.request_id)
+        );
+        for request_id in closed {
+            assert!(coordinator.complete(request_id));
+            assert!(!coordinator.complete(request_id));
+        }
+        assert!(coordinator.active_count() <= COLUMN_LOAD_CONCURRENCY);
     }
 
     #[test]

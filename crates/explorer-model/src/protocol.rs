@@ -647,6 +647,15 @@ pub enum ExplorerCommand {
         location: LocationDescriptor,
         branch_revision: u64,
     },
+    /// Resolves one clicked folder against ancestor file identities off the UI thread.
+    ResolveColumnCycle {
+        context: RequestContext,
+        location: LocationDescriptor,
+        ancestors: Vec<LocationDescriptor>,
+        branch_revision: u64,
+        column: usize,
+        item: ShellItemId,
+    },
     OpenItem {
         context: RequestContext,
         item: ItemDescriptor,
@@ -709,6 +718,7 @@ impl ExplorerCommand {
             | Self::ResolveAncestry { context, .. }
             | Self::EnumerateChildContainers { context, .. }
             | Self::EnumerateColumn { context, .. }
+            | Self::ResolveColumnCycle { context, .. }
             | Self::OpenItem { context, .. }
             | Self::ExecuteFileOperation { context, .. }
             | Self::ShowContextMenu { context, .. }
@@ -1061,6 +1071,15 @@ pub enum ExplorerEvent {
         location: LocationDescriptor,
         outcome: ColumnListingTerminal,
     },
+    /// Exactly one identity result for a column click. It does not mutate history by itself.
+    ColumnCycleResolved {
+        context: RequestContext,
+        branch_revision: u64,
+        column: usize,
+        item: ShellItemId,
+        location: LocationDescriptor,
+        outcome: crate::column_view::ColumnCycleOutcome,
+    },
     DirectoryChanged {
         tab_id: TabId,
         generation: Generation,
@@ -1152,6 +1171,7 @@ impl ExplorerEvent {
             | Self::ChildContainersFinished { context, .. }
             | Self::ColumnDirectoryBatch { context, .. }
             | Self::ColumnDirectoryFinished { context, .. }
+            | Self::ColumnCycleResolved { context, .. }
             | Self::OperationProgress { context, .. }
             | Self::SearchBatch { context, .. }
             | Self::SearchStatus { context, .. }
@@ -1181,6 +1201,7 @@ impl ExplorerEvent {
                     | Self::AncestryFinished { .. }
                     | Self::ChildContainersFinished { .. }
                     | Self::ColumnDirectoryFinished { .. }
+                    | Self::ColumnCycleResolved { .. }
                     | Self::OperationFinished { .. }
                     | Self::ContextMenuFinished { .. }
                     | Self::SearchFinished { .. }
