@@ -986,6 +986,24 @@ struct PendingClickSelection {
 
 /// Left press on a column row. Navigation waits for release so a drag can carry this column's
 /// real items instead of the rightmost tab selection.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct ColumnsMenuPresentation {
+    pub label: String,
+    pub accessible_name: String,
+    pub enabled: bool,
+    pub checked: bool,
+}
+
+#[derive(Clone, Debug)]
+struct PendingColumnCycle {
+    context: RequestContext,
+    branch_revision: u64,
+    column: usize,
+    item_id: ShellItemId,
+    location: LocationDescriptor,
+    display_name: String,
+}
+
 #[derive(Clone, Debug)]
 struct PendingColumnPress {
     column_index: usize,
@@ -1143,6 +1161,10 @@ pub struct AppViewState {
     column_projection_cache: Arc<Mutex<crate::file_view::ColumnProjectionCache>>,
     column_branches: explorer_model::ColumnBranchStore,
     column_loads: explorer_model::ColumnLoadCoordinator,
+    /// Cancel commands for a closed tab or a replaced cycle resolve, flushed by the next plan.
+    pending_column_cancels: Vec<explorer_model::RequestId>,
+    pending_column_cycle: Option<PendingColumnCycle>,
+    pending_column_cycle_navigation: Option<ExplorerCommand>,
     /// Last measured file-surface width, in logical pixels. Column reveal uses this
     /// instead of a fixed viewport.
     column_file_viewport_width: f32,
@@ -1732,6 +1754,9 @@ impl AppViewState {
             column_loads: explorer_model::ColumnLoadCoordinator::new(
                 explorer_model::COLUMN_LOAD_CONCURRENCY,
             ),
+            pending_column_cancels: Vec::new(),
+            pending_column_cycle: None,
+            pending_column_cycle_navigation: None,
             column_file_viewport_width: 0.0,
             column_list_viewport_height: 0.0,
             column_reveal_stamp: None,
@@ -4365,17 +4390,34 @@ impl AppViewState {
     }
 
     pub(crate) fn move_view_menu_focus(&mut self, direction: i8) {
-        self.view_menu_index = move_bounded_menu_index(
+        let index = move_bounded_menu_index(
             self.view_menu_index,
             direction,
             crate::actions::VIEW_MENU_LAST,
         );
+        self.view_menu_index = self.skip_disabled_view_menu_index(index, direction);
+    }
+
+    fn view_menu_item_enabled(&self, index: usize) -> bool {
+        index != crate::actions::VIEW_MENU_COLUMNS || self.columns_menu_enabled()
+    }
+
+    fn skip_disabled_view_menu_index(&self, index: usize, direction: i8) -> usize {
+        if self.view_menu_item_enabled(index) {
+            return index;
+        }
+        match direction {
+            i8::MIN..=-1 => index.saturating_sub(1),
+            1..=i8::MAX => index.saturating_add(1).min(crate::actions::VIEW_MENU_LAST),
+            _ => index,
+        }
     }
 
     pub(crate) fn set_view_menu_focus(&mut self, index: usize) -> bool {
         if !self.view_menu_open
             || index > crate::actions::VIEW_MENU_LAST
             || self.view_menu_index == index
+            || !self.view_menu_item_enabled(index)
         {
             return false;
         }
@@ -4404,6 +4446,10 @@ impl AppViewState {
     }
 
     pub(crate) fn set_view_mode(&mut self, mode: explorer_model::ViewMode) {
+        if mode == explorer_model::ViewMode::Columns && !self.columns_menu_enabled() {
+            return;
+        }
+        self.cancel_pending_column_cycle();
         let _ = self.end_scrollbar_drag(ScrollbarTerminal::ViewSwitch);
         self.end_marquee();
         self.end_details_column_resize();
@@ -4422,6 +4468,7 @@ impl AppViewState {
         if view_id.trim().is_empty() {
             return;
         }
+        self.cancel_pending_column_cycle();
         let _ = self.end_scrollbar_drag(ScrollbarTerminal::ViewSwitch);
         self.end_marquee();
         self.end_details_column_resize();
@@ -4460,6 +4507,7 @@ impl AppViewState {
         if self.tabs.active_tab().view.settings.mode == explorer_model::ViewMode::Columns {
             return;
         }
+        self.cancel_pending_column_cycle();
         let current = self.tabs.active_tab().view.settings.clone();
         let index = LEVELS
             .iter()
@@ -5828,6 +5876,7 @@ impl AppViewState {
         location: LocationDescriptor,
         refresh: bool,
     ) -> Option<ExplorerCommand> {
+        self.cancel_pending_column_cycle();
         let tab_id = self.tabs.active_tab_id();
         let stale_column_target = self.column_branches.get(tab_id).is_some_and(|branch| {
             branch
@@ -5878,6 +5927,7 @@ impl AppViewState {
     }
 
     pub(crate) fn begin_back_navigation(&mut self) -> Option<ExplorerCommand> {
+        self.cancel_pending_column_cycle();
         self.cancel_permanent_delete_confirmation();
         self.cancel_lock_recovery();
         self.clear_external_drag();
@@ -5907,6 +5957,7 @@ impl AppViewState {
     }
 
     pub(crate) fn begin_forward_navigation(&mut self) -> Option<ExplorerCommand> {
+        self.cancel_pending_column_cycle();
         self.cancel_permanent_delete_confirmation();
         self.cancel_lock_recovery();
         self.clear_external_drag();
@@ -5931,6 +5982,7 @@ impl AppViewState {
         direction: NavigationHistoryDirection,
         steps: usize,
     ) -> Option<ExplorerCommand> {
+        self.cancel_pending_column_cycle();
         self.cancel_permanent_delete_confirmation();
         self.cancel_lock_recovery();
         self.clear_external_drag();
@@ -6363,6 +6415,7 @@ impl AppViewState {
             event,
             ExplorerEvent::ColumnDirectoryBatch { .. }
                 | ExplorerEvent::ColumnDirectoryFinished { .. }
+                | ExplorerEvent::ColumnCycleResolved { .. }
         ) {
             return if self.apply_column_event(&event) {
                 WindowEventOutcome::Applied
@@ -7532,6 +7585,7 @@ impl AppViewState {
         self.pending_leave_selection = None;
         self.tabs.active_tab_mut().selection.clear();
         self.clear_column_branch_selection();
+        self.abandon_column_cycle_if_intent_lost();
     }
 
     pub(crate) fn focused_row_index(&self) -> Option<usize> {
@@ -8984,6 +9038,7 @@ impl AppViewState {
     }
 
     pub(crate) fn request_close(&mut self) {
+        self.cancel_pending_column_cycle();
         self.cancel_permanent_delete_confirmation();
         self.cancel_lock_recovery();
         let _ = self.end_scrollbar_drag(ScrollbarTerminal::WindowClose);
@@ -8995,6 +9050,7 @@ impl AppViewState {
     }
 
     pub(crate) fn new_tab(&mut self) -> TabId {
+        self.cancel_pending_column_cycle();
         self.clear_file_view_typeahead();
         self.cancel_permanent_delete_confirmation();
         self.cancel_lock_recovery();
@@ -9038,8 +9094,12 @@ impl AppViewState {
         self.details_filter_menu = None;
         self.tab_focus
             .insert(self.tabs.active_tab_id(), self.focus.current());
+        let leaving = id != self.tabs.active_tab_id();
         if !self.tabs.activate(id) {
             return false;
+        }
+        if leaving {
+            self.cancel_pending_column_cycle();
         }
         let target = self
             .tab_focus
@@ -9066,6 +9126,18 @@ impl AppViewState {
         let was_active = id == self.tabs.active_tab_id();
         self.cancel_breadcrumb_requests(id);
         let outcome = self.tabs.close(id);
+        if self
+            .pending_column_cycle
+            .as_ref()
+            .is_some_and(|pending| pending.context.tab_id == id)
+        {
+            self.cancel_pending_column_cycle();
+        }
+        if outcome == TabCloseOutcome::Closed || outcome == TabCloseOutcome::CloseWindow {
+            let cancel = self.column_loads.supersede_tab(id);
+            self.column_branches.remove(id);
+            self.pending_column_cancels.extend(cancel);
+        }
         if outcome == TabCloseOutcome::Closed {
             self.tab_focus.remove(&id);
             self.navigation_focus.remove(&id);
@@ -9554,6 +9626,36 @@ impl AppViewState {
                     self.drive_kind_for(&entry.location),
                 )
             })
+    }
+
+    /// View-menu Columns row. An unsupported location keeps a saved Columns choice visible
+    /// and disabled; Details stays the checked effective mode.
+    pub(crate) fn columns_menu_presentation(&self) -> ColumnsMenuPresentation {
+        let catalog = self.catalog();
+        let columns_name = catalog.t("menu-columns");
+        let saved = self.view_settings().mode == explorer_model::ViewMode::Columns;
+        if self.columns_menu_enabled() {
+            return ColumnsMenuPresentation {
+                label: columns_name.clone(),
+                accessible_name: columns_name,
+                enabled: true,
+                checked: saved,
+            };
+        }
+        let mut args = explorer_i18n::FluentArgs::new();
+        args.set("name", columns_name);
+        let unavailable = catalog.t_args("chrome-column-unavailable", &args);
+        let accessible_name = if saved {
+            format!("{unavailable} ({})", catalog.t("menu-details"))
+        } else {
+            unavailable.clone()
+        };
+        ColumnsMenuPresentation {
+            label: unavailable,
+            accessible_name,
+            enabled: false,
+            checked: false,
+        }
     }
 
     pub(crate) fn effective_view_mode(&self) -> explorer_model::ViewMode {
@@ -10063,25 +10165,29 @@ impl AppViewState {
     }
 
     fn command_parent_names(&self) -> HashSet<String> {
-        if let Some(parent) = self.column_command_parent() {
+        if self.effective_view_mode() == explorer_model::ViewMode::Columns {
+            let Some(parent) = self.column_command_parent() else {
+                return HashSet::new();
+            };
             let tab_id = self.tabs.active_tab_id();
-            let column = self.column_branches.get(tab_id).and_then(|branch| {
+            let Some(column) = self.column_branches.get(tab_id).and_then(|branch| {
                 branch
                     .levels()
                     .iter()
                     .position(|level| level.location == parent)
-            });
-            if let Some(column) = column
-                && let Some(presentation) = self.column_visible_projection(column)
-            {
-                return (0..presentation.len())
-                    .filter_map(|index| {
-                        presentation
-                            .entry(index)
-                            .map(|(_, entry)| entry.display_name.to_lowercase())
-                    })
-                    .collect();
-            }
+            }) else {
+                return HashSet::new();
+            };
+            return self
+                .column_directory_snapshot(column)
+                .map(|snapshot| {
+                    snapshot
+                        .entries()
+                        .iter()
+                        .map(|entry| entry.display_name.to_lowercase())
+                        .collect()
+                })
+                .unwrap_or_default();
         }
         self.tabs
             .active_tab()
@@ -10214,6 +10320,7 @@ impl AppViewState {
             branch.clear_selection();
         }
         self.mirror_current_column_selection();
+        self.abandon_column_cycle_if_intent_lost();
     }
 
     fn begin_column_context_gesture(
@@ -10570,7 +10677,25 @@ impl AppViewState {
         if handled_modifier {
             self.reveal_column_row(column_index, visual);
             self.mirror_current_column_selection();
+            self.abandon_column_cycle_if_intent_lost();
             return None;
+        }
+        if is_container
+            && self.column_branches.get(tab_id).is_some_and(|branch| {
+                branch.needs_filesystem_cycle_resolution(column_index, &entry)
+            })
+        {
+            if let Some(branch) = self.column_branches.get_mut(tab_id) {
+                branch.select_only(column_index, entry.id.clone());
+            }
+            self.reveal_column_row(column_index, visual);
+            self.mirror_current_column_selection();
+            let revision = self
+                .column_branches
+                .get(tab_id)
+                .map(|branch| branch.revision())
+                .unwrap_or(0);
+            return Some(self.begin_column_cycle_resolution(column_index, &entry, revision));
         }
         let effect = {
             let branch = self.column_branches.get_mut(tab_id)?;
@@ -10594,6 +10719,7 @@ impl AppViewState {
             .and_then(|location| self.begin_active_navigation(location, false));
         self.mirror_current_column_selection();
         self.sync_column_horizontal_reveal();
+        self.abandon_column_cycle_if_intent_lost();
         command
     }
 
@@ -10636,6 +10762,7 @@ impl AppViewState {
                 branch.select_only(column_index, item_id.clone());
             }
             self.mirror_current_column_selection();
+            self.abandon_column_cycle_if_intent_lost();
         }
         let tab = self.tabs.active_tab();
         Some(ExplorerCommand::OpenItem {
@@ -10693,6 +10820,7 @@ impl AppViewState {
             }
             self.mirror_current_column_selection();
             self.sync_column_horizontal_reveal();
+            self.abandon_column_cycle_if_intent_lost();
             return None;
         }
         if horizontal > 0 {
@@ -10706,6 +10834,16 @@ impl AppViewState {
             let focused_entry = focused
                 .as_ref()
                 .and_then(|id| self.column_visible_entry(column, id));
+            if let Some(entry) = focused_entry.as_ref().filter(|entry| entry.is_container) {
+                return self.activate_column_item(
+                    column,
+                    entry.id.clone(),
+                    entry.location.clone(),
+                    true,
+                    false,
+                    false,
+                );
+            }
             let width = self.view_settings().column_width;
             let effect = {
                 let branch = self.column_branches.get_mut(tab_id)?;
@@ -10727,6 +10865,7 @@ impl AppViewState {
             self.reveal_active_column_selection();
             self.mirror_current_column_selection();
             self.sync_column_horizontal_reveal();
+            self.abandon_column_cycle_if_intent_lost();
             return command;
         }
         if vertical != 0 && shift {
@@ -10777,6 +10916,7 @@ impl AppViewState {
             self.reveal_column_row(column, visual);
             self.mirror_current_column_selection();
             self.sync_column_horizontal_reveal();
+            self.abandon_column_cycle_if_intent_lost();
             return None;
         }
         if vertical != 0 && control {
@@ -10813,6 +10953,7 @@ impl AppViewState {
             self.mirror_current_column_selection();
         }
         self.sync_column_horizontal_reveal();
+        self.abandon_column_cycle_if_intent_lost();
         None
     }
 
@@ -10842,6 +10983,7 @@ impl AppViewState {
         let visual = self.column_visual_row(column, &item_id);
         self.reveal_column_row(column, visual);
         self.mirror_current_column_selection();
+        self.abandon_column_cycle_if_intent_lost();
         true
     }
 
@@ -11431,12 +11573,15 @@ impl AppViewState {
     }
 
     pub(crate) fn plan_column_loads(&mut self) -> Vec<ExplorerCommand> {
+        let mut commands = self.take_column_cancel_commands();
         if self.effective_view_mode() != explorer_model::ViewMode::Columns {
-            return self.cancel_auxiliary_column_loads();
+            commands.extend(self.cancel_auxiliary_column_loads());
+            return commands;
         }
         self.ensure_column_branch();
         if self.column_ancestors_should_wait() {
-            return self.supersede_inactive_column_loads();
+            commands.extend(self.supersede_inactive_column_loads());
+            return commands;
         }
         let tab = self.tabs.active_tab();
         let tab_id = tab.id;
@@ -11462,7 +11607,7 @@ impl AppViewState {
         let mut loads = std::mem::take(&mut self.column_loads);
         let Some(branch) = self.column_branches.get_mut(tab_id) else {
             self.column_loads = loads;
-            return Vec::new();
+            return commands;
         };
         let widths = branch
             .levels()
@@ -11476,10 +11621,7 @@ impl AppViewState {
         });
         self.column_loads = loads;
         self.column_branches.abandon_loads(&cancel);
-        let mut commands = cancel
-            .into_iter()
-            .map(|request_id| ExplorerCommand::Cancel { request_id })
-            .collect::<Vec<_>>();
+        commands.extend(Self::column_cancel_commands(cancel));
         commands.extend(
             requests
                 .into_iter()
@@ -11492,14 +11634,20 @@ impl AppViewState {
         commands
     }
 
+    fn take_column_cancel_commands(&mut self) -> Vec<ExplorerCommand> {
+        Self::column_cancel_commands(std::mem::take(&mut self.pending_column_cancels))
+    }
+
     fn cancel_auxiliary_column_loads(&mut self) -> Vec<ExplorerCommand> {
-        let cancel = self.column_loads.supersede_all();
+        let tab_id = self.tabs.active_tab_id();
+        let cancel = self.column_loads.supersede_tab(tab_id);
         self.column_branches.abandon_loads(&cancel);
         Self::column_cancel_commands(cancel)
     }
 
     fn supersede_inactive_column_loads(&mut self) -> Vec<ExplorerCommand> {
         let tab_id = self.tabs.active_tab_id();
+        let generation = self.tabs.active_tab().generation;
         let Some(revision) = self
             .column_branches
             .get(tab_id)
@@ -11507,7 +11655,9 @@ impl AppViewState {
         else {
             return self.cancel_auxiliary_column_loads();
         };
-        let cancel = self.column_loads.supersede_stale(tab_id, revision);
+        let cancel = self
+            .column_loads
+            .supersede_stale(tab_id, revision, generation);
         self.column_branches.abandon_loads(&cancel);
         Self::column_cancel_commands(cancel)
     }
@@ -11557,7 +11707,10 @@ impl AppViewState {
                         )
                     });
                 let released = self.column_loads.complete(context.request_id);
+                // Reconciliation can navigate the active tab. A background tab's terminal
+                // must update only its own listing, never repair another tab's loading branch.
                 if applied
+                    && context.tab_id == self.tabs.active_tab_id()
                     && matches!(
                         outcome,
                         explorer_model::ColumnListingTerminal::Finished
@@ -11568,8 +11721,170 @@ impl AppViewState {
                 }
                 applied || released
             }
+            ExplorerEvent::ColumnCycleResolved {
+                context,
+                branch_revision,
+                column,
+                item,
+                location,
+                outcome,
+            } => self.apply_column_cycle_resolution(
+                context,
+                *branch_revision,
+                *column,
+                item,
+                location,
+                outcome,
+            ),
             _ => false,
         }
+    }
+
+    /// Drops a column identity request the user no longer wants.
+    ///
+    /// The shell token is cancelled immediately and one `Cancel` command is queued for the
+    /// existing flush. A later Distinct or cancellation terminal cannot navigate.
+    fn cancel_pending_column_cycle(&mut self) {
+        self.pending_column_cycle_navigation = None;
+        let Some(pending) = self.pending_column_cycle.take() else {
+            return;
+        };
+        pending.context.cancellation.cancel();
+        if !self
+            .pending_column_cancels
+            .contains(&pending.context.request_id)
+        {
+            self.pending_column_cancels.push(pending.context.request_id);
+        }
+    }
+
+    fn column_cycle_intent_matches(&self, pending: &PendingColumnCycle) -> bool {
+        if self.effective_view_mode() != explorer_model::ViewMode::Columns {
+            return false;
+        }
+        let tab = self.tabs.active_tab();
+        if tab.id != pending.context.tab_id || tab.generation != pending.context.generation {
+            return false;
+        }
+        let Some(branch) = self.column_branches.get(pending.context.tab_id) else {
+            return false;
+        };
+        branch.revision() == pending.branch_revision
+            && branch.active_index() == pending.column
+            && branch.selected_ids() == std::slice::from_ref(&pending.item_id)
+    }
+
+    fn abandon_column_cycle_if_intent_lost(&mut self) {
+        let lost = self
+            .pending_column_cycle
+            .as_ref()
+            .is_some_and(|pending| !self.column_cycle_intent_matches(pending));
+        if lost {
+            self.cancel_pending_column_cycle();
+        }
+    }
+
+    fn begin_column_cycle_resolution(
+        &mut self,
+        column: usize,
+        entry: &explorer_model::FileEntry,
+        branch_revision: u64,
+    ) -> ExplorerCommand {
+        self.cancel_pending_column_cycle();
+        let tab = self.tabs.active_tab();
+        let context = RequestContext::new(tab.id, tab.generation);
+        let ancestors = self
+            .column_branches
+            .get(tab.id)
+            .map(|branch| {
+                branch
+                    .levels()
+                    .iter()
+                    .take(column.saturating_add(1))
+                    .map(|level| level.location.clone())
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        self.pending_column_cycle = Some(PendingColumnCycle {
+            context: context.clone(),
+            branch_revision,
+            column,
+            item_id: entry.id.clone(),
+            location: entry.location.clone(),
+            display_name: entry.display_name.clone(),
+        });
+        ExplorerCommand::ResolveColumnCycle {
+            context,
+            location: entry.location.clone(),
+            ancestors,
+            branch_revision,
+            column,
+            item: entry.id.clone(),
+        }
+    }
+
+    fn apply_column_cycle_resolution(
+        &mut self,
+        context: &RequestContext,
+        branch_revision: u64,
+        column: usize,
+        item: &ShellItemId,
+        location: &LocationDescriptor,
+        outcome: &explorer_model::ColumnCycleOutcome,
+    ) -> bool {
+        let Some(pending) = self.pending_column_cycle.clone() else {
+            return false;
+        };
+        if pending.context.request_id != context.request_id
+            || pending.context.tab_id != context.tab_id
+            || pending.context.generation != context.generation
+            || pending.branch_revision != branch_revision
+            || pending.column != column
+            || &pending.item_id != item
+            || &pending.location != location
+        {
+            return false;
+        }
+        let cancelled = context.cancellation.is_cancelled()
+            || matches!(
+                outcome,
+                explorer_model::ColumnCycleOutcome::Failed(error)
+                    if error.kind == explorer_common::ExplorerErrorKind::Cancellation
+            );
+        if cancelled || !self.column_cycle_intent_matches(&pending) {
+            self.cancel_pending_column_cycle();
+            return false;
+        }
+        self.pending_column_cycle = None;
+        let entry = explorer_model::FileEntry {
+            id: pending.item_id,
+            display_name: pending.display_name,
+            location: pending.location,
+            is_container: true,
+            metadata: explorer_model::FileEntryMetadata::default(),
+        };
+        let width = self.view_settings().column_width;
+        let Some(effect) = self
+            .column_branches
+            .get_mut(context.tab_id)
+            .map(|branch| branch.consume_cycle_resolution(column, &entry, outcome, width))
+        else {
+            return false;
+        };
+        if let Some(location) = effect.navigate_to.clone() {
+            self.preserve_outgoing_column_listing();
+            if let Some(branch) = self.column_branches.get_mut(context.tab_id) {
+                branch.hold_pending_navigation(location.clone());
+            }
+            self.pending_column_cycle_navigation = self.begin_active_navigation(location, false);
+        }
+        self.mirror_current_column_selection();
+        self.sync_column_horizontal_reveal();
+        true
+    }
+
+    pub(crate) fn take_pending_column_cycle_navigation(&mut self) -> Option<ExplorerCommand> {
+        self.pending_column_cycle_navigation.take()
     }
 
     pub(crate) fn finish_column_pending_selection(&mut self, tab_id: TabId) {
@@ -17066,7 +17381,8 @@ mod tests {
         network.set_view_mode(explorer_model::ViewMode::Columns);
         assert_eq!(
             network.view_settings().mode,
-            explorer_model::ViewMode::Columns
+            explorer_model::ViewMode::Details,
+            "Columns cannot be saved on a network drive"
         );
         assert_eq!(
             network.effective_view_mode(),
@@ -17078,7 +17394,7 @@ mod tests {
         ));
         unc.set_view_mode(explorer_model::ViewMode::Columns);
         assert_eq!(unc.effective_view_mode(), explorer_model::ViewMode::Details);
-        assert_eq!(unc.view_settings().mode, explorer_model::ViewMode::Columns);
+        assert_eq!(unc.view_settings().mode, explorer_model::ViewMode::Details);
     }
 
     #[test]
@@ -20004,15 +20320,18 @@ mod tests {
         let _other = state.new_tab();
         state.set_drive_kind('C', explorer_model::DriveKind::Fixed);
         let switched = state.plan_column_loads();
-        assert!(switched.iter().any(|command| matches!(
-            command,
-            explorer_model::ExplorerCommand::Cancel { request_id }
-                if *request_id == started[1].0.request_id
-        )));
+        assert!(
+            switched.iter().all(|command| !matches!(
+                command,
+                explorer_model::ExplorerCommand::Cancel { request_id }
+                    if *request_id == started[1].0.request_id
+            )),
+            "switching tabs must not cancel the previous tab's ancestor listing"
+        );
         highest = highest.max(state.column_loads.active_count());
         assert!(state.column_loads.active_count() <= explorer_model::COLUMN_LOAD_CONCURRENCY);
         assert!(
-            !state.apply_column_event(&explorer_model::ExplorerEvent::ColumnDirectoryBatch {
+            state.apply_column_event(&explorer_model::ExplorerEvent::ColumnDirectoryBatch {
                 context: started[1].0.clone(),
                 branch_revision: started[1].2,
                 location: started[1].1.clone(),
@@ -20026,13 +20345,1293 @@ mod tests {
                 context: started[1].0.clone(),
                 branch_revision: started[1].2,
                 location: started[1].1.clone(),
-                outcome: explorer_model::ColumnListingTerminal::Cancelled,
+                outcome: explorer_model::ColumnListingTerminal::Finished,
             }
         ));
         assert_eq!(state.column_loads.active_count(), before_terminal - 1);
         assert_eq!(state.column_loads.in_flight_count(previous), 0);
+        assert!(state.activate_tab(previous));
+        assert_eq!(
+            column_ready_names(&state, &started[1].1),
+            vec!["tab.txt".to_owned()]
+        );
+        assert!(!state.apply_column_event(
+            &explorer_model::ExplorerEvent::ColumnDirectoryFinished {
+                context: started[1].0.clone(),
+                branch_revision: started[1].2,
+                location: started[1].1.clone(),
+                outcome: explorer_model::ColumnListingTerminal::Finished,
+            }
+        ));
         assert!(highest <= explorer_model::COLUMN_LOAD_CONCURRENCY);
         assert!(state.column_loads.active_count() <= explorer_model::COLUMN_LOAD_CONCURRENCY);
+    }
+
+    #[test]
+    fn column_view_inactive_terminal_preserves_the_active_tab_branch() {
+        let parent = explorer_model::LocationDescriptor::file_system(r"C:\a");
+        let current = explorer_model::LocationDescriptor::file_system(r"C:\a\b");
+        let mut state = AppViewState::with_initial_location(explorer_model::HistoryEntry::new(
+            current.clone(),
+            "b",
+        ));
+        state.set_drive_kind('C', explorer_model::DriveKind::Fixed);
+        state.set_view_mode(explorer_model::ViewMode::Columns);
+        install_column_entries(&mut state, Vec::new());
+        state.ensure_column_branch();
+        let tab_a = state.tabs().active_tab_id();
+        assert!(
+            state
+                .column_branches
+                .get_mut(tab_a)
+                .unwrap()
+                .apply_cached_snapshot(0, explorer_model::DirectorySnapshot::default(),)
+        );
+        let loads_a = column_load_commands(&state.plan_column_loads());
+        assert_eq!(loads_a.len(), 1);
+        assert_eq!(loads_a[0].1, parent);
+
+        let tab_b = state.new_tab();
+        let initial_b = state.take_pending_new_tab_command().unwrap();
+        finish_column_directory(&mut state, &initial_b, current.clone(), Vec::new());
+        state.ensure_column_branch();
+        let child = mixed_column_entry(91, r"C:\a", "b", true, 0);
+        let parent_column = state
+            .column_branches
+            .get(tab_b)
+            .unwrap()
+            .levels()
+            .iter()
+            .position(|level| level.location == parent)
+            .unwrap();
+        let generation = state.tabs.active_tab().generation;
+        let discarded = explorer_model::RequestContext::new(tab_b, generation);
+        {
+            let branch = state.column_branches.get_mut(tab_b).unwrap();
+            assert!(branch.apply_cached_snapshot(0, explorer_model::DirectorySnapshot::default()));
+            let mut snapshot = explorer_model::DirectorySnapshot::default();
+            let _ = snapshot.upsert(child.clone());
+            assert!(branch.apply_cached_snapshot(parent_column, snapshot));
+            assert!(
+                branch
+                    .select_child(parent_column, &child, None, 240)
+                    .navigate_to
+                    .is_none()
+            );
+            // A refresh can retain its branch child while the parent listing is pending.
+            branch.begin_load(parent_column, discarded.request_id);
+            branch.abandon_load(discarded.request_id);
+        }
+        let loads_b = column_load_commands(&state.plan_column_loads());
+        assert_eq!(loads_b.len(), 1);
+        assert_eq!(loads_b[0].1, parent);
+        assert_eq!(state.column_loads.active_count(), 2);
+        let before = state.column_branches.get(tab_b).unwrap().clone();
+        let address = state.tabs.active_tab().view.address.draft.clone();
+
+        assert_eq!(
+            state.apply_service_event(explorer_model::ExplorerEvent::ColumnDirectoryFinished {
+                context: loads_a[0].0.clone(),
+                branch_revision: loads_a[0].2,
+                location: parent.clone(),
+                outcome: explorer_model::ColumnListingTerminal::Empty,
+            }),
+            explorer_model::WindowEventOutcome::Applied
+        );
+        assert_eq!(
+            state.column_branches.get(tab_b),
+            Some(&before),
+            "A's terminal must not reconcile B's still-loading parent as empty"
+        );
+        assert_eq!(state.tabs.active_tab().view.address.draft, address);
+        assert_eq!(
+            state.tabs.active_tab().history.current().unwrap().location,
+            current
+        );
+        assert!(state.pending_column_repair.is_none());
+        assert_eq!(state.column_loads.active_count(), 1);
+        assert!(matches!(
+            state.column_branches.get(tab_a).unwrap().levels()[parent_column].phase,
+            explorer_model::ColumnPhase::Empty
+        ));
+
+        assert_eq!(
+            state.apply_service_event(explorer_model::ExplorerEvent::ColumnDirectoryBatch {
+                context: loads_b[0].0.clone(),
+                branch_revision: loads_b[0].2,
+                location: parent.clone(),
+                entries: vec![child],
+            }),
+            explorer_model::WindowEventOutcome::Applied
+        );
+        assert_eq!(
+            state.apply_service_event(explorer_model::ExplorerEvent::ColumnDirectoryFinished {
+                context: loads_b[0].0.clone(),
+                branch_revision: loads_b[0].2,
+                location: parent,
+                outcome: explorer_model::ColumnListingTerminal::Finished,
+            }),
+            explorer_model::WindowEventOutcome::Applied
+        );
+        assert_eq!(
+            state.column_branches.get(tab_b).unwrap().levels().len(),
+            before.levels().len()
+        );
+        assert_eq!(
+            state.tabs.active_tab().history.current().unwrap().location,
+            current
+        );
+        assert!(state.pending_column_repair.is_none());
+        assert_eq!(state.column_loads.active_count(), 0);
+    }
+
+    #[test]
+    fn column_view_tab_loads_survive_switch_close_and_details() {
+        let mut state = AppViewState::with_initial_location(explorer_model::HistoryEntry::new(
+            explorer_model::LocationDescriptor::file_system(r"C:\a\b\c\d\e\f"),
+            "f",
+        ));
+        state.set_drive_kind('C', explorer_model::DriveKind::Fixed);
+        state.set_view_mode(explorer_model::ViewMode::Columns);
+        state.set_column_file_viewport_width(2_000.0);
+        state.ensure_column_branch();
+        let tab_a = state.tabs().active_tab_id();
+        let loads_a = column_load_commands(&state.plan_column_loads());
+        assert_eq!(loads_a.len(), explorer_model::COLUMN_LOAD_CONCURRENCY);
+        let kept = loads_a[0].clone();
+        assert!(
+            state.apply_column_event(&explorer_model::ExplorerEvent::ColumnDirectoryBatch {
+                context: kept.0.clone(),
+                branch_revision: kept.2,
+                location: kept.1.clone(),
+                entries: vec![mixed_column_entry(
+                    11,
+                    r"C:\a\b\c\d",
+                    "from-a.txt",
+                    false,
+                    0
+                )],
+            })
+        );
+        assert_eq!(
+            state.column_loads.active_count(),
+            explorer_model::COLUMN_LOAD_CONCURRENCY
+        );
+
+        let tab_b = state.new_tab();
+        state.set_drive_kind('C', explorer_model::DriveKind::Fixed);
+        let switched = state.plan_column_loads();
+        assert!(switched.iter().all(|command| !matches!(
+            command,
+            explorer_model::ExplorerCommand::Cancel { request_id }
+                if loads_a.iter().any(|load| load.0.request_id == *request_id)
+        )));
+        assert!(state.column_loads.active_count() <= explorer_model::COLUMN_LOAD_CONCURRENCY);
+        assert!(state.activate_tab(tab_a));
+        let back = state.plan_column_loads();
+        assert!(back.iter().all(|command| !matches!(
+            command,
+            explorer_model::ExplorerCommand::Cancel { request_id }
+                if *request_id == kept.0.request_id
+        )));
+        assert!(state.apply_column_event(
+            &explorer_model::ExplorerEvent::ColumnDirectoryFinished {
+                context: kept.0.clone(),
+                branch_revision: kept.2,
+                location: kept.1.clone(),
+                outcome: explorer_model::ColumnListingTerminal::Finished,
+            }
+        ));
+        assert!(!state.apply_column_event(
+            &explorer_model::ExplorerEvent::ColumnDirectoryFinished {
+                context: kept.0.clone(),
+                branch_revision: kept.2,
+                location: kept.1.clone(),
+                outcome: explorer_model::ColumnListingTerminal::Finished,
+            }
+        ));
+        assert_eq!(
+            column_ready_names(&state, &kept.1),
+            vec!["from-a.txt".to_owned()]
+        );
+
+        assert!(state.activate_tab(tab_b));
+        let pending = state
+            .take_pending_new_tab_command()
+            .expect("tab B still owns its initial folder load");
+        finish_column_directory(
+            &mut state,
+            &pending,
+            explorer_model::LocationDescriptor::file_system(r"C:\a\b\c\d\e\f"),
+            Vec::new(),
+        );
+        let started_b = column_load_commands(&state.plan_column_loads());
+        assert_eq!(started_b.len(), 1);
+        assert!(state.column_loads.active_count() <= explorer_model::COLUMN_LOAD_CONCURRENCY);
+        assert!(state.activate_tab(tab_a));
+        state.set_view_mode(explorer_model::ViewMode::Details);
+        let details = state.plan_column_loads();
+        assert!(
+            details.iter().all(|command| !matches!(
+                command,
+                explorer_model::ExplorerCommand::Cancel { request_id }
+                    if *request_id == started_b[0].0.request_id
+            )),
+            "Details on the active tab must not cancel another tab"
+        );
+        assert!(state.activate_tab(tab_b));
+        assert!(
+            state.apply_column_event(&explorer_model::ExplorerEvent::ColumnDirectoryBatch {
+                context: started_b[0].0.clone(),
+                branch_revision: started_b[0].2,
+                location: started_b[0].1.clone(),
+                entries: vec![mixed_column_entry(12, r"C:\a\b\c", "from-b.txt", false, 0)],
+            })
+        );
+        assert_eq!(
+            state.close_tab(tab_b),
+            explorer_model::TabCloseOutcome::Closed
+        );
+        assert!(state.column_branches.get(tab_b).is_none());
+        let closed = state.plan_column_loads();
+        assert!(closed.iter().any(|command| matches!(
+            command,
+            explorer_model::ExplorerCommand::Cancel { request_id }
+                if *request_id == started_b[0].0.request_id
+        )));
+        let before_terminal = state.column_loads.active_count();
+        assert!(state.apply_column_event(
+            &explorer_model::ExplorerEvent::ColumnDirectoryFinished {
+                context: started_b[0].0.clone(),
+                branch_revision: started_b[0].2,
+                location: started_b[0].1.clone(),
+                outcome: explorer_model::ColumnListingTerminal::Cancelled,
+            }
+        ));
+        assert_eq!(state.column_loads.active_count(), before_terminal - 1);
+        assert!(!state.apply_column_event(
+            &explorer_model::ExplorerEvent::ColumnDirectoryFinished {
+                context: started_b[0].0.clone(),
+                branch_revision: started_b[0].2,
+                location: started_b[0].1.clone(),
+                outcome: explorer_model::ColumnListingTerminal::Cancelled,
+            }
+        ));
+        assert_eq!(state.column_loads.in_flight_count(tab_b), 0);
+        assert!(state.column_loads.active_count() <= explorer_model::COLUMN_LOAD_CONCURRENCY);
+    }
+
+    #[test]
+    fn column_view_cycle_identity_event_keeps_the_ancestor() {
+        let mut state = AppViewState::with_initial_location(explorer_model::HistoryEntry::new(
+            explorer_model::LocationDescriptor::file_system(r"C:\a\b"),
+            "b",
+        ));
+        state.set_drive_kind('C', explorer_model::DriveKind::Fixed);
+        state.set_view_mode(explorer_model::ViewMode::Columns);
+        mark_column_location_writable(
+            &mut state,
+            explorer_model::LocationDescriptor::file_system(r"C:\a\b"),
+            "b",
+        );
+        state.ensure_column_branch();
+        let before_levels = state
+            .column_branches
+            .get(state.tabs().active_tab_id())
+            .expect("branch")
+            .levels()
+            .len();
+        let before_history = state.tabs().active_tab().history.back_entries().len();
+        let column = before_levels - 1;
+        let back_id = column_filesystem_item_id(7);
+        let back = explorer_model::LocationDescriptor::file_system(r"C:\a\b\back");
+        let command = state
+            .activate_column_item(column, back_id.clone(), back.clone(), true, false, false)
+            .expect("filesystem identity waits for the shell");
+        let explorer_model::ExplorerCommand::ResolveColumnCycle {
+            context,
+            branch_revision,
+            column: requested_column,
+            item,
+            ancestors,
+            location,
+        } = command
+        else {
+            panic!("production click must resolve identity instead of navigating");
+        };
+        assert_eq!(requested_column, column);
+        assert_eq!(item, back_id);
+        assert_eq!(location, back);
+        assert!(ancestors.iter().any(|ancestor| {
+            ancestor == &explorer_model::LocationDescriptor::file_system(r"C:\a")
+        }));
+        assert_eq!(
+            state
+                .column_branches
+                .get(state.tabs().active_tab_id())
+                .expect("branch")
+                .levels()
+                .len(),
+            before_levels
+        );
+        assert_eq!(
+            state.tabs().active_tab().history.back_entries().len(),
+            before_history
+        );
+
+        let stale_revision = explorer_model::ExplorerEvent::ColumnCycleResolved {
+            context: context.clone(),
+            branch_revision: branch_revision.wrapping_add(1),
+            column,
+            item: back_id.clone(),
+            location: back.clone(),
+            outcome: explorer_model::ColumnCycleOutcome::Cycle {
+                matched: explorer_model::LocationDescriptor::file_system(r"C:\a"),
+            },
+        };
+        assert_eq!(
+            state.apply_service_event(stale_revision),
+            explorer_model::WindowEventOutcome::IgnoredStale
+        );
+        let cycle = explorer_model::ExplorerEvent::ColumnCycleResolved {
+            context: context.clone(),
+            branch_revision,
+            column,
+            item: back_id.clone(),
+            location: back.clone(),
+            outcome: explorer_model::ColumnCycleOutcome::Cycle {
+                matched: explorer_model::LocationDescriptor::file_system(r"C:\a"),
+            },
+        };
+        assert_eq!(
+            state.apply_service_event(cycle.clone()),
+            explorer_model::WindowEventOutcome::Applied
+        );
+        assert_eq!(
+            state.apply_service_event(cycle),
+            explorer_model::WindowEventOutcome::IgnoredStale
+        );
+        assert!(state.take_pending_column_cycle_navigation().is_none());
+        let branch = state
+            .column_branches
+            .get(state.tabs().active_tab_id())
+            .expect("branch");
+        assert_eq!(branch.levels().len(), before_levels);
+        assert!(matches!(
+            branch.levels()[column].phase,
+            explorer_model::ColumnPhase::Error(explorer_model::ColumnFault::Cycle)
+        ));
+        assert!(branch.levels().iter().any(|level| {
+            level.location == explorer_model::LocationDescriptor::file_system(r"C:\a")
+                && !matches!(
+                    level.phase,
+                    explorer_model::ColumnPhase::Error(explorer_model::ColumnFault::Cycle)
+                )
+        }));
+        assert_eq!(
+            state.tabs().active_tab().history.back_entries().len(),
+            before_history
+        );
+        assert_eq!(
+            state
+                .tabs()
+                .active_tab()
+                .history
+                .current()
+                .map(|entry| entry.location.clone()),
+            Some(explorer_model::LocationDescriptor::file_system(r"C:\a\b"))
+        );
+
+        let elsewhere_id = column_filesystem_item_id(8);
+        let elsewhere = explorer_model::LocationDescriptor::file_system(r"C:\a\b\elsewhere");
+        state.ensure_column_branch();
+        let (column, revision) = {
+            let fresh = state
+                .column_branches
+                .get_mut(state.tabs().active_tab_id())
+                .expect("branch");
+            fresh.align_to_location(
+                explorer_model::LocationDescriptor::file_system(r"C:\a\b"),
+                240,
+                None,
+            );
+            (fresh.levels().len() - 1, fresh.revision())
+        };
+        let resolve = state
+            .activate_column_item(
+                column,
+                elsewhere_id.clone(),
+                elsewhere.clone(),
+                true,
+                false,
+                false,
+            )
+            .expect("noncyclic junction still asks the shell when ancestors are unknown");
+        let explorer_model::ExplorerCommand::ResolveColumnCycle {
+            context,
+            branch_revision,
+            ..
+        } = resolve
+        else {
+            panic!("distinct junction uses the identity command");
+        };
+        assert_eq!(branch_revision, revision);
+        let ancestor_identity = explorer_model::ColumnFilesystemIdentity::from_shell_item(
+            &column_filesystem_item_id(1),
+        )
+        .expect("ancestor identity");
+        let child_identity =
+            explorer_model::ColumnFilesystemIdentity::from_shell_item(&elsewhere_id)
+                .expect("child identity");
+        assert_ne!(ancestor_identity, child_identity);
+        assert_eq!(
+            state.apply_service_event(explorer_model::ExplorerEvent::ColumnCycleResolved {
+                context,
+                branch_revision,
+                column,
+                item: elsewhere_id,
+                location: elsewhere.clone(),
+                outcome: explorer_model::ColumnCycleOutcome::Distinct {
+                    identities: vec![(
+                        explorer_model::LocationDescriptor::file_system(r"C:\a"),
+                        ancestor_identity,
+                    )],
+                },
+            }),
+            explorer_model::WindowEventOutcome::Applied
+        );
+        let navigate = state
+            .take_pending_column_cycle_navigation()
+            .expect("noncyclic junction stays navigable");
+        assert!(matches!(
+            navigate,
+            explorer_model::ExplorerCommand::Navigate { location, .. } if location == elsewhere
+        ));
+
+        let failed_id = column_filesystem_item_id(9);
+        let failed_location = explorer_model::LocationDescriptor::file_system(r"C:\a\b\plain");
+        let failed = state
+            .activate_column_item(
+                column,
+                failed_id.clone(),
+                failed_location.clone(),
+                true,
+                false,
+                false,
+            )
+            .expect("unresolved identity");
+        let explorer_model::ExplorerCommand::ResolveColumnCycle {
+            context,
+            branch_revision,
+            column,
+            ..
+        } = failed
+        else {
+            panic!("failure still uses the identity command");
+        };
+        assert_eq!(
+            state.apply_service_event(explorer_model::ExplorerEvent::ColumnCycleResolved {
+                context,
+                branch_revision,
+                column,
+                item: failed_id,
+                location: failed_location.clone(),
+                outcome: explorer_model::ColumnCycleOutcome::Failed(
+                    explorer_common::ExplorerError::new(
+                        explorer_common::ExplorerErrorKind::Availability,
+                        "read item identity",
+                        true,
+                        "無法確認這個資料夾是否指回上層。",
+                        "identity unavailable",
+                    )
+                ),
+            }),
+            explorer_model::WindowEventOutcome::Applied
+        );
+        assert!(matches!(
+            state.take_pending_column_cycle_navigation(),
+            Some(explorer_model::ExplorerCommand::Navigate { location, .. })
+                if location == failed_location
+        ));
+
+        state.ensure_column_branch();
+        let unsupported_column = state
+            .column_branches
+            .get(state.tabs().active_tab_id())
+            .expect("branch")
+            .levels()
+            .len()
+            - 1;
+        let before_unsupported = state
+            .column_branches
+            .get(state.tabs().active_tab_id())
+            .expect("branch")
+            .levels()
+            .len();
+        let unsupported_id = column_filesystem_item_id(10);
+        let unsupported_location =
+            explorer_model::LocationDescriptor::file_system(r"C:\a\b\remote-looking");
+        let unsupported = state
+            .activate_column_item(
+                unsupported_column,
+                unsupported_id.clone(),
+                unsupported_location.clone(),
+                true,
+                false,
+                false,
+            )
+            .expect("unsupported still resolves off the ui thread");
+        let explorer_model::ExplorerCommand::ResolveColumnCycle {
+            context,
+            branch_revision,
+            column,
+            ..
+        } = unsupported
+        else {
+            panic!("unsupported identity uses the service command");
+        };
+        assert_eq!(
+            state.apply_service_event(explorer_model::ExplorerEvent::ColumnCycleResolved {
+                context,
+                branch_revision,
+                column,
+                item: unsupported_id,
+                location: unsupported_location,
+                outcome: explorer_model::ColumnCycleOutcome::Unsupported(
+                    explorer_model::column_listing_rejected(
+                        &explorer_model::LocationDescriptor::file_system(r"\\server\share"),
+                        explorer_model::DriveKind::Fixed,
+                    )
+                    .expect("rejection")
+                ),
+            }),
+            explorer_model::WindowEventOutcome::Applied
+        );
+        assert!(state.take_pending_column_cycle_navigation().is_none());
+        assert_eq!(
+            state
+                .column_branches
+                .get(state.tabs().active_tab_id())
+                .expect("branch")
+                .levels()
+                .len(),
+            before_unsupported
+        );
+    }
+
+    #[test]
+    fn column_view_stale_cycle_reply_does_not_navigate_after_intent_changes() {
+        let mut kept = arm_column_cycle(1);
+        assert_eq!(
+            kept.state.apply_service_event(column_cycle_distinct(&kept)),
+            explorer_model::WindowEventOutcome::Applied
+        );
+        assert!(matches!(
+            kept.state.take_pending_column_cycle_navigation(),
+            Some(explorer_model::ExplorerCommand::Navigate { location, .. })
+                if location == kept.location
+        ));
+        assert!(
+            kept.state
+                .column_branches
+                .get(kept.state.tabs().active_tab_id())
+                .expect("branch")
+                .levels()
+                .len()
+                > kept.levels
+        );
+        assert_eq!(
+            kept.state.apply_service_event(column_cycle_distinct(&kept)),
+            explorer_model::WindowEventOutcome::IgnoredStale
+        );
+        assert!(kept.state.take_pending_column_cycle_navigation().is_none());
+
+        let mut cycled = arm_column_cycle(2);
+        assert_eq!(
+            cycled.state.apply_service_event(column_cycle_event(
+                &cycled,
+                explorer_model::ColumnCycleOutcome::Cycle {
+                    matched: explorer_model::LocationDescriptor::file_system(r"C:\a"),
+                },
+            )),
+            explorer_model::WindowEventOutcome::Applied
+        );
+        assert!(
+            cycled
+                .state
+                .take_pending_column_cycle_navigation()
+                .is_none()
+        );
+        assert_eq!(column_level_count(&cycled.state), cycled.levels);
+        assert!(matches!(
+            cycled
+                .state
+                .column_branches
+                .get(cycled.state.tabs().active_tab_id())
+                .expect("branch")
+                .levels()[cycled.column]
+                .phase,
+            explorer_model::ColumnPhase::Error(explorer_model::ColumnFault::Cycle)
+        ));
+
+        let mut cancelled = arm_column_cycle(3);
+        assert_eq!(
+            cancelled.state.apply_service_event(column_cycle_event(
+                &cancelled,
+                explorer_model::ColumnCycleOutcome::Failed(explorer_common::ExplorerError::new(
+                    explorer_common::ExplorerErrorKind::Cancellation,
+                    "resolve column cycle",
+                    true,
+                    "已取消資料夾載入。",
+                    "cancelled",
+                )),
+            )),
+            explorer_model::WindowEventOutcome::IgnoredStale
+        );
+        assert_stale_column_cycle(&mut cancelled);
+        assert_eq!(
+            cancelled
+                .state
+                .apply_service_event(column_cycle_distinct(&cancelled)),
+            explorer_model::WindowEventOutcome::IgnoredStale
+        );
+
+        let mut available = arm_column_cycle(4);
+        assert_eq!(
+            available.state.apply_service_event(column_cycle_event(
+                &available,
+                explorer_model::ColumnCycleOutcome::Failed(explorer_common::ExplorerError::new(
+                    explorer_common::ExplorerErrorKind::Availability,
+                    "read item identity",
+                    true,
+                    "無法確認這個資料夾是否指回上層。",
+                    "unavailable",
+                )),
+            )),
+            explorer_model::WindowEventOutcome::Applied
+        );
+        assert!(matches!(
+            available.state.take_pending_column_cycle_navigation(),
+            Some(explorer_model::ExplorerCommand::Navigate { location, .. })
+                if location == available.location
+        ));
+
+        let mut control = arm_column_cycle(5);
+        assert!(
+            control
+                .state
+                .activate_column_item(
+                    control.column,
+                    control.item.clone(),
+                    control.location.clone(),
+                    true,
+                    false,
+                    true,
+                )
+                .is_none()
+        );
+        assert_column_cycle_cancelled(&mut control);
+
+        let mut shift = arm_column_cycle(6);
+        assert!(
+            shift
+                .state
+                .activate_column_item(
+                    shift.column,
+                    shift.sibling.clone(),
+                    shift.sibling_location.clone(),
+                    true,
+                    true,
+                    false,
+                )
+                .is_none()
+        );
+        assert_column_cycle_cancelled(&mut shift);
+
+        let mut toggled = arm_column_cycle(7);
+        assert!(toggled.state.toggle_focused_column_selection());
+        assert_column_cycle_cancelled(&mut toggled);
+
+        let mut moved = arm_column_cycle(8);
+        assert!(moved.state.move_column_cursor(1, 0).is_none());
+        assert_column_cycle_cancelled(&mut moved);
+
+        let mut parent = arm_column_cycle(9);
+        assert!(parent.state.move_column_cursor(0, -1).is_none());
+        assert_column_cycle_cancelled(&mut parent);
+
+        let mut cleared = arm_column_cycle(10);
+        cleared.state.clear_selection();
+        assert_column_cycle_cancelled(&mut cleared);
+
+        let mut details = arm_column_cycle(11);
+        details
+            .state
+            .set_view_mode(explorer_model::ViewMode::Details);
+        assert_eq!(
+            details.state.view_settings().mode,
+            explorer_model::ViewMode::Details
+        );
+        assert_column_cycle_cancelled(&mut details);
+
+        let mut switched = arm_column_cycle(12);
+        let original = switched.state.tabs().active_tab_id();
+        let other = switched.state.new_tab();
+        assert_ne!(other, original);
+        assert!(switched.state.activate_tab(original));
+        assert_column_cycle_cancelled(&mut switched);
+
+        let mut closed = arm_column_cycle(13);
+        let closing = closed.state.tabs().active_tab_id();
+        let _kept_open = closed.state.new_tab();
+        assert!(closed.state.activate_tab(closing));
+        let rearmed = click_armed_column_cycle(&mut closed.state, 14);
+        let draft = closed.state.tabs().active_tab().view.address.draft.clone();
+        let history = closed
+            .state
+            .tabs()
+            .active_tab()
+            .history
+            .current()
+            .map(|entry| entry.location.clone());
+        assert_eq!(
+            closed.state.close_tab(closing),
+            explorer_model::TabCloseOutcome::Closed
+        );
+        assert!(closed.state.column_branches.get(closing).is_none());
+        assert!(rearmed.context.cancellation.is_cancelled());
+        assert_eq!(
+            closed
+                .state
+                .apply_service_event(column_cycle_event_for(&rearmed)),
+            explorer_model::WindowEventOutcome::IgnoredStale
+        );
+        assert!(
+            closed
+                .state
+                .take_pending_column_cycle_navigation()
+                .is_none()
+        );
+        assert_eq!(closed.state.tabs().active_tab().view.address.draft, draft);
+        assert_eq!(
+            closed
+                .state
+                .tabs()
+                .active_tab()
+                .history
+                .current()
+                .map(|entry| entry.location.clone()),
+            history
+        );
+
+        let mut window = arm_column_cycle(15);
+        window.state.request_close();
+        assert_column_cycle_cancelled(&mut window);
+
+        let mut refreshed = arm_column_cycle(16);
+        assert!(matches!(
+            refreshed.state.begin_refresh_navigation(),
+            Some(explorer_model::ExplorerCommand::Refresh { .. })
+        ));
+        assert_column_cycle_cancelled(&mut refreshed);
+        assert_eq!(
+            refreshed
+                .state
+                .tabs()
+                .active_tab()
+                .history
+                .current()
+                .map(|entry| entry.location.clone()),
+            Some(explorer_model::LocationDescriptor::file_system(r"C:\a\b"))
+        );
+    }
+
+    struct ArmedColumnCycle {
+        state: AppViewState,
+        context: explorer_model::RequestContext,
+        branch_revision: u64,
+        column: usize,
+        item: explorer_model::ShellItemId,
+        location: explorer_model::LocationDescriptor,
+        sibling: explorer_model::ShellItemId,
+        sibling_location: explorer_model::LocationDescriptor,
+        levels: usize,
+    }
+
+    struct ColumnCycleRequest {
+        context: explorer_model::RequestContext,
+        branch_revision: u64,
+        column: usize,
+        item: explorer_model::ShellItemId,
+        location: explorer_model::LocationDescriptor,
+    }
+
+    fn arm_column_cycle(seed: u8) -> ArmedColumnCycle {
+        let place = explorer_model::LocationDescriptor::file_system(r"C:\a\b");
+        let mut state = AppViewState::with_initial_location(explorer_model::HistoryEntry::new(
+            place.clone(),
+            "b",
+        ));
+        state.set_drive_kind('C', explorer_model::DriveKind::Fixed);
+        state.set_view_mode(explorer_model::ViewMode::Columns);
+        mark_column_location_writable(&mut state, place, "b");
+        let item = column_filesystem_item_id(seed);
+        let location =
+            explorer_model::LocationDescriptor::file_system(format!(r"C:\a\b\link-{seed}"));
+        let sibling = explorer_model::ShellItemId::from_provider_bytes([seed.wrapping_add(80)])
+            .expect("sibling id");
+        let sibling_location =
+            explorer_model::LocationDescriptor::file_system(format!(r"C:\a\b\other-{seed}"));
+        install_column_entries(
+            &mut state,
+            vec![
+                explorer_model::FileEntry {
+                    id: item.clone(),
+                    display_name: format!("link-{seed}"),
+                    location: location.clone(),
+                    is_container: true,
+                    metadata: explorer_model::FileEntryMetadata::default(),
+                },
+                explorer_model::FileEntry {
+                    id: sibling.clone(),
+                    display_name: format!("other-{seed}"),
+                    location: sibling_location.clone(),
+                    is_container: true,
+                    metadata: explorer_model::FileEntryMetadata::default(),
+                },
+            ],
+        );
+        state.ensure_column_branch();
+        let column = column_level_count(&state) - 1;
+        let command = state
+            .activate_column_item(column, item.clone(), location.clone(), true, false, false)
+            .expect("filesystem folder waits for identity");
+        let explorer_model::ExplorerCommand::ResolveColumnCycle {
+            context,
+            branch_revision,
+            column,
+            item,
+            location,
+            ..
+        } = command
+        else {
+            panic!("production click must request column identity");
+        };
+        let levels = column_level_count(&state);
+        ArmedColumnCycle {
+            state,
+            context,
+            branch_revision,
+            column,
+            item,
+            location,
+            sibling,
+            sibling_location,
+            levels,
+        }
+    }
+
+    fn click_armed_column_cycle(state: &mut AppViewState, seed: u8) -> ColumnCycleRequest {
+        let item = column_filesystem_item_id(seed);
+        let location =
+            explorer_model::LocationDescriptor::file_system(format!(r"C:\a\b\link-{seed}"));
+        state.ensure_column_branch();
+        let column = column_level_count(state) - 1;
+        let command = state
+            .activate_column_item(column, item, location, true, false, false)
+            .expect("replacement identity request");
+        let explorer_model::ExplorerCommand::ResolveColumnCycle {
+            context,
+            branch_revision,
+            column,
+            item,
+            location,
+            ..
+        } = command
+        else {
+            panic!("production click must request column identity");
+        };
+        ColumnCycleRequest {
+            context,
+            branch_revision,
+            column,
+            item,
+            location,
+        }
+    }
+
+    fn column_cycle_event(
+        armed: &ArmedColumnCycle,
+        outcome: explorer_model::ColumnCycleOutcome,
+    ) -> explorer_model::ExplorerEvent {
+        explorer_model::ExplorerEvent::ColumnCycleResolved {
+            context: armed.context.clone(),
+            branch_revision: armed.branch_revision,
+            column: armed.column,
+            item: armed.item.clone(),
+            location: armed.location.clone(),
+            outcome,
+        }
+    }
+
+    fn column_cycle_distinct(armed: &ArmedColumnCycle) -> explorer_model::ExplorerEvent {
+        column_cycle_event(
+            armed,
+            explorer_model::ColumnCycleOutcome::Distinct {
+                identities: Vec::new(),
+            },
+        )
+    }
+
+    fn column_cycle_event_for(request: &ColumnCycleRequest) -> explorer_model::ExplorerEvent {
+        explorer_model::ExplorerEvent::ColumnCycleResolved {
+            context: request.context.clone(),
+            branch_revision: request.branch_revision,
+            column: request.column,
+            item: request.item.clone(),
+            location: request.location.clone(),
+            outcome: explorer_model::ColumnCycleOutcome::Distinct {
+                identities: Vec::new(),
+            },
+        }
+    }
+
+    fn column_level_count(state: &AppViewState) -> usize {
+        state
+            .column_branches
+            .get(state.tabs().active_tab_id())
+            .map(|branch| branch.levels().len())
+            .unwrap_or(0)
+    }
+
+    fn assert_stale_column_cycle(armed: &mut ArmedColumnCycle) {
+        let levels = column_level_count(&armed.state);
+        let draft = armed.state.tabs().active_tab().view.address.draft.clone();
+        let history = armed
+            .state
+            .tabs()
+            .active_tab()
+            .history
+            .current()
+            .map(|entry| entry.location.clone());
+        let back_steps = armed.state.tabs().active_tab().history.back_entries().len();
+        assert_eq!(
+            armed
+                .state
+                .apply_service_event(column_cycle_distinct(armed)),
+            explorer_model::WindowEventOutcome::IgnoredStale
+        );
+        assert!(armed.state.take_pending_column_cycle_navigation().is_none());
+        assert_eq!(column_level_count(&armed.state), levels);
+        assert_eq!(armed.state.tabs().active_tab().view.address.draft, draft);
+        assert_eq!(
+            armed
+                .state
+                .tabs()
+                .active_tab()
+                .history
+                .current()
+                .map(|entry| entry.location.clone()),
+            history
+        );
+        assert_eq!(
+            armed.state.tabs().active_tab().history.back_entries().len(),
+            back_steps
+        );
+        assert_eq!(
+            armed
+                .state
+                .apply_service_event(column_cycle_distinct(armed)),
+            explorer_model::WindowEventOutcome::IgnoredStale
+        );
+        assert!(armed.state.take_pending_column_cycle_navigation().is_none());
+    }
+
+    fn assert_column_cycle_cancelled(armed: &mut ArmedColumnCycle) {
+        assert!(
+            armed.context.cancellation.is_cancelled(),
+            "the identity request token must be cancelled immediately"
+        );
+        assert!(
+            armed.state.plan_column_loads().iter().any(|command| {
+                matches!(
+                    command,
+                    explorer_model::ExplorerCommand::Cancel { request_id }
+                        if *request_id == armed.context.request_id
+                )
+            }),
+            "the cancelled identity request must be flushed with the existing Cancel command"
+        );
+        assert_stale_column_cycle(armed);
+    }
+
+    #[test]
+    fn column_view_creation_uses_the_active_column_unfiltered_snapshot() {
+        let beta = explorer_model::LocationDescriptor::file_system(r"C:\alpha\beta");
+        let alpha = explorer_model::LocationDescriptor::file_system(r"C:\alpha");
+        let mut state = AppViewState::with_initial_location(explorer_model::HistoryEntry::new(
+            beta.clone(),
+            "beta",
+        ));
+        state.set_drive_kind('C', explorer_model::DriveKind::Fixed);
+        state.set_view_mode(explorer_model::ViewMode::Columns);
+        mark_column_location_writable(&mut state, beta.clone(), "beta");
+        install_column_entries(
+            &mut state,
+            vec![column_named(1, r"C:\alpha\beta", "rightmost.txt", false, 0)],
+        );
+        state.ensure_column_branch();
+        let alpha_index = column_locations(&state)
+            .iter()
+            .position(|location| location == &alpha)
+            .expect("alpha");
+        let mut ancestor = explorer_model::DirectorySnapshot::default();
+        let _ = ancestor.upsert(column_named(2, r"C:\alpha", "New folder", true, 0x2));
+        let _ = ancestor.upsert(column_named(
+            3,
+            r"C:\alpha",
+            "New Text Document.txt",
+            false,
+            0x4,
+        ));
+        let _ = ancestor.upsert(column_named(4, r"C:\alpha", "visible.txt", false, 0));
+        assert!(
+            state
+                .column_branches
+                .get_mut(state.tabs().active_tab_id())
+                .expect("branch")
+                .apply_cached_snapshot(alpha_index, ancestor)
+        );
+        state
+            .column_branches
+            .get_mut(state.tabs().active_tab_id())
+            .expect("branch")
+            .focus_column(alpha_index);
+        let folder = state.create_folder_request().expect("ancestor folder");
+        assert!(matches!(
+            &folder.kind,
+            explorer_model::FileOperationKind::CreateFolder { parent, name }
+                if parent == &alpha && name == "New folder (2)"
+        ));
+        assert_eq!(
+            folder.flags.conflict,
+            explorer_model::ConflictDecision::KeepBoth
+        );
+        let text = state.create_new_item_request(1).expect("ancestor text");
+        assert!(matches!(
+            &text.kind,
+            explorer_model::FileOperationKind::CreateItem { parent, name, .. }
+                if parent == &alpha && name == "New Text Document (2).txt"
+        ));
+
+        let beta_index = column_locations(&state)
+            .iter()
+            .position(|location| location == &beta)
+            .expect("beta");
+        state
+            .column_branches
+            .get_mut(state.tabs().active_tab_id())
+            .expect("branch")
+            .focus_column(beta_index);
+        let current = state.create_folder_request().expect("current folder");
+        assert!(matches!(
+            &current.kind,
+            explorer_model::FileOperationKind::CreateFolder { parent, name }
+                if parent == &beta && name == "New folder"
+        ));
+
+        let mut mixed = explorer_model::DirectorySnapshot::default();
+        let _ = mixed.upsert(column_named(5, r"C:\alpha\beta", "new FOLDER", true, 0));
+        let _ = mixed.upsert(column_named(6, r"C:\alpha\beta", "New folder (2)", true, 0));
+        install_column_entries(&mut state, mixed.entries().to_vec());
+        state.ensure_column_branch();
+        let suffixed = state.create_folder_request().expect("case suffix");
+        assert!(matches!(
+            &suffixed.kind,
+            explorer_model::FileOperationKind::CreateFolder { parent, name }
+                if parent == &beta && name == "New folder (3)"
+        ));
+
+        state
+            .column_branches
+            .get_mut(state.tabs().active_tab_id())
+            .expect("branch")
+            .focus_column(0);
+        let missing = state.create_folder_request().expect("missing snapshot");
+        assert!(matches!(
+            &missing.kind,
+            explorer_model::FileOperationKind::CreateFolder { parent, name }
+                if parent == &explorer_model::LocationDescriptor::file_system(r"C:\")
+                    && name == "New folder"
+        ));
+        assert_eq!(
+            missing.flags.conflict,
+            explorer_model::ConflictDecision::KeepBoth
+        );
+
+        state.set_view_mode(explorer_model::ViewMode::Details);
+        let details = state.create_folder_request().expect("details folder");
+        assert!(matches!(
+            &details.kind,
+            explorer_model::FileOperationKind::CreateFolder { parent, name }
+                if parent == &beta && name == "New folder (3)"
+        ));
+        let details_text = state.create_new_item_request(1).expect("details text");
+        assert!(matches!(
+            &details_text.kind,
+            explorer_model::FileOperationKind::CreateItem { parent, name, .. }
+                if parent == &beta && name == "New Text Document.txt"
+        ));
+    }
+
+    #[test]
+    fn column_view_columns_command_stays_disabled_on_unsupported_locations() {
+        let mut state = AppViewState::default();
+        state.set_drive_kind('C', explorer_model::DriveKind::Fixed);
+        state.set_view_mode(explorer_model::ViewMode::Columns);
+        assert!(state.columns_menu_presentation().enabled);
+        assert!(state.columns_menu_presentation().checked);
+        state.tabs_mut().active_tab_mut().history.commit_navigation(
+            explorer_model::HistoryEntry::new(
+                explorer_model::LocationDescriptor::synthetic(explorer_model::SyntheticRoot::Home),
+                "Home",
+            ),
+        );
+        assert_eq!(
+            state.view_settings().mode,
+            explorer_model::ViewMode::Columns
+        );
+        assert_eq!(
+            state.effective_view_mode(),
+            explorer_model::ViewMode::Details
+        );
+        let saved = state.columns_menu_presentation();
+        assert!(!saved.enabled);
+        assert!(!saved.checked);
+        assert!(saved.label.contains(&state.catalog().t("menu-columns")));
+        assert!(
+            saved
+                .accessible_name
+                .contains(&state.catalog().t("menu-details"))
+        );
+        assert!(saved.accessible_name.contains(&saved.label));
+        for mode in [
+            explorer_model::ViewMode::Columns,
+            explorer_model::ViewMode::Columns,
+        ] {
+            let trace = crate::actions::dispatch_action(
+                &mut state,
+                crate::actions::ExplorerAction::SetViewMode(mode),
+                crate::actions::ActionSource::Keyboard,
+            );
+            assert_eq!(trace.outcome, crate::actions::ActionOutcome::Disabled);
+        }
+        let mouse = crate::actions::dispatch_action(
+            &mut state,
+            crate::actions::ExplorerAction::SetViewMode(explorer_model::ViewMode::Columns),
+            crate::actions::ActionSource::Mouse,
+        );
+        assert_eq!(mouse.outcome, crate::actions::ActionOutcome::Disabled);
+        state.set_view_mode(explorer_model::ViewMode::Columns);
+        assert_eq!(
+            state.view_settings().mode,
+            explorer_model::ViewMode::Columns
+        );
+        let list = crate::actions::dispatch_action(
+            &mut state,
+            crate::actions::ExplorerAction::SetViewMode(explorer_model::ViewMode::List),
+            crate::actions::ActionSource::Programmatic,
+        );
+        assert_eq!(list.outcome, crate::actions::ActionOutcome::Handled);
+        assert_eq!(state.view_settings().mode, explorer_model::ViewMode::List);
+        state.set_view_mode(explorer_model::ViewMode::Columns);
+        assert_eq!(
+            state.view_settings().mode,
+            explorer_model::ViewMode::List,
+            "Home still refuses a direct Columns save"
+        );
+
+        state.toggle_view_menu();
+        for _ in 0..8 {
+            state.move_view_menu_focus(1);
+        }
+        assert_ne!(state.view_menu_index(), crate::actions::VIEW_MENU_COLUMNS);
+        assert_eq!(
+            state.view_menu_index(),
+            crate::actions::VIEW_MENU_DETAILS_PANE
+        );
+        assert!(!state.set_view_menu_focus(crate::actions::VIEW_MENU_COLUMNS));
+        state.move_view_menu_focus(-1);
+        assert_eq!(state.view_menu_index(), 7);
+
+        for location in [
+            explorer_model::LocationDescriptor::file_system(r"\\server\share"),
+            explorer_model::LocationDescriptor::try_virtual(
+                "adb",
+                [1; 16],
+                1,
+                None,
+                vec!["sdcard".into()],
+            )
+            .expect("virtual"),
+        ] {
+            state
+                .tabs_mut()
+                .active_tab_mut()
+                .history
+                .commit_navigation(explorer_model::HistoryEntry::new(location, "other"));
+            state.set_view_mode(explorer_model::ViewMode::Columns);
+            assert_ne!(
+                state.view_settings().mode,
+                explorer_model::ViewMode::Columns
+            );
+            assert!(!state.columns_menu_presentation().enabled);
+            assert_eq!(state.effective_view_mode(), explorer_model::ViewMode::List);
+        }
+
+        state.tabs_mut().active_tab_mut().history.commit_navigation(
+            explorer_model::HistoryEntry::new(
+                explorer_model::LocationDescriptor::file_system(r"C:\work"),
+                "work",
+            ),
+        );
+        state.set_drive_kind('C', explorer_model::DriveKind::Fixed);
+        state.set_view_mode(explorer_model::ViewMode::Columns);
+        assert_eq!(
+            state.view_settings().mode,
+            explorer_model::ViewMode::Columns
+        );
+        assert_eq!(
+            state.effective_view_mode(),
+            explorer_model::ViewMode::Columns
+        );
+        assert!(state.columns_menu_presentation().checked);
+        state.toggle_view_menu();
+        state.move_view_menu_focus(i8::MAX);
+        state.move_view_menu_focus(i8::MIN);
+        for _ in 0..8 {
+            state.move_view_menu_focus(1);
+        }
+        assert_eq!(state.view_menu_index(), crate::actions::VIEW_MENU_COLUMNS);
+    }
+
+    fn column_filesystem_item_id(seed: u8) -> explorer_model::ShellItemId {
+        let mut bytes = vec![b'F'];
+        bytes.extend_from_slice(&u64::from(seed).to_le_bytes());
+        bytes.extend_from_slice(&[seed; 16]);
+        explorer_model::ShellItemId::from_provider_bytes(bytes).expect("filesystem id")
+    }
+
+    fn column_named(
+        id: u8,
+        directory: &str,
+        name: &str,
+        container: bool,
+        attributes: u32,
+    ) -> explorer_model::FileEntry {
+        let mut entry = mixed_column_entry(id, directory, name, container, attributes);
+        entry.display_name = name.to_owned();
+        entry
     }
 
     fn column_load_commands(

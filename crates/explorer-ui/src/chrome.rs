@@ -8580,7 +8580,7 @@ impl RenderOnce for CommandBar {
                         self.tokens,
                         catalog,
                         self.state.view_settings(),
-                        self.state.columns_menu_enabled(),
+                        self.state.columns_menu_presentation(),
                         self.state.current_color_theme(),
                         self.state.view_theme_submenu_open(),
                         self.state.view_show_submenu_open(),
@@ -10323,7 +10323,7 @@ fn view_menu(
     tokens: UiTokens,
     catalog: Catalog,
     settings: explorer_model::ViewSettings,
-    columns_enabled: bool,
+    columns: crate::state::ColumnsMenuPresentation,
     theme: crate::theme::ColorTheme,
     theme_submenu: bool,
     show_submenu: bool,
@@ -10377,16 +10377,30 @@ fn view_menu(
             })
         })
         .children(modes.into_iter().enumerate().map(|(index, (mode, label))| {
+            if mode == explorer_model::ViewMode::Columns && !columns.enabled {
+                return view_menu_disabled_item(
+                    format!("view-mode-{mode:?}"),
+                    columns.label.clone(),
+                    columns.accessible_name.clone(),
+                    tokens,
+                );
+            }
             let columns_fallback =
-                settings.mode == explorer_model::ViewMode::Columns && !columns_enabled;
-            let checked = if columns_fallback {
+                settings.mode == explorer_model::ViewMode::Columns && !columns.enabled;
+            let checked = if mode == explorer_model::ViewMode::Columns {
+                columns.checked
+            } else if columns_fallback {
                 mode == explorer_model::ViewMode::Details
             } else {
                 settings.mode == mode
             };
             view_menu_item(
                 format!("view-mode-{mode:?}"),
-                label,
+                if mode == explorer_model::ViewMode::Columns {
+                    columns.label.clone()
+                } else {
+                    label
+                },
                 checked,
                 false,
                 focused_index == index,
@@ -10413,7 +10427,7 @@ fn view_menu(
         .child(view_menu_item(
             "view-preview-pane".to_owned(),
             catalog.t("menu-preview-pane"),
-            if settings.mode == explorer_model::ViewMode::Columns && columns_enabled {
+            if settings.mode == explorer_model::ViewMode::Columns && columns.enabled {
                 settings.column_preview_visible
             } else {
                 settings.preview_pane
@@ -10615,6 +10629,38 @@ fn view_show_submenu(
             tokens,
             on_action,
         ))
+}
+
+fn view_menu_disabled_item(
+    id: String,
+    label: impl Into<SharedString>,
+    accessible_name: impl Into<SharedString>,
+    tokens: UiTokens,
+) -> gpui::AnyElement {
+    let colors = tokens.theme.colors;
+    let label = label.into();
+    div()
+        .id(id.clone())
+        .debug_selector(move || id)
+        .role(Role::Button)
+        .aria_label(accessible_name.into())
+        .h(px(tokens.layout.menu_row_height.value()))
+        .flex()
+        .items_center()
+        .gap(px(tokens.layout.content_spacing.value()))
+        .px(px(tokens.layout.content_spacing.value()))
+        .rounded(px(tokens.layout.corner_radius.value() / 2.0))
+        .text_color(colors.text_disabled.to_gpui())
+        .child(
+            div()
+                .w(px(tokens.layout.content_spacing.value()))
+                .h(px(tokens.layout.content_spacing.value()))
+                .flex_none()
+                .rounded(px(tokens.layout.content_spacing.value()))
+                .bg(colors.menu_fill.to_gpui()),
+        )
+        .child(div().flex_1().child(label))
+        .into_any_element()
 }
 
 #[allow(clippy::too_many_arguments)]

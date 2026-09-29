@@ -1916,6 +1916,9 @@ fn action_available(state: &AppViewState, action: &ExplorerAction) -> bool {
         } => state.details_column_visibility_change_available(column, *visible, *session_id),
         ExplorerAction::EndDetailsColumnResize => state.details_column_resize_active(),
         ExplorerAction::SetColumnId(column) => state.sort_column_supported(column.clone()),
+        ExplorerAction::SetViewMode(mode) => {
+            *mode != explorer_model::ViewMode::Columns || state.columns_menu_enabled()
+        }
         ExplorerAction::ToggleSortMenu
         | ExplorerAction::CloseSortMenu
         | ExplorerAction::MoveSortMenuFocus { .. }
@@ -1936,7 +1939,6 @@ fn action_available(state: &AppViewState, action: &ExplorerAction) -> bool {
         | ExplorerAction::ToggleViewShowSubmenu
         | ExplorerAction::ToggleViewThemeSubmenu
         | ExplorerAction::SetColorTheme(_)
-        | ExplorerAction::SetViewMode(_)
         | ExplorerAction::SetExtensionView { .. }
         | ExplorerAction::ZoomView { .. }
         | ExplorerAction::SetSortDirection(_)

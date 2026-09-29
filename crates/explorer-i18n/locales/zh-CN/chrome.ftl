@@ -190,7 +190,7 @@ chrome-preview-file-type-size = 文件类型：{ $kind }；大小：{ $size }
 
 chrome-details-columns-aria = Details columns: { $columns }
 
-chrome-column-unavailable = { $name }: unavailable
+chrome-column-unavailable = { $name }：不可用
 
 chrome-column-value = { $name }: { $value }
 

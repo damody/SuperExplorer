@@ -5321,6 +5321,10 @@ impl ExplorerRoot {
                             if let Some(command) = this.state.take_pending_column_repair() {
                                 this.submit_command(command);
                             }
+                            if let Some(command) = this.state.take_pending_column_cycle_navigation()
+                            {
+                                this.submit_command(command);
+                            }
                             if outcome == explorer_model::WindowEventOutcome::Applied
                                 && let Some((source, location)) = ancestry
                                 && let Some(command) =
@@ -7098,6 +7102,29 @@ impl ExplorerRoot {
                         outcome: explorer_model::ColumnListingTerminal::Failed(error()),
                     },
                 );
+                true
+            }
+            explorer_model::ExplorerCommand::ResolveColumnCycle {
+                context,
+                location,
+                branch_revision,
+                column,
+                item,
+                ..
+            } => {
+                let _ = self.state.apply_service_event(
+                    explorer_model::ExplorerEvent::ColumnCycleResolved {
+                        context: context.clone(),
+                        branch_revision: *branch_revision,
+                        column: *column,
+                        item: item.clone(),
+                        location: location.clone(),
+                        outcome: explorer_model::ColumnCycleOutcome::Failed(error()),
+                    },
+                );
+                if let Some(command) = self.state.take_pending_column_cycle_navigation() {
+                    self.submit_command(command);
+                }
                 true
             }
             _ => false,
@@ -10123,6 +10150,9 @@ impl ExplorerRoot {
                 6 => ExplorerAction::SetViewMode(explorer_model::ViewMode::Tiles),
                 7 => ExplorerAction::SetViewMode(explorer_model::ViewMode::Content),
                 index if index == actions::VIEW_MENU_COLUMNS => {
+                    if !self.state.columns_menu_enabled() {
+                        return None;
+                    }
                     ExplorerAction::SetViewMode(explorer_model::ViewMode::Columns)
                 }
                 index if index == actions::VIEW_MENU_DETAILS_PANE => {
