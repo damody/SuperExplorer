@@ -14289,6 +14289,11 @@ impl RenderOnce for FileViewHost {
                 let item_width = spatial_metrics.cell_width;
                 let item_height = spatial_metrics.cell_height;
                 let icon_size = spatial_metrics.icon_size;
+                let label_gap = if view_settings.compact_view {
+                    0.0
+                } else {
+                    crate::layout::feature::STACKED_ICON_LABEL_GAP.value()
+                };
                 let explicit_row_width = file_row_explicit_width(
                     view_settings.mode,
                     wrapped_view,
@@ -14683,7 +14688,7 @@ impl RenderOnce for FileViewHost {
                                     .text_center()
                             })
                             .gap(px(if spatial_metrics.stacked {
-                                crate::layout::feature::STACKED_ICON_LABEL_GAP.value()
+                                label_gap
                             } else {
                                 layout.content_spacing.value()
                             }))
@@ -15047,16 +15052,13 @@ impl RenderOnce for FileViewHost {
                                     .max_w_full()
                                     .min_w(px(0.0))
                                     .overflow_hidden()
+                                    .whitespace_nowrap()
+                                    .text_ellipsis()
                                     .when(spatial_metrics.stacked, |name| {
                                         name
                                             .h(px(crate::layout::feature::STACKED_ICON_LABEL_HEIGHT.value()))
                                             .flex_none()
-                                            .whitespace_normal()
-                                            .text_ellipsis()
-                                            .line_clamp(stacked_icon_label_lines(selected))
-                                    })
-                                    .when(!spatial_metrics.stacked, |name| {
-                                        name.whitespace_nowrap().text_ellipsis()
+                                            .mb(px(label_gap))
                                     })
                                     .child(display_name)
                                     .into_any_element()
@@ -15436,10 +15438,6 @@ fn select_file_row_shell_icon<T>(
     specific.or_else(|| is_container.then_some(generic_folder).flatten())
 }
 
-const fn stacked_icon_label_lines(selected: bool) -> usize {
-    if selected { 3 } else { 2 }
-}
-
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct SpatialGridMetrics {
     pub cell_width: f32,
@@ -15740,7 +15738,7 @@ pub(crate) fn view_item_height(
         | explorer_model::ViewMode::LargeIcons
         | explorer_model::ViewMode::MediumIcons => {
             f32::from(explorer_model::effective_icon_size(settings))
-                + crate::layout::feature::STACKED_ICON_LABEL_GAP.value()
+                + crate::layout::feature::STACKED_ICON_LABEL_GAP.value() * 2.0
                 + crate::layout::feature::STACKED_ICON_LABEL_HEIGHT.value()
         }
         explorer_model::ViewMode::SmallIcons => {
@@ -21747,6 +21745,13 @@ mod tests {
         let layout = crate::layout::LayoutTokens::WINDOWS_11;
         let label_height = crate::layout::feature::STACKED_ICON_LABEL_HEIGHT.value();
         let label_gap = crate::layout::feature::STACKED_ICON_LABEL_GAP.value();
+        assert_eq!(
+            label_height,
+            crate::typography::TypographyTokens::WINDOWS_11_ZH_TW
+                .file_row
+                .line_height
+                .value()
+        );
 
         for (mode, sizes) in [
             (explorer_model::ViewMode::MediumIcons, [64, 72, 84]),
@@ -21761,7 +21766,7 @@ mod tests {
                 };
                 let metrics = super::spatial_grid_metrics(&settings, layout);
                 assert!(metrics.stacked);
-                let expected_height = f32::from(icon_size) + label_gap + label_height;
+                let expected_height = f32::from(icon_size) + label_gap * 2.0 + label_height;
                 assert!(
                     (metrics.cell_height - expected_height).abs() < f32::EPSILON,
                     "{mode:?} at {icon_size}px must reserve an independent label region"
@@ -21774,10 +21779,8 @@ mod tests {
         assert!(production.contains("object_fit(ObjectFit::Contain)"));
         assert!(production.contains("STACKED_ICON_LABEL_HEIGHT"));
         assert!(production.contains("overflow_hidden()"));
-        assert!(production.contains("whitespace_normal()"));
+        assert!(production.contains("whitespace_nowrap()"));
         assert!(production.contains("text_ellipsis()"));
-        assert_eq!(super::stacked_icon_label_lines(false), 2);
-        assert_eq!(super::stacked_icon_label_lines(true), 3);
     }
 
     #[test]

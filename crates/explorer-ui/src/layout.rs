@@ -103,10 +103,10 @@ pub mod feature {
     pub const CONTENT_ICON_SIZE: LogicalPx = LogicalPx::new(32.0);
     pub const CONTENT_ROW_DIVIDER_HEIGHT: LogicalPx = LogicalPx::new(1.0);
     /// Explorer icon tiles keep the thumbnail and filename in separate layout regions.
-    /// Three file-name lines fit here. Normal items use two lines; Explorer-style selected
-    /// items may reveal one additional line without changing the row-major grid geometry.
-    pub const STACKED_ICON_LABEL_HEIGHT: LogicalPx = LogicalPx::new(48.0);
-    pub const STACKED_ICON_LABEL_GAP: LogicalPx = LogicalPx::new(8.0);
+    /// File names use one line in both normal and selected tiles; overflow is truncated.
+    pub const STACKED_ICON_LABEL_HEIGHT: LogicalPx = LogicalPx::new(16.0);
+    /// Equal space above and below the single-line filename.
+    pub const STACKED_ICON_LABEL_GAP: LogicalPx = LogicalPx::new(4.0);
     pub const DETAILS_COLUMN_MENU_WIDTH: LogicalPx = LogicalPx::new(310.0);
     pub const DETAILS_COLUMN_MENU_PADDING: LogicalPx = LogicalPx::new(6.0);
     pub const DETAILS_COLUMN_SEPARATOR_HEIGHT: LogicalPx = LogicalPx::new(1.0);
