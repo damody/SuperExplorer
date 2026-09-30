@@ -545,6 +545,82 @@ impl Bookmarks {
         BookmarkMutation::new(previous, true)
     }
 
+    /// Places a folder among sibling folders while preserving the order of bookmarks.
+    pub fn begin_place_folder(
+        &mut self,
+        id: BookmarkFolderId,
+        parent_id: Option<BookmarkFolderId>,
+        destination: usize,
+    ) -> BookmarkMutation {
+        let previous = self.clone();
+        if self.folder(id).is_none()
+            || !self.valid_parent(parent_id)
+            || parent_id.is_some_and(|parent| self.descendant_ids(id).contains(&parent))
+        {
+            return BookmarkMutation::new(previous, false);
+        }
+        let mut siblings = self
+            .child_folders(parent_id)
+            .map(|folder| (folder.order, folder.id, true))
+            .chain(
+                self.child_entries(parent_id)
+                    .map(|entry| (entry.order, entry.id, false)),
+            )
+            .filter(|(_, sibling, is_folder)| !*is_folder || *sibling != id)
+            .collect::<Vec<_>>();
+        siblings.sort_by_key(|(order, sibling, _)| (*order, *sibling));
+        let folder_ids = siblings
+            .iter()
+            .filter(|(_, _, is_folder)| *is_folder)
+            .map(|(_, sibling, _)| *sibling)
+            .collect::<Vec<_>>();
+        let insert_at = folder_ids.get(destination).map_or_else(
+            || {
+                siblings
+                    .iter()
+                    .rposition(|(_, _, is_folder)| *is_folder)
+                    .map_or(0, |index| index + 1)
+            },
+            |target| {
+                siblings
+                    .iter()
+                    .position(|(_, sibling, is_folder)| *is_folder && sibling == target)
+                    .unwrap_or(siblings.len())
+            },
+        );
+        siblings.insert(insert_at, (0, id, true));
+        let current = self
+            .child_folders(parent_id)
+            .map(|folder| folder.id)
+            .collect::<Vec<_>>();
+        let next = siblings
+            .iter()
+            .filter(|(_, _, is_folder)| *is_folder)
+            .map(|(_, sibling, _)| *sibling)
+            .collect::<Vec<_>>();
+        let same_parent = self
+            .folder(id)
+            .is_some_and(|folder| folder.parent_id == parent_id);
+        if same_parent && current == next {
+            return BookmarkMutation::new(previous, false);
+        }
+        if let Some(folder) = self.folders.iter_mut().find(|folder| folder.id == id) {
+            folder.parent_id = parent_id;
+        }
+        for (order, (_, sibling, is_folder)) in siblings.into_iter().enumerate() {
+            if is_folder {
+                if let Some(folder) = self.folders.iter_mut().find(|folder| folder.id == sibling) {
+                    folder.order = u32::try_from(order).unwrap_or(u32::MAX);
+                }
+            } else if let Some(entry) = self.entries.iter_mut().find(|entry| entry.id == sibling) {
+                entry.order = u32::try_from(order).unwrap_or(u32::MAX);
+            }
+        }
+        self.normalize_orders();
+        self.legacy_encoding = false;
+        BookmarkMutation::new(previous, true)
+    }
+
     pub fn rollback(&mut self, mutation: BookmarkMutation) {
         if mutation.changed {
             *self = mutation.previous;
@@ -996,6 +1072,57 @@ fn import_chromium_node(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn folder_drag_reorders_root_siblings_and_preserves_bookmarks() {
+        let mut value = Bookmarks::default();
+        value.begin_add_folder("Android".into(), None);
+        value.begin_add_folder("test".into(), None);
+        value.begin_add(
+            "Download".into(),
+            BookmarkTarget::FolderPath {
+                path: r"C:\Downloads".into(),
+            },
+        );
+        let folders = value
+            .child_folders(None)
+            .map(|item| item.id)
+            .collect::<Vec<_>>();
+        let mutation = value.begin_place_folder(folders[0], None, 1);
+        assert!(mutation.changed());
+        assert_eq!(
+            value
+                .child_folders(None)
+                .map(|item| item.name.as_str())
+                .collect::<Vec<_>>(),
+            ["test", "Android"]
+        );
+        assert_eq!(
+            value.root_entries().next().map(|item| item.name.as_str()),
+            Some("Download")
+        );
+        value.rollback(mutation);
+        assert_eq!(
+            value
+                .child_folders(None)
+                .map(|item| item.name.as_str())
+                .collect::<Vec<_>>(),
+            ["Android", "test"]
+        );
+    }
+
+    #[test]
+    fn folder_drag_cannot_move_into_itself_or_its_descendant() {
+        let mut value = Bookmarks::default();
+        value.begin_add_folder("parent".into(), None);
+        let parent = value.folders()[0].id;
+        value.begin_add_folder("child".into(), Some(parent));
+        let child = value.child_folders(Some(parent)).next().unwrap().id;
+        assert!(!value.begin_place_folder(parent, Some(parent), 0).changed());
+        assert!(!value.begin_place_folder(parent, Some(child), 0).changed());
+        assert_eq!(value.folder(parent).unwrap().parent_id, None);
+        assert_eq!(value.folder(child).unwrap().parent_id, Some(parent));
+    }
 
     #[test]
     fn netscape_html_round_trips_folders_bookmarks_and_separators() {

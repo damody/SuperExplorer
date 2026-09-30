@@ -153,6 +153,7 @@ impl Render for DetailsColumnDragPreview {
 struct BookmarkDrag {
     id: explorer_model::BookmarkId,
     label: String,
+    is_folder: bool,
 }
 
 struct BookmarkDragPreview {
@@ -1460,6 +1461,13 @@ fn bookmark_bar(
             .cloned()
             .map(|folder| (folder, bookmark_folder_menu_items(state.bookmarks(), id)))
     });
+    let active_folder_menu_root_id = active_folder_menu.as_ref().and_then(|(folder, _)| {
+        let mut root = folder;
+        while let Some(parent_id) = root.parent_id {
+            root = state.bookmarks().folder(parent_id)?;
+        }
+        Some(root.id)
+    });
     let visible_limit = bookmark_visible_count(entries.len(), width);
     let visible = entries
         .iter()
@@ -1584,6 +1592,15 @@ fn bookmark_bar(
             let context_callback = callback.clone();
             let drop_callback = callback.clone();
             let folder_id = folder.id;
+            let drag_label = folder.name.clone();
+            let folder_caret = match drop_cue {
+                Some(BookmarkDropCue::ToolbarFolderInsert { target_id, before })
+                    if target_id == folder_id =>
+                {
+                    Some(before)
+                }
+                _ => None,
+            };
             let folder_drop_active = matches!(
                 drop_cue,
                 Some(BookmarkDropCue::IntoFolder { folder_id: hovered }) if hovered == folder_id
@@ -1611,7 +1628,22 @@ fn bookmark_bar(
                     true,
                     bookmark_fallback_folder_icon(tokens),
                 ))
-                .when_some(callback, move |element, callback| {
+                .when_some(folder_caret, |element, before| {
+                    element.child(bookmark_drop_caret(tokens, before))
+                })
+                .on_drag(
+                    BookmarkDrag {
+                        id: folder_id,
+                        label: drag_label,
+                        is_folder: true,
+                    },
+                    |drag, _, _, cx| {
+                        cx.new(|_| BookmarkDragPreview {
+                            label: drag.label.clone(),
+                        })
+                    },
+                )
+                .when_some(callback.clone(), move |element, callback| {
                     element.on_click(move |_, window, cx| callback(&action, window, cx))
                 })
                 .when_some(context_callback, move |element, cb| {
@@ -1635,16 +1667,49 @@ fn bookmark_bar(
                             if !event.bounds.contains(&event.event.position) {
                                 return;
                             }
+                            let drag = event.drag(cx);
+                            if drag.id == folder_id {
+                                move_cb(
+                                    &ExplorerAction::UpdateBookmarkDropCue { cue: None },
+                                    window,
+                                    cx,
+                                );
+                                cx.stop_propagation();
+                                return;
+                            }
+                            let left = f32::from(event.bounds.left());
+                            let right = f32::from(event.bounds.right());
+                            let pointer = f32::from(event.event.position.x);
+                            let cue = if drag.is_folder && pointer < left + (right - left) * 0.25 {
+                                BookmarkDropCue::ToolbarFolderInsert {
+                                    target_id: folder_id,
+                                    before: true,
+                                }
+                            } else if drag.is_folder && pointer > right - (right - left) * 0.25 {
+                                BookmarkDropCue::ToolbarFolderInsert {
+                                    target_id: folder_id,
+                                    before: false,
+                                }
+                            } else {
+                                BookmarkDropCue::IntoFolder { folder_id }
+                            };
                             move_cb(
-                                &ExplorerAction::UpdateBookmarkDropCue {
-                                    cue: Some(BookmarkDropCue::IntoFolder { folder_id }),
-                                },
+                                &ExplorerAction::UpdateBookmarkDropCue { cue: Some(cue) },
                                 window,
                                 cx,
                             );
                             cx.stop_propagation();
                         })
                         .on_drop(move |drag: &BookmarkDrag, window, cx| {
+                            if drag.id == folder_id {
+                                cb(
+                                    &ExplorerAction::UpdateBookmarkDropCue { cue: None },
+                                    window,
+                                    cx,
+                                );
+                                cx.stop_propagation();
+                                return;
+                            }
                             cb(
                                 &ExplorerAction::CommitBookmarkDrop { id: drag.id },
                                 window,
@@ -1655,6 +1720,297 @@ fn bookmark_bar(
                 })
                 .on_mouse_up(MouseButton::Right, |_, _, cx| cx.stop_propagation())
                 .on_mouse_up_out(MouseButton::Right, |_, _, cx| cx.stop_propagation())
+                .when_some(
+                    active_folder_menu
+                        .as_ref()
+                        .filter(|_| active_folder_menu_root_id == Some(folder_id))
+                        .cloned(),
+                    |element, (folder, entries)| {
+                        let menu_folder_id = folder.id;
+                        let empty_menu = entries.is_empty();
+                        let menu_drop_cb = callback.clone();
+                        element.child(
+                            deferred(
+                                div()
+                                    .id("bookmark-folder-menu")
+                                    .role(Role::Menu)
+                                    .occlude()
+                                    .aria_label(state.catalog().t("chrome-bookmark-folder-menu"))
+                                    .absolute()
+                                    .top(px(BOOKMARK_BAR_HEIGHT - tokens.layout.content_spacing.value() / 2.0))
+                                    .left_0()
+                                    .min_w(px(280.0))
+                                    .max_h(px(420.0))
+                                    .overflow_y_scroll()
+                                    .p(px(6.0))
+                                    .rounded(px(6.0))
+                                    .border(px(1.0))
+                                    .border_color(tokens.theme.colors.divider.to_gpui())
+                                    .bg(tokens.theme.colors.menu_fill.to_gpui())
+                                    .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                                    .on_click(|_, _, cx| cx.stop_propagation())
+                                    .when_some(menu_drop_cb, |menu, cb| {
+                                        let move_cb = cb.clone();
+                                        menu.when(empty_menu, |menu| {
+                                            menu.on_drag_move::<BookmarkDrag>(move |event, window, cx| {
+                                                if !event.bounds.contains(&event.event.position) {
+                                                    return;
+                                                }
+                                                move_cb(
+                                                    &ExplorerAction::UpdateBookmarkDropCue {
+                                                        cue: Some(BookmarkDropCue::IntoFolder {
+                                                            folder_id: menu_folder_id,
+                                                        }),
+                                                    },
+                                                    window,
+                                                    cx,
+                                                );
+                                            })
+                                        })
+                                        .on_drop(
+                                            move |drag: &BookmarkDrag, window, cx| {
+                                                cb(
+                                                    &ExplorerAction::CommitBookmarkDrop { id: drag.id },
+                                                    window,
+                                                    cx,
+                                                );
+                                                cx.stop_propagation();
+                                            },
+                                        )
+                                    })
+                                    .children(entries.into_iter().map(|entry| match entry {
+                                        BookmarkFolderMenuItem::Folder(folder) => {
+                                            let folder_id = folder.id;
+                                            let action =
+                                                ExplorerAction::ToggleBookmarkFolderMenu { id: folder_id };
+                                            let callback = callback.clone();
+                                            let context_callback = callback.clone();
+                                            let drop_callback = callback.clone();
+                                            let nested_drop_active = matches!(
+                                                drop_cue,
+                                                Some(BookmarkDropCue::IntoFolder { folder_id: hovered })
+                                                    if hovered == folder_id
+                                            );
+                                            div()
+                                                .id(("bookmark-folder-child", folder_id.as_u128() as u64))
+                                                .role(Role::MenuItem)
+                                                .relative()
+                                                .cursor_pointer()
+                                                .px(px(8.0))
+                                                .py(px(5.0))
+                                                .rounded(px(4.0))
+                                                .hover(|style| {
+                                                    style.bg(tokens.theme.colors.control_hover.to_gpui())
+                                                })
+                                                .flex()
+                                                .justify_between()
+                                                .when(nested_drop_active, |item| {
+                                                    item.bg(tokens.theme.colors.control_pressed.to_gpui())
+                                                })
+                                                .child(bookmark_collection_label(
+                                                    folder.name.clone(),
+                                                    false,
+                                                    bookmark_fallback_folder_icon(tokens),
+                                                ))
+                                                .child("›")
+                                                .when_some(callback, move |item, cb| {
+                                                    item.on_click(move |_, window, cx| cb(&action, window, cx))
+                                                })
+                                                .when_some(context_callback, move |item, cb| {
+                                                    item.on_mouse_down(
+                                                        MouseButton::Right,
+                                                        move |event, window, cx| {
+                                                            cx.stop_propagation();
+                                                            cb(&ExplorerAction::OpenBookmarkToolbarContextMenu {
+                                                            parent_id: Some(folder_id),
+                                                            x: f32::from(event.position.x),
+                                                            y: f32::from(event.position.y),
+                                                        }, window, cx);
+                                                        },
+                                                    )
+                                                })
+                                                .on_mouse_up(MouseButton::Right, |_, _, cx| {
+                                                    cx.stop_propagation()
+                                                })
+                                                .on_mouse_up_out(MouseButton::Right, |_, _, cx| {
+                                                    cx.stop_propagation()
+                                                })
+                                                .when_some(drop_callback, move |item, cb| {
+                                                    let drop_cb = cb.clone();
+                                                    item.on_drag_move::<BookmarkDrag>(
+                                                        move |event, window, cx| {
+                                                            if !event.bounds.contains(&event.event.position) {
+                                                                return;
+                                                            }
+                                                            cb(
+                                                                &ExplorerAction::UpdateBookmarkDropCue {
+                                                                    cue: Some(BookmarkDropCue::IntoFolder {
+                                                                        folder_id,
+                                                                    }),
+                                                                },
+                                                                window,
+                                                                cx,
+                                                            );
+                                                            cx.stop_propagation();
+                                                        },
+                                                    )
+                                                    .on_drop(
+                                                        move |drag: &BookmarkDrag, window, cx| {
+                                                            drop_cb(
+                                                                &ExplorerAction::CommitBookmarkDrop {
+                                                                    id: drag.id,
+                                                                },
+                                                                window,
+                                                                cx,
+                                                            );
+                                                            cx.stop_propagation();
+                                                        },
+                                                    )
+                                                })
+                                                .into_any_element()
+                                        }
+                                        BookmarkFolderMenuItem::Bookmark(bookmark) => {
+                                            let id = bookmark.id;
+                                            let action = ExplorerAction::ActivateBookmark { id };
+                                            let callback = callback.clone();
+                                            let context_callback = callback.clone();
+                                            let drag_move_cb = callback.clone();
+                                            let drop_cb = callback.clone();
+                                            let drag_label = bookmark.name.clone();
+                                            let line_before = match drop_cue {
+                                                Some(BookmarkDropCue::FolderMenuInsert {
+                                                    folder_id,
+                                                    target_id,
+                                                    before,
+                                                }) if folder_id == menu_folder_id && target_id == id => {
+                                                    Some(before)
+                                                }
+                                                _ => None,
+                                            };
+                                            div()
+                                                .id(("bookmark-folder-entry", id.as_u128() as u64))
+                                                .role(Role::MenuItem)
+                                                .aria_label(t_named(
+                                                    catalog,
+                                                    "chrome-bookmark-plain-aria",
+                                                    "name",
+                                                    bookmark.name.clone(),
+                                                ))
+                                                .relative()
+                                                .cursor_pointer()
+                                                .px(px(8.0))
+                                                .py(px(5.0))
+                                                .rounded(px(4.0))
+                                                .hover(|style| {
+                                                    style.bg(tokens.theme.colors.control_hover.to_gpui())
+                                                })
+                                                .on_drag(
+                                                    BookmarkDrag {
+                                                        id,
+                                                        label: drag_label,
+                                                        is_folder: false,
+                                                    },
+                                                    |drag, _, _, cx| {
+                                                        cx.new(|_| BookmarkDragPreview {
+                                                            label: drag.label.clone(),
+                                                        })
+                                                    },
+                                                )
+                                                .child(bookmark_label(
+                                                    &bookmark.target,
+                                                    bookmark.name.clone(),
+                                                    tokens,
+                                                    shell_icons,
+                                                ))
+                                                .when_some(line_before, |item, before| {
+                                                    item.child(bookmark_drop_line(tokens, before))
+                                                })
+                                                .when_some(drag_move_cb, move |item, cb| {
+                                                    item.on_drag_move::<BookmarkDrag>(
+                                                        move |event, window, cx| {
+                                                            if !event.bounds.contains(&event.event.position) {
+                                                                return;
+                                                            }
+                                                            let drag = event.drag(cx);
+                                                            if drag.id == id {
+                                                                return;
+                                                            }
+                                                            let Some(edge) = resolve_bookmark_insert_edge(
+                                                                f32::from(event.event.position.y),
+                                                                f32::from(event.bounds.top()),
+                                                                f32::from(event.bounds.bottom()),
+                                                            ) else {
+                                                                return;
+                                                            };
+                                                            let before = edge.is_before();
+                                                            cb(
+                                                                &ExplorerAction::UpdateBookmarkDropCue {
+                                                                    cue: Some(
+                                                                        BookmarkDropCue::FolderMenuInsert {
+                                                                            folder_id: menu_folder_id,
+                                                                            target_id: id,
+                                                                            before,
+                                                                        },
+                                                                    ),
+                                                                },
+                                                                window,
+                                                                cx,
+                                                            );
+                                                            cx.stop_propagation();
+                                                        },
+                                                    )
+                                                    .when_some(
+                                                        drop_cb,
+                                                        move |item, cb| {
+                                                            item.on_drop(
+                                                                move |drag: &BookmarkDrag, window, cx| {
+                                                                    cb(
+                                                                        &ExplorerAction::CommitBookmarkDrop {
+                                                                            id: drag.id,
+                                                                        },
+                                                                        window,
+                                                                        cx,
+                                                                    );
+                                                                    cx.stop_propagation();
+                                                                },
+                                                            )
+                                                        },
+                                                    )
+                                                })
+                                                .when_some(callback, move |item, cb| {
+                                                    item.on_click(move |_, window, cx| cb(&action, window, cx))
+                                                })
+                                                .when_some(context_callback, move |item, cb| {
+                                                    item.on_mouse_down(
+                                                        MouseButton::Right,
+                                                        move |event, window, cx| {
+                                                            cx.stop_propagation();
+                                                            cb(
+                                                                &ExplorerAction::OpenBookmarkContextMenu {
+                                                                    id,
+                                                                    x: f32::from(event.position.x),
+                                                                    y: f32::from(event.position.y),
+                                                                },
+                                                                window,
+                                                                cx,
+                                                            );
+                                                        },
+                                                    )
+                                                })
+                                                .on_mouse_up(MouseButton::Right, |_, _, cx| {
+                                                    cx.stop_propagation()
+                                                })
+                                                .on_mouse_up_out(MouseButton::Right, |_, _, cx| {
+                                                    cx.stop_propagation()
+                                                })
+                                                .into_any_element()
+                                        }
+                                    })),
+                            )
+                            .with_priority(160),
+                        )
+                    },
+                )
         }))
         .children(visible.into_iter().map(|bookmark| {
             let id = bookmark.id;
@@ -1698,6 +2054,7 @@ fn bookmark_bar(
                     BookmarkDrag {
                         id,
                         label: drag_label,
+                        is_folder: false,
                     },
                     |drag, _, _, cx| {
                         cx.new(|_| BookmarkDragPreview {
@@ -1713,6 +2070,15 @@ fn bookmark_bar(
                                 return;
                             }
                             let drag = event.drag(cx);
+                            if drag.is_folder {
+                                cb(
+                                    &ExplorerAction::UpdateBookmarkDropCue { cue: None },
+                                    window,
+                                    cx,
+                                );
+                                cx.stop_propagation();
+                                return;
+                            }
                             if drag.id == id {
                                 return;
                             }
@@ -1738,6 +2104,10 @@ fn bookmark_bar(
                         })
                         .when_some(drop_cb, move |element, cb| {
                             element.on_drop(move |drag: &BookmarkDrag, window, cx| {
+                                if drag.is_folder {
+                                    cx.stop_propagation();
+                                    return;
+                                }
                                 cb(
                                     &ExplorerAction::CommitBookmarkDrop { id: drag.id },
                                     window,
@@ -1899,290 +2269,9 @@ fn bookmark_bar(
                 .with_priority(150),
             )
         })
-        .when_some(active_folder_menu, |element, (folder, entries)| {
-            let menu_folder_id = folder.id;
-            let empty_menu = entries.is_empty();
-            let menu_drop_cb = callback.clone();
-            element.child(
-                deferred(
-                    div()
-                        .id("bookmark-folder-menu")
-                        .role(Role::Menu)
-                        .occlude()
-                        .aria_label(state.catalog().t("chrome-bookmark-folder-menu"))
-                        .absolute()
-                        .top(px(BOOKMARK_BAR_HEIGHT - 1.0))
-                        .left(px(52.0))
-                        .min_w(px(280.0))
-                        .max_h(px(420.0))
-                        .overflow_y_scroll()
-                        .p(px(6.0))
-                        .rounded(px(6.0))
-                        .border(px(1.0))
-                        .border_color(tokens.theme.colors.divider.to_gpui())
-                        .bg(tokens.theme.colors.menu_fill.to_gpui())
-                        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                        .when_some(menu_drop_cb, |menu, cb| {
-                            let move_cb = cb.clone();
-                            menu.when(empty_menu, |menu| {
-                                menu.on_drag_move::<BookmarkDrag>(move |event, window, cx| {
-                                    if !event.bounds.contains(&event.event.position) {
-                                        return;
-                                    }
-                                    move_cb(
-                                        &ExplorerAction::UpdateBookmarkDropCue {
-                                            cue: Some(BookmarkDropCue::IntoFolder {
-                                                folder_id: menu_folder_id,
-                                            }),
-                                        },
-                                        window,
-                                        cx,
-                                    );
-                                })
-                            })
-                            .on_drop(
-                                move |drag: &BookmarkDrag, window, cx| {
-                                    cb(
-                                        &ExplorerAction::CommitBookmarkDrop { id: drag.id },
-                                        window,
-                                        cx,
-                                    );
-                                },
-                            )
-                        })
-                        .children(entries.into_iter().map(|entry| match entry {
-                            BookmarkFolderMenuItem::Folder(folder) => {
-                                let folder_id = folder.id;
-                                let action =
-                                    ExplorerAction::ToggleBookmarkFolderMenu { id: folder_id };
-                                let callback = callback.clone();
-                                let context_callback = callback.clone();
-                                let drop_callback = callback.clone();
-                                let nested_drop_active = matches!(
-                                    drop_cue,
-                                    Some(BookmarkDropCue::IntoFolder { folder_id: hovered })
-                                        if hovered == folder_id
-                                );
-                                div()
-                                    .id(("bookmark-folder-child", folder_id.as_u128() as u64))
-                                    .role(Role::MenuItem)
-                                    .relative()
-                                    .cursor_pointer()
-                                    .px(px(8.0))
-                                    .py(px(5.0))
-                                    .rounded(px(4.0))
-                                    .hover(|style| {
-                                        style.bg(tokens.theme.colors.control_hover.to_gpui())
-                                    })
-                                    .flex()
-                                    .justify_between()
-                                    .when(nested_drop_active, |item| {
-                                        item.bg(tokens.theme.colors.control_pressed.to_gpui())
-                                    })
-                                    .child(bookmark_collection_label(
-                                        folder.name.clone(),
-                                        false,
-                                        bookmark_fallback_folder_icon(tokens),
-                                    ))
-                                    .child("›")
-                                    .when_some(callback, move |item, cb| {
-                                        item.on_click(move |_, window, cx| cb(&action, window, cx))
-                                    })
-                                    .when_some(context_callback, move |item, cb| {
-                                        item.on_mouse_down(
-                                            MouseButton::Right,
-                                            move |event, window, cx| {
-                                                cx.stop_propagation();
-                                                cb(&ExplorerAction::OpenBookmarkToolbarContextMenu {
-                                                parent_id: Some(folder_id),
-                                                x: f32::from(event.position.x),
-                                                y: f32::from(event.position.y),
-                                            }, window, cx);
-                                            },
-                                        )
-                                    })
-                                    .on_mouse_up(MouseButton::Right, |_, _, cx| {
-                                        cx.stop_propagation()
-                                    })
-                                    .on_mouse_up_out(MouseButton::Right, |_, _, cx| {
-                                        cx.stop_propagation()
-                                    })
-                                    .when_some(drop_callback, move |item, cb| {
-                                        let drop_cb = cb.clone();
-                                        item.on_drag_move::<BookmarkDrag>(
-                                            move |event, window, cx| {
-                                                if !event.bounds.contains(&event.event.position) {
-                                                    return;
-                                                }
-                                                cb(
-                                                    &ExplorerAction::UpdateBookmarkDropCue {
-                                                        cue: Some(BookmarkDropCue::IntoFolder {
-                                                            folder_id,
-                                                        }),
-                                                    },
-                                                    window,
-                                                    cx,
-                                                );
-                                                cx.stop_propagation();
-                                            },
-                                        )
-                                        .on_drop(
-                                            move |drag: &BookmarkDrag, window, cx| {
-                                                drop_cb(
-                                                    &ExplorerAction::CommitBookmarkDrop {
-                                                        id: drag.id,
-                                                    },
-                                                    window,
-                                                    cx,
-                                                );
-                                                cx.stop_propagation();
-                                            },
-                                        )
-                                    })
-                                    .into_any_element()
-                            }
-                            BookmarkFolderMenuItem::Bookmark(bookmark) => {
-                                let id = bookmark.id;
-                                let action = ExplorerAction::ActivateBookmark { id };
-                                let callback = callback.clone();
-                                let context_callback = callback.clone();
-                                let drag_move_cb = callback.clone();
-                                let drop_cb = callback.clone();
-                                let drag_label = bookmark.name.clone();
-                                let line_before = match drop_cue {
-                                    Some(BookmarkDropCue::FolderMenuInsert {
-                                        folder_id,
-                                        target_id,
-                                        before,
-                                    }) if folder_id == menu_folder_id && target_id == id => {
-                                        Some(before)
-                                    }
-                                    _ => None,
-                                };
-                                div()
-                                    .id(("bookmark-folder-entry", id.as_u128() as u64))
-                                    .role(Role::MenuItem)
-                                    .aria_label(t_named(
-                                        catalog,
-                                        "chrome-bookmark-plain-aria",
-                                        "name",
-                                        bookmark.name.clone(),
-                                    ))
-                                    .relative()
-                                    .cursor_pointer()
-                                    .px(px(8.0))
-                                    .py(px(5.0))
-                                    .rounded(px(4.0))
-                                    .hover(|style| {
-                                        style.bg(tokens.theme.colors.control_hover.to_gpui())
-                                    })
-                                    .on_drag(
-                                        BookmarkDrag {
-                                            id,
-                                            label: drag_label,
-                                        },
-                                        |drag, _, _, cx| {
-                                            cx.new(|_| BookmarkDragPreview {
-                                                label: drag.label.clone(),
-                                            })
-                                        },
-                                    )
-                                    .child(bookmark_label(
-                                        &bookmark.target,
-                                        bookmark.name.clone(),
-                                        tokens,
-                                        shell_icons,
-                                    ))
-                                    .when_some(line_before, |item, before| {
-                                        item.child(bookmark_drop_line(tokens, before))
-                                    })
-                                    .when_some(drag_move_cb, move |item, cb| {
-                                        item.on_drag_move::<BookmarkDrag>(
-                                            move |event, window, cx| {
-                                                if !event.bounds.contains(&event.event.position) {
-                                                    return;
-                                                }
-                                                let drag = event.drag(cx);
-                                                if drag.id == id {
-                                                    return;
-                                                }
-                                                let Some(edge) = resolve_bookmark_insert_edge(
-                                                    f32::from(event.event.position.y),
-                                                    f32::from(event.bounds.top()),
-                                                    f32::from(event.bounds.bottom()),
-                                                ) else {
-                                                    return;
-                                                };
-                                                let before = edge.is_before();
-                                                cb(
-                                                    &ExplorerAction::UpdateBookmarkDropCue {
-                                                        cue: Some(
-                                                            BookmarkDropCue::FolderMenuInsert {
-                                                                folder_id: menu_folder_id,
-                                                                target_id: id,
-                                                                before,
-                                                            },
-                                                        ),
-                                                    },
-                                                    window,
-                                                    cx,
-                                                );
-                                                cx.stop_propagation();
-                                            },
-                                        )
-                                        .when_some(
-                                            drop_cb,
-                                            move |item, cb| {
-                                                item.on_drop(
-                                                    move |drag: &BookmarkDrag, window, cx| {
-                                                        cb(
-                                                            &ExplorerAction::CommitBookmarkDrop {
-                                                                id: drag.id,
-                                                            },
-                                                            window,
-                                                            cx,
-                                                        );
-                                                        cx.stop_propagation();
-                                                    },
-                                                )
-                                            },
-                                        )
-                                    })
-                                    .when_some(callback, move |item, cb| {
-                                        item.on_click(move |_, window, cx| cb(&action, window, cx))
-                                    })
-                                    .when_some(context_callback, move |item, cb| {
-                                        item.on_mouse_down(
-                                            MouseButton::Right,
-                                            move |event, window, cx| {
-                                                cx.stop_propagation();
-                                                cb(
-                                                    &ExplorerAction::OpenBookmarkContextMenu {
-                                                        id,
-                                                        x: f32::from(event.position.x),
-                                                        y: f32::from(event.position.y),
-                                                    },
-                                                    window,
-                                                    cx,
-                                                );
-                                            },
-                                        )
-                                    })
-                                    .on_mouse_up(MouseButton::Right, |_, _, cx| {
-                                        cx.stop_propagation()
-                                    })
-                                    .on_mouse_up_out(MouseButton::Right, |_, _, cx| {
-                                        cx.stop_propagation()
-                                    })
-                                    .into_any_element()
-                            }
-                        })),
-                )
-                .with_priority(160),
-            )
-        })
 }
 
+#[derive(Clone)]
 enum BookmarkFolderMenuItem {
     Folder(explorer_model::BookmarkFolder),
     Bookmark(explorer_model::Bookmark),
@@ -2473,6 +2562,7 @@ pub(crate) fn bookmark_manager(
                         BookmarkDrag {
                             id,
                             label: drag_label,
+                            is_folder: false,
                         },
                         |drag, _, _, cx| {
                             cx.new(|_| BookmarkDragPreview {
@@ -10395,6 +10485,7 @@ fn view_menu(
         .id("view-menu")
         .debug_selector(|| "view-menu".to_owned())
         .role(Role::Menu)
+        .relative()
         .occlude()
         .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
         .w(px(
@@ -10567,9 +10658,7 @@ fn view_theme_submenu(
         .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
         .absolute()
         .top(px(layout.menu_row_height.value() * 9.0))
-        .left(px(
-            layout.navigation_pane_min_width.value() + layout.minimum_hit_target.value()
-        ))
+        .left(relative(1.0))
         .w(px(
             layout.navigation_pane_min_width.value() + layout.minimum_hit_target.value()
         ))
@@ -10608,9 +10697,7 @@ fn view_show_submenu(
         .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
         .absolute()
         .top(px(layout.menu_row_height.value() * 10.0))
-        .left(px(
-            layout.navigation_pane_min_width.value() + layout.minimum_hit_target.value()
-        ))
+        .left(relative(1.0))
         .w(px(
             layout.navigation_pane_min_width.value() + layout.minimum_hit_target.value()
         ))
@@ -22764,6 +22851,17 @@ mod tests {
         assert!(production.contains(".debug_selector(|| \"view-menu\".to_owned())"));
         assert!(production.contains("view-theme-submenu"));
         assert!(production.contains("fn view_theme_submenu("));
+        for submenu_fn in ["fn view_theme_submenu(", "fn view_show_submenu("] {
+            let submenu = production
+                .split(submenu_fn)
+                .nth(1)
+                .and_then(|source| source.split("\nfn ").next())
+                .expect("view submenu builder");
+            assert!(
+                submenu.contains(".left(relative(1.0))"),
+                "{submenu_fn} must use the rendered parent width for its horizontal anchor"
+            );
+        }
         assert!(production.contains(".top(px(layout.minimum_hit_target.value()))"));
         assert!(production.contains(".right_0()"));
         for menu_fn in [
@@ -23439,7 +23537,7 @@ mod tests {
             "bookmark chips must accept the drop at the caret"
         );
         let menu = toolbar
-            .split(".when_some(active_folder_menu")
+            .split(".id(\"bookmark-folder-menu\")")
             .nth(1)
             .expect("folder dropdown");
         assert!(
@@ -23553,7 +23651,7 @@ mod tests {
         assert!(source.contains("bookmark-folder-menu-dismiss-overlay"));
         assert!(source.contains(".with_priority(155)"));
         let start = source
-            .find(".when_some(active_folder_menu")
+            .find(".id(\"bookmark-folder-menu\")")
             .expect("folder menu");
         let end = source[start..]
             .find("enum BookmarkFolderMenuItem")
@@ -23575,7 +23673,7 @@ mod tests {
             .next()
             .expect("production source precedes tests");
         let start = production
-            .find(".when_some(active_folder_menu")
+            .find(".id(\"bookmark-folder-menu\")")
             .expect("folder menu");
         let end = production[start..]
             .find("enum BookmarkFolderMenuItem")

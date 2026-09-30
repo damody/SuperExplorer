@@ -1282,6 +1282,10 @@ pub(crate) fn bookmark_place_index(
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum BookmarkDropCue {
+    ToolbarFolderInsert {
+        target_id: explorer_model::BookmarkFolderId,
+        before: bool,
+    },
     ToolbarInsert {
         target_id: explorer_model::BookmarkId,
         before: bool,
@@ -2066,7 +2070,46 @@ impl AppViewState {
         id: explorer_model::BookmarkId,
     ) -> explorer_model::BookmarkMutation {
         let cue = self.bookmark_drop_cue.take();
+        if let Some(folder) = self.bookmarks.folder(id) {
+            let current_parent = folder.parent_id;
+            let current_index = self
+                .bookmarks
+                .child_folders(current_parent)
+                .position(|candidate| candidate.id == id)
+                .unwrap_or(0);
+            return match cue {
+                Some(BookmarkDropCue::ToolbarFolderInsert { target_id, before }) => {
+                    let siblings = self
+                        .bookmarks
+                        .child_folders(None)
+                        .map(|item| item.id)
+                        .collect::<Vec<_>>();
+                    let destination = bookmark_place_index(&siblings, id, target_id, before);
+                    self.bookmarks.begin_place_folder(id, None, destination)
+                }
+                Some(BookmarkDropCue::IntoFolder { folder_id }) => {
+                    let destination = self.bookmarks.child_folders(Some(folder_id)).count();
+                    self.bookmarks
+                        .begin_place_folder(id, Some(folder_id), destination)
+                }
+                Some(BookmarkDropCue::FolderMenuInsert { folder_id, .. }) => {
+                    let destination = self.bookmarks.child_folders(Some(folder_id)).count();
+                    self.bookmarks
+                        .begin_place_folder(id, Some(folder_id), destination)
+                }
+                Some(BookmarkDropCue::ToolbarInsert { .. }) => {
+                    let destination = self.bookmarks.child_folders(None).count();
+                    self.bookmarks.begin_place_folder(id, None, destination)
+                }
+                None => self
+                    .bookmarks
+                    .begin_place_folder(id, current_parent, current_index),
+            };
+        }
         match cue {
+            Some(BookmarkDropCue::ToolbarFolderInsert { .. }) => {
+                self.bookmarks.begin_move_to_folder(id, None)
+            }
             Some(BookmarkDropCue::ToolbarInsert { target_id, before }) => {
                 let siblings = self
                     .bookmarks
@@ -13489,6 +13532,63 @@ mod tests {
             ["A", "C"],
             "folder-menu insert line must place the dragged bookmark at the line, not append"
         );
+    }
+
+    #[test]
+    fn commit_bookmark_folder_drop_reorders_root_and_moves_into_folder() {
+        let mut state = AppViewState::default();
+        for name in ["A", "B", "C"] {
+            assert!(state.add_bookmark_folder(name.into(), None).changed());
+        }
+        let ids = state
+            .bookmarks()
+            .child_folders(None)
+            .map(|folder| folder.id)
+            .collect::<Vec<_>>();
+        let [a, b, c] = ids.as_slice() else {
+            panic!("expected three root folders");
+        };
+        assert!(
+            state.update_bookmark_drop_cue(Some(BookmarkDropCue::ToolbarFolderInsert {
+                target_id: *c,
+                before: false,
+            }))
+        );
+        let reorder = state.commit_bookmark_drop(*a);
+        assert!(reorder.changed());
+        assert_eq!(
+            state
+                .bookmarks()
+                .child_folders(None)
+                .map(|folder| folder.name.as_str())
+                .collect::<Vec<_>>(),
+            ["B", "C", "A"]
+        );
+        state.bookmarks.rollback(reorder);
+        assert_eq!(
+            state
+                .bookmarks()
+                .child_folders(None)
+                .map(|folder| folder.name.as_str())
+                .collect::<Vec<_>>(),
+            ["A", "B", "C"]
+        );
+        assert!(
+            state.update_bookmark_drop_cue(Some(BookmarkDropCue::IntoFolder { folder_id: *b }))
+        );
+        assert!(state.commit_bookmark_drop(*a).changed());
+        assert_eq!(
+            state
+                .bookmarks()
+                .child_folders(Some(*b))
+                .map(|folder| folder.name.as_str())
+                .collect::<Vec<_>>(),
+            ["A"]
+        );
+        assert!(
+            state.update_bookmark_drop_cue(Some(BookmarkDropCue::IntoFolder { folder_id: *a }))
+        );
+        assert!(!state.commit_bookmark_drop(*b).changed());
     }
 
     #[test]
