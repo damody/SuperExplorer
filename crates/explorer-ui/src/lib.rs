@@ -546,8 +546,14 @@ fn coalesce_directory_events(
 
 struct VisibleItemIconCache {
     entries: HashMap<explorer_model::ShellIconKey, Arc<RenderImage>>,
+    // Keep the final owner until the window can remove the corresponding atlas tiles.
+    // Dropping CPU pixels alone does not release GPUI's GPU allocation.
+    atlas_images: HashMap<gpui::ImageId, Arc<RenderImage>>,
     costs: HashMap<explorer_model::ShellIconKey, usize>,
     thumbnail_entries: HashSet<explorer_model::ShellIconKey>,
+    protected_keys: HashSet<explorer_model::ShellIconKey>,
+    thumbnail_byte_budget: usize,
+    thumbnail_capacity: usize,
     order: VecDeque<explorer_model::ShellIconKey>,
     latest_association: HashMap<explorer_model::LocationDescriptor, u64>,
     latest_overlay: HashMap<explorer_model::LocationDescriptor, u64>,
@@ -567,6 +573,8 @@ struct VisibleItemIconCacheStats {
     entry_budget: usize,
     current_bytes: usize,
     byte_budget: usize,
+    thumbnail_bytes: usize,
+    thumbnail_byte_budget: usize,
     hits: u64,
     misses: u64,
     negative_hits: u64,
@@ -578,8 +586,12 @@ impl Default for VisibleItemIconCache {
     fn default() -> Self {
         Self {
             entries: HashMap::new(),
+            atlas_images: HashMap::new(),
             costs: HashMap::new(),
             thumbnail_entries: HashSet::new(),
+            protected_keys: HashSet::new(),
+            thumbnail_byte_budget: default_thumbnail_byte_budget(),
+            thumbnail_capacity: THUMBNAIL_SCHEDULER_QUEUE_CAPACITY,
             order: VecDeque::new(),
             latest_association: HashMap::new(),
             latest_overlay: HashMap::new(),
@@ -596,6 +608,33 @@ impl Default for VisibleItemIconCache {
 }
 
 impl VisibleItemIconCache {
+    fn track_atlas_image(&mut self, texture: &Arc<RenderImage>) {
+        self.atlas_images
+            .entry(texture.id)
+            .or_insert_with(|| Arc::clone(texture));
+    }
+
+    fn take_unused_atlas_images(&mut self) -> Vec<Arc<RenderImage>> {
+        let mut unused = Vec::new();
+        self.atlas_images.retain(|_, texture| {
+            if Arc::strong_count(texture) == 1 {
+                unused.push(Arc::clone(texture));
+                false
+            } else {
+                true
+            }
+        });
+        unused
+    }
+
+    fn release_unused_atlas_images(&mut self, window: &mut Window) {
+        for texture in self.take_unused_atlas_images() {
+            if let Err(error) = window.drop_image(texture) {
+                tracing::warn!(%error, "failed to release unused image atlas tiles");
+            }
+        }
+    }
+
     fn record_negative_hit(&mut self) {
         self.negative_hits = self.negative_hits.saturating_add(1);
     }
@@ -612,17 +651,58 @@ impl VisibleItemIconCache {
 
     fn set_byte_budget(&mut self, byte_budget: usize) {
         self.byte_budget = byte_budget.max(1024 * 1024);
-        while self.current_bytes > self.byte_budget {
-            let Some(oldest) = self.order.pop_front() else {
+        self.evict_to_budget();
+    }
+
+    fn set_thumbnail_byte_budget(&mut self, byte_budget: usize) {
+        self.thumbnail_byte_budget = byte_budget.max(1);
+        self.evict_to_budget();
+    }
+
+    fn evict_to_budget(&mut self) {
+        let mut thumbnail_bytes = self
+            .costs
+            .iter()
+            .filter(|(key, _)| self.thumbnail_entries.contains(*key))
+            .map(|(_, cost)| *cost)
+            .fold(0_usize, usize::saturating_add);
+        loop {
+            let thumbnail_full = thumbnail_bytes > self.thumbnail_byte_budget
+                || self.thumbnail_entries.len() > self.thumbnail_capacity;
+            let icon_full = self.current_bytes.saturating_sub(thumbnail_bytes) > self.byte_budget
+                || self
+                    .entries
+                    .len()
+                    .saturating_sub(self.thumbnail_entries.len())
+                    > self.capacity;
+            if !thumbnail_full && !icon_full {
                 break;
-            };
-            if self.entries.remove(&oldest).is_some() {
-                self.thumbnail_entries.remove(&oldest);
-                self.current_bytes = self
-                    .current_bytes
-                    .saturating_sub(self.costs.remove(&oldest).unwrap_or_default());
-                self.evictions = self.evictions.saturating_add(1);
             }
+            let eligible = |key: &&explorer_model::ShellIconKey| {
+                if thumbnail_full {
+                    self.thumbnail_entries.contains(*key)
+                } else if icon_full {
+                    !self.thumbnail_entries.contains(*key)
+                } else {
+                    true
+                }
+            };
+            let victim = self
+                .order
+                .iter()
+                .filter(eligible)
+                .find(|key| !self.protected_keys.contains(*key))
+                .or_else(|| self.order.iter().find(eligible))
+                .cloned();
+            let Some(victim) = victim else { break };
+            self.order.retain(|key| key != &victim);
+            self.entries.remove(&victim);
+            let cost = self.costs.remove(&victim).unwrap_or_default();
+            if self.thumbnail_entries.remove(&victim) {
+                thumbnail_bytes = thumbnail_bytes.saturating_sub(cost);
+            }
+            self.current_bytes = self.current_bytes.saturating_sub(cost);
+            self.evictions = self.evictions.saturating_add(1);
         }
     }
 
@@ -668,6 +748,7 @@ impl VisibleItemIconCache {
             self.recalculate_bytes();
         }
         let cost = render_image_bytes(&texture);
+        self.track_atlas_image(&texture);
         let replaced = self.entries.insert(key.clone(), texture);
         let previous_cost = self.costs.insert(key.clone(), cost).unwrap_or_default();
         match provenance {
@@ -684,17 +765,7 @@ impl VisibleItemIconCache {
             .saturating_sub(previous_cost)
             .saturating_add(cost);
         self.touch(key);
-        while self.entries.len() > self.capacity || self.current_bytes > self.byte_budget {
-            if let Some(oldest) = self.order.pop_front()
-                && self.entries.remove(&oldest).is_some()
-            {
-                self.thumbnail_entries.remove(&oldest);
-                self.current_bytes = self
-                    .current_bytes
-                    .saturating_sub(self.costs.remove(&oldest).unwrap_or_default());
-                self.evictions = self.evictions.saturating_add(1);
-            }
-        }
+        self.evict_to_budget();
         true
     }
 
@@ -890,11 +961,22 @@ impl VisibleItemIconCache {
     }
 
     fn stats(&self) -> VisibleItemIconCacheStats {
+        let thumbnail_bytes = self
+            .costs
+            .iter()
+            .filter(|(key, _)| self.thumbnail_entries.contains(*key))
+            .map(|(_, cost)| *cost)
+            .fold(0_usize, usize::saturating_add);
         VisibleItemIconCacheStats {
-            entries: self.entries.len(),
+            entries: self
+                .entries
+                .len()
+                .saturating_sub(self.thumbnail_entries.len()),
             entry_budget: self.capacity,
-            current_bytes: self.current_bytes,
+            current_bytes: self.current_bytes.saturating_sub(thumbnail_bytes),
             byte_budget: self.byte_budget,
+            thumbnail_bytes,
+            thumbnail_byte_budget: self.thumbnail_byte_budget,
             hits: self.hits,
             misses: self.misses,
             negative_hits: self.negative_hits,
@@ -1337,6 +1419,8 @@ pub struct ExplorerRoot {
     preview_host_boundary: Option<(u64, i32, i32, u32, u32, u32)>,
     navigation_scroll: gpui::ScrollHandle,
     file_scroll: gpui::ScrollHandle,
+    file_scroll_tab_id: Option<explorer_model::TabId>,
+    inactive_file_scrolls: HashMap<explorer_model::TabId, gpui::ScrollHandle>,
     tab_scroll: gpui::ScrollHandle,
     file_viewport_width: f32,
     pending_file_row_reveal: Option<usize>,
@@ -2073,6 +2157,8 @@ impl ExplorerRoot {
             preview_host_boundary: None,
             navigation_scroll: gpui::ScrollHandle::new(),
             file_scroll: gpui::ScrollHandle::new(),
+            file_scroll_tab_id: None,
+            inactive_file_scrolls: HashMap::new(),
             tab_scroll: gpui::ScrollHandle::new(),
             file_viewport_width: 0.0,
             pending_file_row_reveal: None,
@@ -3999,8 +4085,39 @@ impl ExplorerRoot {
 
     #[doc(hidden)]
     pub fn set_file_scroll_offset_for_test(&mut self, offset: f32) {
+        self.sync_active_file_scroll();
         self.file_scroll
             .set_offset(gpui::point(px(0.0), px(-offset.max(0.0))));
+    }
+
+    fn sync_active_file_scroll(&mut self) {
+        let active_id = self.state.tabs().active_tab_id();
+        match self.file_scroll_tab_id {
+            None => self.file_scroll_tab_id = Some(active_id),
+            Some(previous_id) if previous_id == active_id => {}
+            Some(previous_id) => {
+                self.inactive_file_scrolls
+                    .insert(previous_id, self.file_scroll.clone());
+                self.file_scroll = self
+                    .inactive_file_scrolls
+                    .remove(&active_id)
+                    .unwrap_or_else(gpui::ScrollHandle::new);
+                self.file_scroll_tab_id = Some(active_id);
+                self.pending_file_row_reveal = None;
+            }
+        }
+    }
+
+    fn prune_closed_file_scrolls(&mut self) {
+        let open_ids = self
+            .state
+            .tabs()
+            .tabs()
+            .iter()
+            .map(|tab| tab.id)
+            .collect::<HashSet<_>>();
+        self.inactive_file_scrolls
+            .retain(|id, _| open_ids.contains(id));
     }
 
     fn ensure_file_row_visible(&mut self, row_index: usize, window: &Window) {
@@ -4440,6 +4557,8 @@ impl ExplorerRoot {
             preview_host_boundary: None,
             navigation_scroll: gpui::ScrollHandle::new(),
             file_scroll: gpui::ScrollHandle::new(),
+            file_scroll_tab_id: None,
+            inactive_file_scrolls: HashMap::new(),
             tab_scroll: gpui::ScrollHandle::new(),
             file_viewport_width: 0.0,
             pending_file_row_reveal: None,
@@ -4563,6 +4682,8 @@ impl ExplorerRoot {
             preview_host_boundary: None,
             navigation_scroll: gpui::ScrollHandle::new(),
             file_scroll: gpui::ScrollHandle::new(),
+            file_scroll_tab_id: None,
+            inactive_file_scrolls: HashMap::new(),
             tab_scroll: gpui::ScrollHandle::new(),
             file_viewport_width: 0.0,
             pending_file_row_reveal: None,
@@ -5195,6 +5316,8 @@ impl ExplorerRoot {
                                     icon_entry_budget = icons.entry_budget,
                                     icon_bytes = icons.current_bytes,
                                     icon_byte_budget = icons.byte_budget,
+                                    thumbnail_texture_bytes = icons.thumbnail_bytes,
+                                    thumbnail_texture_byte_budget = icons.thumbnail_byte_budget,
                                     icon_hits = icons.hits,
                                     icon_misses = icons.misses,
                                     icon_negative_hits = icons.negative_hits,
@@ -5577,6 +5700,7 @@ impl ExplorerRoot {
         payload: &explorer_model::ShellIconPayload,
         texture: Arc<RenderImage>,
     ) {
+        self.shell_icons.track_atlas_image(&texture);
         if let Some(base_key) = self.pending_base_icons.remove(&payload.key) {
             self.base_icons
                 .insert(base_key, Arc::clone(&texture), icon_payload_hash(payload));
@@ -5731,6 +5855,8 @@ impl ExplorerRoot {
         self.shell_icons.set_byte_budget(visible_icon_budget);
         self.base_icons.set_byte_budget(base_icon_budget);
         let thumbnail_byte_budget = thumbnail_pixel_cache_byte_budget(&view_settings);
+        self.shell_icons
+            .set_thumbnail_byte_budget(thumbnail_byte_budget);
         self.thumbnail_memory_cache
             .set_byte_budget(thumbnail_byte_budget);
         self.thumbnail_scheduler
@@ -7453,6 +7579,7 @@ impl ExplorerRoot {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.sync_active_file_scroll();
         if let ExplorerAction::UpdatePreviewHostBoundary {
             parent_window,
             left_physical,
@@ -7815,6 +7942,18 @@ impl ExplorerRoot {
         let ((), measurement) = measure_callback(action.name(), || {
             dispatch_action(&mut self.state, action.clone(), source);
         });
+        self.sync_active_file_scroll();
+        if matches!(
+            action,
+            ExplorerAction::NewTab
+                | ExplorerAction::CloseActiveTab
+                | ExplorerAction::CloseTab { .. }
+                | ExplorerAction::ActivateTab { .. }
+                | ExplorerAction::NextTab
+                | ExplorerAction::PreviousTab
+        ) {
+            self.prune_closed_file_scrolls();
+        }
         if let Some(before) = drag_before {
             interaction_log::record_ui_interaction(
                 if matches!(action, ExplorerAction::CancelFileDrag) {
@@ -10809,6 +10948,8 @@ impl Render for ExplorerRoot {
         reason = "the root registers the complete, auditable keyboard action scope in one place"
     )]
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.shell_icons.release_unused_atlas_images(window);
+        self.sync_active_file_scroll();
         self.sync_windows_appearance(window);
         let window_title = active_window_title(self.state.tabs());
         if self.last_window_title.as_deref() != Some(window_title.as_str()) {
@@ -10906,7 +11047,7 @@ impl Render for ExplorerRoot {
             self.file_performance
                 .record_directory_revision(presentation.revision());
         }
-        let realized_entries = file_presentation
+        let (realized_entries, visible_entries) = file_presentation
             .as_ref()
             .map(|presentation| {
                 let metrics = chrome::spatial_grid_layout(
@@ -10981,13 +11122,20 @@ impl Render for ExplorerRoot {
                     )
                     .items
                 };
-                file_view::visible_first_ordinals(
+                let visible_entries = visible
+                    .clone()
+                    .filter_map(|ordinal| {
+                        presentation.entry(ordinal).map(|(_, entry)| entry.clone())
+                    })
+                    .collect::<Vec<_>>();
+                let realized_entries = file_view::visible_first_ordinals(
                     prime_top_icon_range(presentation.len(), scroll_offset, range, prime_cap),
                     visible,
                 )
                 .into_iter()
                 .filter_map(|ordinal| presentation.entry(ordinal).map(|(_, entry)| entry.clone()))
-                .collect::<Vec<_>>()
+                .collect::<Vec<_>>();
+                (realized_entries, visible_entries)
             })
             .unwrap_or_default();
         self.state.ensure_column_branch();
@@ -11003,6 +11151,34 @@ impl Render for ExplorerRoot {
         } else {
             column_icon_entries
         };
+        let theme = match self.tokens.theme.mode {
+            ThemeMode::Light => explorer_model::ShellIconTheme::Light,
+            ThemeMode::Dark => explorer_model::ShellIconTheme::Dark,
+        };
+        let logical_size = navigation_pane::view_icon_logical_size_for_settings(&view_settings);
+        let visible_entries = if view_settings.mode == explorer_model::ViewMode::Columns {
+            &icon_entries
+        } else {
+            &visible_entries
+        };
+        self.shell_icons.protected_keys = visible_entries
+            .iter()
+            .map(|entry| {
+                let mut key = file_icon_cache_key(
+                    entry,
+                    theme,
+                    self.shell_icon_dpi,
+                    logical_size,
+                    self.icon_epochs.association(),
+                );
+                key.overlay_generation = self
+                    .item_overlay_epochs
+                    .get(&entry.id)
+                    .copied()
+                    .unwrap_or_else(|| self.icon_epochs.overlay());
+                key
+            })
+            .collect();
         if !icon_entries.is_empty() {
             let tab = self.state.tabs().active_tab();
             let context = explorer_model::RequestContext::new(tab.id, tab.generation);
@@ -11016,6 +11192,9 @@ impl Render for ExplorerRoot {
             self.submit_command(command);
         }
         self.synchronize_preview_thumbnail(preview_entry.as_ref());
+        if let Some(texture) = &self.preview_texture {
+            self.shell_icons.track_atlas_image(texture);
+        }
         self.synchronize_preview_handler(preview_entry.as_ref());
         self.synchronize_preview_content(preview_entry.as_ref());
         self.submit_folder_size_requests();
@@ -12972,6 +13151,150 @@ mod tests {
             super::prime_top_icon_range(100_000, 400.0, 8..24, 16),
             8..24
         );
+    }
+
+    #[test]
+    fn viewport_thumbnails_survive_overscan_and_scroll_moves_protection() {
+        let mut cache = VisibleItemIconCache::default();
+        let keys = (0..10)
+            .map(|index| {
+                super::navigation_pane::shell_icon_key(
+                    &explorer_model::LocationDescriptor::file_system(format!(
+                        r"D:\fixture\{index}.png"
+                    )),
+                    explorer_model::ShellIconTheme::Light,
+                    96,
+                )
+            })
+            .collect::<Vec<_>>();
+        let texture = || {
+            Arc::new(gpui::RenderImage::new(smallvec::smallvec![
+                image::Frame::new(image::RgbaImage::new(512, 512))
+            ]))
+        };
+        cache.set_thumbnail_byte_budget(3 * 1024 * 1024);
+        cache.protected_keys = keys[..3].iter().cloned().collect();
+        for key in &keys {
+            cache.insert_thumbnail(key, texture());
+        }
+        assert!(
+            keys[..3]
+                .iter()
+                .all(|key| cache.has_thumbnail_presentation(key))
+        );
+        assert_eq!(cache.stats().thumbnail_bytes, 3 * 1024 * 1024);
+        assert_eq!(cache.stats().current_bytes, 0);
+        // The viewport moves to the bottom. Cached top rows must yield their slots.
+        cache.protected_keys = keys[7..].iter().cloned().collect();
+        for key in keys[7..].iter().chain(keys[..7].iter()) {
+            cache.insert_thumbnail(key, texture());
+        }
+        assert!(
+            keys[7..]
+                .iter()
+                .all(|key| cache.has_thumbnail_presentation(key))
+        );
+        assert!(
+            keys[..3]
+                .iter()
+                .all(|key| !cache.has_thumbnail_presentation(key))
+        );
+        assert!(cache.stats().thumbnail_bytes <= cache.stats().thumbnail_byte_budget);
+    }
+
+    #[test]
+    fn icon_and_thumbnail_texture_quotas_do_not_evict_each_other() {
+        let mut cache = VisibleItemIconCache::default();
+        cache.set_byte_budget(1024 * 1024);
+        cache.set_thumbnail_byte_budget(2 * 1024 * 1024);
+        let keys = (0..5)
+            .map(|index| {
+                super::navigation_pane::shell_icon_key(
+                    &explorer_model::LocationDescriptor::file_system(format!(
+                        r"D:\fixture\{index}.png"
+                    )),
+                    explorer_model::ShellIconTheme::Light,
+                    96,
+                )
+            })
+            .collect::<Vec<_>>();
+        let texture = || {
+            Arc::new(gpui::RenderImage::new(smallvec::smallvec![
+                image::Frame::new(image::RgbaImage::new(512, 512))
+            ]))
+        };
+        cache.insert(&keys[0], texture());
+        cache.insert_thumbnail(&keys[1], texture());
+        cache.insert_thumbnail(&keys[2], texture());
+        cache.insert_thumbnail(&keys[3], texture());
+        assert!(cache.entries.contains_key(&keys[0]));
+        assert!(!cache.entries.contains_key(&keys[1]));
+        cache.insert(&keys[4], texture());
+        assert!(!cache.entries.contains_key(&keys[0]));
+        assert!(cache.has_thumbnail_presentation(&keys[2]));
+        assert!(cache.has_thumbnail_presentation(&keys[3]));
+        assert_eq!(cache.stats().current_bytes, 1024 * 1024);
+        assert_eq!(cache.stats().thumbnail_bytes, 2 * 1024 * 1024);
+        cache.set_byte_budget(1024 * 1024);
+        assert_eq!(cache.stats().thumbnail_bytes, 2 * 1024 * 1024);
+    }
+
+    #[test]
+    fn evicted_atlas_images_wait_for_visible_and_shared_cache_owners() {
+        let mut cache = VisibleItemIconCache::default();
+        let texture = Arc::new(gpui::RenderImage::new(smallvec::smallvec![
+            image::Frame::new(image::RgbaImage::new(32, 32))
+        ]));
+        let key = super::navigation_pane::shell_icon_key(
+            &explorer_model::LocationDescriptor::file_system(r"D:\fixture\image.png"),
+            explorer_model::ShellIconTheme::Light,
+            96,
+        );
+        let image_id = texture.id;
+        let visible_snapshot = Arc::clone(&texture);
+        let shared_base_cache = Arc::clone(&texture);
+        assert!(cache.insert_thumbnail(&key, texture));
+        // Registration is deduplicated even when a preview shares the same image.
+        cache.track_atlas_image(&visible_snapshot);
+        assert_eq!(cache.atlas_images.len(), 1);
+        cache.clear_overlay_dependent();
+        assert!(cache.take_unused_atlas_images().is_empty());
+        drop(visible_snapshot);
+        assert!(cache.take_unused_atlas_images().is_empty());
+        drop(shared_base_cache);
+        let released = cache.take_unused_atlas_images();
+        assert_eq!(released.len(), 1);
+        assert_eq!(released[0].id, image_id);
+        assert!(cache.atlas_images.is_empty());
+        assert!(cache.take_unused_atlas_images().is_empty());
+    }
+
+    #[test]
+    fn repeated_thumbnail_zoom_replacements_release_old_atlas_images() {
+        let mut cache = VisibleItemIconCache::default();
+        cache.thumbnail_capacity = 1;
+        for cycle in 0..64 {
+            let key = super::navigation_pane::shell_icon_key(
+                &explorer_model::LocationDescriptor::file_system(format!(
+                    r"D:\fixture\folder-{}\image.png",
+                    cycle % 4
+                )),
+                explorer_model::ShellIconTheme::Light,
+                96,
+            );
+            let edge = if cycle % 2 == 0 { 32 } else { 256 };
+            let texture = Arc::new(gpui::RenderImage::new(smallvec::smallvec![
+                image::Frame::new(image::RgbaImage::new(edge, edge))
+            ]));
+            assert!(cache.insert_thumbnail(&key, texture));
+            let released = cache.take_unused_atlas_images();
+            assert_eq!(released.len(), usize::from(cycle > 0));
+            assert_eq!(cache.atlas_images.len(), 1);
+            assert_eq!(cache.entries.len(), 1);
+        }
+        cache.clear_overlay_dependent();
+        assert_eq!(cache.take_unused_atlas_images().len(), 1);
+        assert!(cache.atlas_images.is_empty());
     }
 
     #[test]
@@ -15405,6 +15728,35 @@ mod tests {
             first_id,
             second_id,
         )
+    }
+
+    #[test]
+    fn file_scroll_position_is_independent_for_each_tab() {
+        let mut root = ExplorerRoot::default();
+        let first = root.state.tabs().active_tab_id();
+        root.set_file_scroll_offset_for_test(800.0);
+        root.pending_file_row_reveal = Some(42);
+
+        let second = root.state.new_tab();
+        root.sync_active_file_scroll();
+        assert_eq!(root.file_scroll.offset().y, gpui::px(0.0));
+        assert_eq!(root.pending_file_row_reveal, None);
+        root.set_file_scroll_offset_for_test(50.0);
+
+        assert!(root.state.activate_tab(first));
+        root.sync_active_file_scroll();
+        assert_eq!(root.file_scroll.offset().y, gpui::px(-800.0));
+
+        assert!(root.state.activate_tab(second));
+        root.sync_active_file_scroll();
+        assert_eq!(root.file_scroll.offset().y, gpui::px(-50.0));
+
+        assert_eq!(
+            root.state.close_tab(first),
+            explorer_model::TabCloseOutcome::Closed
+        );
+        root.prune_closed_file_scrolls();
+        assert!(!root.inactive_file_scrolls.contains_key(&first));
     }
 
     fn navigation_command_count(commands: &[explorer_model::ExplorerCommand]) -> usize {
