@@ -28,7 +28,8 @@ use windows::{
         Foundation::{FILETIME, HWND, SYSTEMTIME},
         Globalization::{DATE_SHORTDATE, GetDateFormatEx, GetTimeFormatEx, TIME_NOSECONDS},
         Storage::FileSystem::{
-            CreateFileW, FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAGS_AND_ATTRIBUTES, FILE_ID_INFO,
+            CreateFileW, FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_NORMAL,
+            FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAGS_AND_ATTRIBUTES, FILE_ID_INFO,
             FILE_READ_ATTRIBUTES, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE, FileIdInfo,
             GetDiskFreeSpaceExW, GetDriveTypeW, GetFileInformationByHandleEx,
             GetVolumeInformationW, OPEN_EXISTING,
@@ -43,9 +44,9 @@ use windows::{
         UI::Shell::{
             Common::ITEMIDLIST, IEnumIDList, ILCombine, ILGetSize, IShellFolder, IShellItem,
             SHCONTF_FOLDERS, SHCONTF_INCLUDEHIDDEN, SHCONTF_INCLUDESUPERHIDDEN, SHCONTF_NONFOLDERS,
-            SHCreateItemFromIDList, SHFILEINFOW, SHGFI_TYPENAME, SHGetDesktopFolder,
-            SHGetFileInfoW, SHGetKnownFolderIDList, SHGetNameFromIDList, SHParseDisplayName,
-            SIGDN_FILESYSPATH, SIGDN_NORMALDISPLAY,
+            SHCreateItemFromIDList, SHFILEINFOW, SHGFI_TYPENAME, SHGFI_USEFILEATTRIBUTES,
+            SHGetDesktopFolder, SHGetFileInfoW, SHGetKnownFolderIDList, SHGetNameFromIDList,
+            SHParseDisplayName, SIGDN_FILESYSPATH, SIGDN_NORMALDISPLAY,
         },
     },
     core::{GUID, HSTRING, PCWSTR},
@@ -202,6 +203,7 @@ pub(crate) struct ResolvedLocation {
     pub(crate) folder: IShellFolder,
     descriptor: LocationDescriptor,
     display_title: String,
+    preserve_namespace: bool,
 }
 
 impl ResolvedLocation {
@@ -265,12 +267,17 @@ pub(crate) fn resolve_location(
         .unwrap_or_else(|_| "Folder".to_owned());
     let filesystem_path = name_from_pidl(absolute.as_ptr(), SIGDN_FILESYSPATH).ok();
     let published_descriptor = canonical_location_descriptor(descriptor, filesystem_path);
+    // Parent media classification is invariant throughout one enumeration. Checking
+    // it for every child adds redundant filesystem calls, especially over a network.
+    let preserve_namespace = matches!(&published_descriptor, LocationDescriptor::ShellNamespace(_))
+        || matches!(&published_descriptor, LocationDescriptor::FileSystem(path) if !path.is_dir());
 
     Ok(ResolvedLocation {
         absolute,
         folder,
         descriptor: published_descriptor,
         display_title,
+        preserve_namespace,
     })
 }
 
@@ -1296,12 +1303,7 @@ pub(crate) fn child_entry(
             .GetAttributesOf(&[relative.as_ptr()], &raw mut attributes)
     }
     .map_err(|error| windows_error("read Shell item attributes", &error))?;
-    let preserve_namespace = matches!(&resolved.descriptor, LocationDescriptor::ShellNamespace(_))
-        || matches!(
-            &resolved.descriptor,
-            LocationDescriptor::FileSystem(path) if !path.is_dir()
-        );
-    let location = if preserve_namespace {
+    let location = if resolved.preserve_namespace {
         LocationDescriptor::ShellNamespace(absolute.bytes()?)
     } else {
         match name_from_pidl(absolute.as_ptr(), SIGDN_FILESYSPATH) {
@@ -1382,14 +1384,18 @@ fn entry_metadata(
         }
         return metadata;
     };
-    let type_display = shell_type_name(path).or_else(|| {
+    let filesystem_metadata = std::fs::metadata(path);
+    let is_directory = filesystem_metadata
+        .as_ref()
+        .map_or(is_container, std::fs::Metadata::is_dir);
+    let type_display = shell_type_name(path, is_directory).or_else(|| {
         Some(if is_container {
             "檔案資料夾".to_owned()
         } else {
             "檔案".to_owned()
         })
     });
-    match std::fs::metadata(path) {
+    match filesystem_metadata {
         Ok(metadata) => {
             #[cfg(windows)]
             use std::os::windows::fs::MetadataExt as _;
@@ -1561,7 +1567,7 @@ fn namespace_capabilities(shell_attributes: u32, is_container: bool) -> Namespac
     NamespaceCapabilities::from_public_bits(bits)
 }
 
-fn shell_type_name(path: &Path) -> Option<String> {
+fn shell_type_name(path: &Path, is_directory: bool) -> Option<String> {
     let path = HSTRING::from(path.as_os_str().to_string_lossy().as_ref());
     let mut info = SHFILEINFOW::default();
     // SAFETY: path is a live NUL-terminated HSTRING and info is correctly sized writable storage.
@@ -1569,10 +1575,16 @@ fn shell_type_name(path: &Path) -> Option<String> {
     let result = unsafe {
         SHGetFileInfoW(
             &path,
-            FILE_FLAGS_AND_ATTRIBUTES::default(),
+            if is_directory {
+                FILE_ATTRIBUTE_DIRECTORY
+            } else {
+                FILE_ATTRIBUTE_NORMAL
+            },
             Some(&raw mut info),
             info_size,
-            SHGFI_TYPENAME,
+            // Type labels depend on associations, not the contents of this file.
+            // Avoid consulting disk, cloud hydration, or per-item Shell providers.
+            SHGFI_TYPENAME | SHGFI_USEFILEATTRIBUTES,
         )
     };
     if result == 0 {
@@ -1709,7 +1721,7 @@ fn name_from_pidl(
         .map_err(|error| shell_error("decode Shell item name", None, &error.to_string()))
 }
 
-fn estimate_entry_bytes(entry: &FileEntry) -> usize {
+pub(crate) fn estimate_entry_bytes(entry: &FileEntry) -> usize {
     size_of::<FileEntry>()
         .saturating_add(entry.id.provider_bytes().len())
         .saturating_add(entry.display_name.len())

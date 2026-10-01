@@ -667,6 +667,116 @@ struct SearchJob {
     worker_guard: IsolatedWorkerGuard,
 }
 
+struct IconJob {
+    context: explorer_model::RequestContext,
+    key: explorer_model::ShellIconKey,
+    terminals: ReliableTerminalPublisher,
+}
+
+struct IconWorker {
+    sender: SyncSender<IconJob>,
+}
+
+impl IconWorker {
+    fn start() -> Result<Self, ExplorerError> {
+        let (sender, receiver) = mpsc::sync_channel::<IconJob>(COMMAND_QUEUE_CAPACITY);
+        thread::Builder::new()
+            .name("explorer-shell-icons".to_owned())
+            .spawn(move || {
+                let apartment = ApartmentGuard::initialize();
+                let mut cache = crate::icon::ShellIconCache::default();
+                loop {
+                    let _ = pump_pending_messages();
+                    let job = match receiver.recv_timeout(MESSAGE_PUMP_INTERVAL) {
+                        Ok(job) => job,
+                        Err(RecvTimeoutError::Timeout) => continue,
+                        Err(RecvTimeoutError::Disconnected) => break,
+                    };
+                    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        #[cfg(test)]
+                        wait_for_icon_test_gate(&job.context);
+                        if apartment.is_err() || job.context.cancellation.is_cancelled() {
+                            return None;
+                        }
+                        match cache.load(&job.key) {
+                            Ok(payload) => Some(payload),
+                            Err(error) => {
+                                tracing::debug!(?error, "Shell icon fallback remains active");
+                                record_process_error(
+                                    ErrorSeverity::Warning,
+                                    "shell",
+                                    &error.operation,
+                                    &error,
+                                    Some(file!()),
+                                );
+                                None
+                            }
+                        }
+                    }));
+                    if let Err(payload) = &result {
+                        log_isolated_panic("shell", "icon_worker", payload.as_ref(), Some(file!()));
+                    }
+                    let event = match result {
+                        Ok(Some(payload)) if !job.context.cancellation.is_cancelled() => {
+                            ExplorerEvent::ShellIconLoaded {
+                                context: job.context,
+                                payload,
+                            }
+                        }
+                        _ => ExplorerEvent::ShellIconFailed {
+                            context: job.context,
+                            key: job.key,
+                            reason: explorer_model::ShellIconFallbackReason::ShellUnavailable,
+                        },
+                    };
+                    job.terminals.publish(event);
+                }
+                // The owning STA drops its sender during shutdown. The worker's
+                // apartment and icon cache are released here on their own thread.
+            })
+            .map_err(|error| {
+                ExplorerError::new(
+                    ExplorerErrorKind::Availability,
+                    "start icon worker",
+                    true,
+                    "Shell icons are temporarily unavailable.",
+                    error.to_string(),
+                )
+            })?;
+        Ok(Self { sender })
+    }
+
+    fn submit(&self, job: IconJob) -> Result<(), ExplorerError> {
+        self.sender.try_send(job).map_err(|_| {
+            ExplorerError::new(
+                ExplorerErrorKind::Availability,
+                "queue icon load",
+                true,
+                "Shell icons are temporarily unavailable.",
+                "bounded icon worker queue is full or closed",
+            )
+        })
+    }
+}
+
+#[cfg(test)]
+static ICON_TEST_GATE: Mutex<Option<FileOperationTestGate>> = Mutex::new(None);
+
+#[cfg(test)]
+fn wait_for_icon_test_gate(context: &explorer_model::RequestContext) {
+    if let Some(gate) = ICON_TEST_GATE
+        .lock()
+        .ok()
+        .and_then(|gate| gate.clone())
+        .filter(|gate| gate.request_id == context.request_id)
+    {
+        let _ = gate.started.try_send(());
+        while !gate.release.load(Ordering::Acquire) {
+            thread::sleep(Duration::from_millis(2));
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum RequiredTerminalLane {
     Navigation,
@@ -755,11 +865,12 @@ impl ShellStaHandle {
             &TYPED_TERMINAL_COUNTERS,
         );
         let event_tx = background_terminals.primary();
-        let (navigation_terminals, navigation_event_rx) = ReliableTerminalPublisher::channel(
-            NAVIGATION_EVENT_QUEUE_CAPACITY,
-            NAVIGATION_TERMINAL_RETAIN_CAPACITY,
-            &NAVIGATION_TERMINAL_COUNTERS,
-        );
+        let (navigation_terminals, navigation_event_rx) =
+            ReliableTerminalPublisher::ordered_channel(
+                NAVIGATION_EVENT_QUEUE_CAPACITY,
+                NAVIGATION_TERMINAL_RETAIN_CAPACITY,
+                &NAVIGATION_TERMINAL_COUNTERS,
+            );
         let navigation_event_tx = navigation_terminals.primary();
         let (search_terminals, search_event_rx) = ReliableTerminalPublisher::ordered_channel(
             SEARCH_EVENT_QUEUE_CAPACITY,
@@ -1312,8 +1423,9 @@ fn is_foreground_command(command: &ExplorerCommand) -> bool {
 struct StaRuntime {
     watchers: HashMap<explorer_model::TabId, crate::watcher::WatcherSession>,
     clipboard: crate::clipboard::ClipboardRuntime,
-    icon_cache: crate::icon::ShellIconCache,
+    icon_worker: Option<IconWorker>,
     search_jobs: SyncSender<SearchJob>,
+    directory_indexer: Option<crate::directory_indexer::DirectoryIndexer>,
 }
 
 impl StaRuntime {
@@ -1321,8 +1433,9 @@ impl StaRuntime {
         Self {
             watchers: HashMap::new(),
             clipboard: crate::clipboard::ClipboardRuntime::new(),
-            icon_cache: crate::icon::ShellIconCache::default(),
+            icon_worker: None,
             search_jobs,
+            directory_indexer: None,
         }
     }
 
@@ -1450,7 +1563,7 @@ fn process_command(
     let started = Instant::now();
     let result = match &command {
         ExplorerCommand::Navigate { location, .. } | ExplorerCommand::Refresh { location, .. } => {
-            process_navigation(&context, location, events, navigation_terminals)
+            process_navigation(&context, location, events, navigation_terminals, runtime)
         }
         ExplorerCommand::ResolveAncestry { .. }
         | ExplorerCommand::EnumerateChildContainers { .. } => {
@@ -1487,9 +1600,13 @@ fn process_command(
         ExplorerCommand::OpenItem {
             item, disposition, ..
         } => match disposition {
-            OpenDisposition::CurrentTab | OpenDisposition::NewTab => {
-                process_navigation(&context, &item.location, events, navigation_terminals)
-            }
+            OpenDisposition::CurrentTab | OpenDisposition::NewTab => process_navigation(
+                &context,
+                &item.location,
+                events,
+                navigation_terminals,
+                runtime,
+            ),
             OpenDisposition::DefaultApplication => crate::navigation::open_default(&item.location)
                 .map(|()| {
                     operation_terminals.publish(ExplorerEvent::OperationFinished {
@@ -1642,37 +1759,21 @@ fn process_command(
             ..
         } => runtime.enqueue_search(context.clone(), location.clone(), input.clone(), *engine),
         ExplorerCommand::LoadShellIcon { key, .. } => {
-            let event = if context.cancellation.is_cancelled() {
-                ExplorerEvent::ShellIconFailed {
-                    context: context.clone(),
-                    key: key.clone(),
-                    reason: explorer_model::ShellIconFallbackReason::ShellUnavailable,
-                }
-            } else {
-                match runtime.icon_cache.load(key) {
-                    Ok(payload) => ExplorerEvent::ShellIconLoaded {
-                        context: context.clone(),
-                        payload,
-                    },
-                    Err(error) => {
-                        tracing::debug!(?error, "Shell icon fallback remains active");
-                        record_process_error(
-                            ErrorSeverity::Warning,
-                            "shell",
-                            &error.operation,
-                            &error,
-                            Some(file!()),
-                        );
-                        ExplorerEvent::ShellIconFailed {
-                            context: context.clone(),
-                            key: key.clone(),
-                            reason: explorer_model::ShellIconFallbackReason::ShellUnavailable,
-                        }
-                    }
-                }
+            let job = IconJob {
+                context: context.clone(),
+                key: key.clone(),
+                terminals: typed_terminals.clone(),
             };
-            typed_terminals.publish(event);
-            Ok(())
+            // Keep live overlay handlers and disk-cache work off navigation's STA.
+            // A blocked icon can delay other icons, but cannot delay opening a folder.
+            match &runtime.icon_worker {
+                Some(worker) => worker.submit(job),
+                None => IconWorker::start().and_then(|worker| {
+                    let result = worker.submit(job);
+                    runtime.icon_worker = Some(worker);
+                    result
+                }),
+            }
         }
         ExplorerCommand::LoadThumbnail {
             key,
@@ -3060,6 +3161,7 @@ fn process_navigation(
     location: &LocationDescriptor,
     events: &SyncSender<ExplorerEvent>,
     terminals: &ReliableTerminalPublisher,
+    runtime: &mut StaRuntime,
 ) -> Result<(), ExplorerError> {
     if context.cancellation.is_cancelled() {
         return Err(cancelled_error());
@@ -3071,24 +3173,44 @@ fn process_navigation(
             metadata: resolved.metadata(),
         })
         .map_err(|error| event_send_error(&error))?;
-    let mut observed_entries = Vec::new();
+    let mut observed_entries = Some(Vec::new());
+    let mut observed_bytes = 0_usize;
     let completed = crate::navigation::enumerate_directory(context, &resolved, |event| {
         if let ExplorerEvent::DirectoryBatch { entries, .. } = &event {
-            observed_entries.extend(entries.iter().cloned());
+            observed_bytes = observed_bytes.saturating_add(
+                entries
+                    .iter()
+                    .map(crate::navigation::estimate_entry_bytes)
+                    .sum::<usize>(),
+            );
+            if observed_bytes > crate::directory_indexer::SNAPSHOT_BYTE_CAP {
+                // Skip the whole cache observation, never replace a directory with a partial list.
+                observed_entries = None;
+            } else if let Some(observed_entries) = observed_entries.as_mut() {
+                observed_entries.extend(entries.iter().cloned());
+            }
         }
         events.try_send(event).is_ok()
     })?;
     if !completed {
         return Err(cancelled_error());
     }
-    if let Some(path) = location.path()
-        && let Ok(mut index) = explorer_search::LazyIndex::open_default()
-    {
-        let _ = index.observe_directory(path, &observed_entries);
-    }
     terminals.publish(ExplorerEvent::DirectoryFinished {
         context: context.clone(),
     });
+    if let Some(path) = location.path()
+        && let Some(entries) = observed_entries
+    {
+        if runtime.directory_indexer.is_none() {
+            runtime.directory_indexer = crate::directory_indexer::DirectoryIndexer::start().ok();
+        }
+        if let Some(indexer) = &runtime.directory_indexer {
+            indexer.observe(crate::directory_indexer::DirectoryObservation {
+                path: path.to_owned(),
+                entries,
+            });
+        }
+    }
     Ok(())
 }
 
@@ -3195,6 +3317,124 @@ fn pump_pending_messages() -> bool {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn stalled_shell_icon_does_not_block_opening_a_folder() {
+        let _serial = TEST_LOCK.lock().unwrap();
+        let fixture = OwnedTempFixture::new().unwrap();
+        let folder = fixture.create_dir("KKS人物卡").unwrap();
+        fs::write(folder.join("fixture.txt"), b"fixture").unwrap();
+        let sta = ShellStaHandle::start().unwrap();
+        let icon_context = RequestContext::new(TabId::new(), Generation::new(1));
+        let (started_tx, started_rx) = mpsc::sync_channel(1);
+        let release = Arc::new(AtomicBool::new(false));
+        *super::ICON_TEST_GATE.lock().unwrap() = Some(FileOperationTestGate {
+            request_id: icon_context.request_id,
+            started: started_tx,
+            release: Arc::clone(&release),
+        });
+        sta.submit(ExplorerCommand::LoadShellIcon {
+            context: icon_context.clone(),
+            key: explorer_model::ShellIconKey {
+                item_id: None,
+                location: LocationDescriptor::file_system(fixture.root()),
+                size_bucket: 16,
+                dpi: 96,
+                theme: explorer_model::ShellIconTheme::Light,
+                association_generation: 0,
+                overlay_generation: 0,
+            },
+        })
+        .unwrap();
+        let started = started_rx.recv_timeout(Duration::from_secs(2));
+        let context = RequestContext::new(TabId::new(), Generation::new(1));
+        sta.submit(ExplorerCommand::Navigate {
+            context: context.clone(),
+            location: LocationDescriptor::file_system(folder),
+        })
+        .unwrap();
+        let deadline = Instant::now() + Duration::from_secs(3);
+        let mut finished = false;
+        let mut count = 0;
+        while Instant::now() < deadline {
+            if let Some(event) = sta.try_recv().unwrap()
+                && event
+                    .context()
+                    .is_some_and(|value| value.request_id == context.request_id)
+            {
+                match event {
+                    ExplorerEvent::DirectoryBatch { entries, .. } => count += entries.len(),
+                    ExplorerEvent::DirectoryFinished { .. } => {
+                        finished = true;
+                        break;
+                    }
+                    _ => {}
+                }
+            }
+            thread::sleep(Duration::from_millis(2));
+        }
+        // Release before assertions so a failed test cannot leave its worker blocked.
+        icon_context.cancellation.cancel();
+        release.store(true, Ordering::Release);
+        *super::ICON_TEST_GATE.lock().unwrap() = None;
+        sta.shutdown_and_join(Duration::from_secs(2)).unwrap();
+        assert!(started.is_ok(), "icon provider started");
+        assert!(
+            finished,
+            "navigation must finish while the icon provider is still blocked"
+        );
+        assert_eq!(count, 1);
+    }
+
+    #[test]
+    #[ignore = "read-only timing probe for a user-selected real folder"]
+    fn real_folder_navigation_latency_probe() {
+        let _serial = TEST_LOCK.lock().unwrap();
+        let path = std::env::var_os("EXPLORER_NAVIGATION_PROBE_PATH").expect("probe path");
+        let expected = fs::read_dir(&path).unwrap().count();
+        let sta = ShellStaHandle::start().unwrap();
+        for generation in 1..=3 {
+            let context = RequestContext::new(TabId::new(), Generation::new(generation));
+            let started = Instant::now();
+            sta.submit(ExplorerCommand::Navigate {
+                context: context.clone(),
+                location: LocationDescriptor::file_system(&path),
+            })
+            .unwrap();
+            let mut first_batch = None;
+            let mut count = 0;
+            let mut finished = false;
+            while started.elapsed() < Duration::from_secs(10) {
+                if let Some(event) = sta.try_recv().unwrap()
+                    && event
+                        .context()
+                        .is_some_and(|value| value.request_id == context.request_id)
+                {
+                    match event {
+                        ExplorerEvent::DirectoryBatch { entries, .. } => {
+                            first_batch.get_or_insert(started.elapsed());
+                            count += entries.len();
+                        }
+                        ExplorerEvent::DirectoryFinished { .. } => {
+                            finished = true;
+                            break;
+                        }
+                        ExplorerEvent::Failed { error, .. } => {
+                            panic!("navigation failed: {error:?}")
+                        }
+                        _ => {}
+                    }
+                }
+                thread::sleep(Duration::from_millis(1));
+            }
+            eprintln!(
+                "generation={generation} first_batch={first_batch:?} finished={:?} count={count}",
+                started.elapsed()
+            );
+            assert!(finished);
+            assert_eq!(count, expected);
+        }
+        sta.shutdown_and_join(Duration::from_secs(2)).unwrap();
+    }
     use super::{
         ActiveRequest, BREADCRUMB_TEST_GATE, BreadcrumbTestGate, FAIL_NEXT_STA_THREAD_SPAWN,
         FILE_OPERATION_TEST_GATE, FileOperationTestGate, NAVIGATION_TERMINAL_COUNTERS,
@@ -6008,6 +6248,12 @@ $ok=[Windows.Forms.Clipboard]::ContainsFileDropList() -and [Windows.Forms.Clipbo
         let mut events = Vec::new();
         while Instant::now() < deadline {
             if let Some(event) = sta.try_recv_event().expect("receive Shell event") {
+                if event
+                    .context()
+                    .is_none_or(|value| value.request_id != context.request_id)
+                {
+                    continue;
+                }
                 let terminal = event.is_terminal();
                 events.push(event);
                 if terminal {
@@ -6272,7 +6518,13 @@ $ok=[Windows.Forms.Clipboard]::ContainsFileDropList() -and [Windows.Forms.Clipbo
                         event_context.request_id == context.request_id
                     }) =>
                 {
-                    failed = matches!(event, ExplorerEvent::Failed { .. });
+                    failed = matches!(
+                        event,
+                        ExplorerEvent::OperationFinished {
+                            outcome: OperationTerminal::Failed(_),
+                            ..
+                        }
+                    );
                     let _ = window.apply_event(event);
                     break;
                 }
@@ -6677,6 +6929,14 @@ $ok=[Windows.Forms.Clipboard]::ContainsFileDropList() -and [Windows.Forms.Clipbo
         while Instant::now() < deadline {
             match service.try_recv().expect("receive contract event") {
                 Some(event) => {
+                    // The endpoint also emits unsolicited clipboard/watcher events.
+                    // Only this request's stream defines the navigation contract.
+                    if event
+                        .context()
+                        .is_none_or(|value| value.request_id != context.request_id)
+                    {
+                        continue;
+                    }
                     let terminal = event.is_terminal();
                     events.push(event);
                     if terminal {
@@ -7076,10 +7336,9 @@ $ok=[Windows.Forms.Clipboard]::ContainsFileDropList() -and [Windows.Forms.Clipbo
             explorer_model::TabSearchState::Partial { .. }
         ));
         assert!(
-            partial_tab
-                .search_sources
-                .iter()
-                .any(|status| { status.backend == explorer_model::SearchBackend::LocalIndex })
+            partial_tab.search_sources.iter().any(|status| {
+                status.backend == explorer_model::SearchBackend::FileSystemFallback
+            })
         );
         sta.shutdown_and_join(Duration::from_secs(2))
             .expect("stop search STA");
