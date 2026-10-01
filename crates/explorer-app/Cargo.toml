@@ -71,7 +71,7 @@ tempfile.workspace = true
 embed-resource.workspace = true
 
 [target.'cfg(windows)'.dependencies]
-windows.workspace = true
+windows = { workspace = true, features = ["Win32_System_Environment"] }
 
 [lints]
 workspace = true

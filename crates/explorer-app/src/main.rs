@@ -27,6 +27,8 @@ use explorer_model::WorkspaceModel;
 use explorer_shell_win::ShellPlatform;
 use explorer_ui::ExplorerUiState;
 
+mod startup_privileges;
+
 #[link(name = "kernel32")]
 #[expect(
     unsafe_code,
@@ -39,6 +41,16 @@ unsafe extern "system" {
 }
 
 fn main() {
+    match startup_privileges::relaunch_if_elevated() {
+        Ok(true) => return,
+        Ok(false) => {}
+        Err(error) => {
+            explorer_common::write_stderr_lossy(&format!(
+                "SuperExplorer could not start with ordinary user privileges: {error:#}"
+            ));
+            std::process::exit(1);
+        }
+    }
     let diagnostics_console = diagnostics_console_requested();
     if diagnostics_console {
         // SAFETY: AllocConsole takes no pointers and creates one console for
