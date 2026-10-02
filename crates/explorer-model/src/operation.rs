@@ -82,6 +82,8 @@ pub struct RenameEditorState {
     pub buffer: String,
     pub selection: std::ops::Range<usize>,
     pub error: Option<ExplorerError>,
+    is_container: bool,
+    select_full_name: bool,
 }
 
 impl RenameEditorState {
@@ -89,7 +91,10 @@ impl RenameEditorState {
         let selection_end = if is_container {
             original_name.len()
         } else {
-            original_name.rfind('.').unwrap_or(original_name.len())
+            original_name
+                .rfind('.')
+                .filter(|offset| *offset > 0)
+                .unwrap_or(original_name.len())
         };
         Self {
             item,
@@ -97,7 +102,22 @@ impl RenameEditorState {
             original_name,
             selection: 0..selection_end,
             error: None,
+            is_container,
+            select_full_name: false,
         }
+    }
+
+    pub fn toggle_name_selection(&mut self) {
+        self.select_full_name = !self.select_full_name;
+        let end = if self.is_container || self.select_full_name {
+            self.buffer.len()
+        } else {
+            self.buffer
+                .rfind('.')
+                .filter(|offset| *offset > 0)
+                .unwrap_or(self.buffer.len())
+        };
+        self.selection = 0..end;
     }
 
     pub fn update(&mut self, value: String) {
@@ -850,6 +870,34 @@ mod tests {
             .expect("valid rename")
             .expect("changed name");
         assert!(matches!(request.kind, FileOperationKind::Rename { .. }));
+    }
+
+    #[test]
+    fn rename_editor_f2_cycles_stem_and_full_current_name() {
+        let item = crate::ItemDescriptor {
+            id: crate::ShellItemId::from_provider_bytes([11]).unwrap(),
+            location: LocationDescriptor::file_system(r"C:\fixture\report.txt"),
+        };
+        for (name, is_container, stem) in [
+            ("報告.final.txt", false, "報告.final"),
+            ("report", false, "report"),
+            (".gitignore", false, ".gitignore"),
+            ("folder.txt", true, "folder.txt"),
+        ] {
+            let mut editor = RenameEditorState::begin(item.clone(), name.to_owned(), is_container);
+            assert_eq!(&editor.buffer[editor.selection.clone()], stem);
+            editor.toggle_name_selection();
+            assert_eq!(&editor.buffer[editor.selection.clone()], name);
+            editor.toggle_name_selection();
+            assert_eq!(&editor.buffer[editor.selection.clone()], stem);
+        }
+        let mut editor = RenameEditorState::begin(item, "report.txt".to_owned(), false);
+        editor.update("新名稱.final.md".to_owned());
+        editor.toggle_name_selection();
+        assert_eq!(&editor.buffer[editor.selection.clone()], "新名稱.final.md");
+        editor.toggle_name_selection();
+        assert_eq!(&editor.buffer[editor.selection.clone()], "新名稱.final");
+        assert_eq!(editor.original_name, "report.txt");
     }
 
     #[test]

@@ -1365,6 +1365,7 @@ mod tests {
             explorer_model::ContextMenuHostCommand::Paste,
             explorer_model::ContextMenuHostCommand::CopyPath,
             explorer_model::ContextMenuHostCommand::CreateShortcut,
+            explorer_model::ContextMenuHostCommand::CreateFolder,
             explorer_model::ContextMenuHostCommand::Delete,
             explorer_model::ContextMenuHostCommand::Rename,
             explorer_model::ContextMenuHostCommand::Share,

@@ -463,6 +463,7 @@ fn action_for_host_context_command(
         explorer_model::ContextMenuHostCommand::CreateShortcut => {
             ExplorerAction::CreateShortcutSelected
         }
+        explorer_model::ContextMenuHostCommand::CreateFolder => ExplorerAction::CreateFolder,
         explorer_model::ContextMenuHostCommand::Delete => ExplorerAction::RecycleDeleteSelected,
         explorer_model::ContextMenuHostCommand::Rename => ExplorerAction::BeginRenameFocused,
         explorer_model::ContextMenuHostCommand::Share => ExplorerAction::ShareSelected,
@@ -5622,7 +5623,12 @@ impl ExplorerRoot {
         self.address_input = Some(address);
     }
 
-    fn reset_rename_input(&mut self, value: String, cx: &mut Context<Self>) {
+    fn reset_rename_input(
+        &mut self,
+        value: String,
+        selection: std::ops::Range<usize>,
+        cx: &mut Context<Self>,
+    ) {
         let rename = cx.new(|cx| EditableTextState::new(StringStorage::from(value), cx));
         cx.subscribe(&rename, |this, input, _: &TextChanged, cx| {
             if this.state.rename_editor().is_some() {
@@ -5633,7 +5639,10 @@ impl ExplorerRoot {
             }
         })
         .detach();
-        rename.update(cx, EditableTextState::select_document);
+        rename.update(cx, |input, cx| {
+            input.move_to(selection.start, cx);
+            input.select_to(selection.end, cx);
+        });
         self.rename_input = Some(rename);
     }
 
@@ -8985,7 +8994,19 @@ impl ExplorerRoot {
             }
             ExplorerAction::BeginRenameFocused => {
                 if let Some(editor) = self.state.rename_editor() {
-                    self.reset_rename_input(editor.buffer.clone(), cx);
+                    if let Some(input) = self.rename_input.clone() {
+                        let selection = editor.selection.clone();
+                        input.update(cx, |input, cx| {
+                            input.move_to(selection.start, cx);
+                            input.select_to(selection.end, cx);
+                        });
+                    } else {
+                        self.reset_rename_input(
+                            editor.buffer.clone(),
+                            editor.selection.clone(),
+                            cx,
+                        );
+                    }
                     // The editor element is introduced by the render triggered below. Focusing
                     // its handle synchronously is too early because the handle is not yet in the
                     // window dispatch tree; repeat focus at the end of this effect cycle.
@@ -9471,7 +9492,7 @@ impl ExplorerRoot {
             if self.state.begin_interactive_create_folder(request)
                 && let Some(editor) = self.state.rename_editor()
             {
-                self.reset_rename_input(editor.buffer.clone(), cx);
+                self.reset_rename_input(editor.buffer.clone(), editor.selection.clone(), cx);
                 if let Some(input) = self.rename_input.clone() {
                     window.defer(cx, move |window, cx| {
                         input.read(cx).focus_handle(cx).focus(window, cx);
@@ -9501,7 +9522,7 @@ impl ExplorerRoot {
                 if self.state.begin_interactive_create_folder(request)
                     && let Some(editor) = self.state.rename_editor()
                 {
-                    self.reset_rename_input(editor.buffer.clone(), cx);
+                    self.reset_rename_input(editor.buffer.clone(), editor.selection.clone(), cx);
                     if let Some(input) = self.rename_input.clone() {
                         window.defer(cx, move |window, cx| {
                             input.read(cx).focus_handle(cx).focus(window, cx);
@@ -10066,6 +10087,9 @@ impl ExplorerRoot {
             return match event.keystroke.key.as_str() {
                 "enter" => Some(ExplorerAction::CommitInlineRename),
                 "escape" => Some(ExplorerAction::CancelInlineRename),
+                "f2" if !event.keystroke.modifiers.modified() => {
+                    Some(ExplorerAction::BeginRenameFocused)
+                }
                 _ => None,
             };
         }
@@ -11477,9 +11501,7 @@ impl Render for ExplorerRoot {
                         focused_row = ?this.state.focused_row_index(),
                         "F2 rename binding received"
                     );
-                    if this.state.focused_surface() == focus::FocusSurface::FileView
-                        && this.state.rename_editor().is_none()
-                    {
+                    if this.state.focused_surface() == focus::FocusSurface::FileView {
                         this.handle_action(
                             ExplorerAction::BeginRenameFocused,
                             ActionSource::Keyboard,
@@ -12817,6 +12839,10 @@ mod tests {
         assert_eq!(
             action_for_host_context_command(Command::CreateShortcut),
             ExplorerAction::CreateShortcutSelected
+        );
+        assert_eq!(
+            action_for_host_context_command(Command::CreateFolder),
+            ExplorerAction::CreateFolder
         );
         assert_eq!(
             action_for_host_context_command(Command::Delete),

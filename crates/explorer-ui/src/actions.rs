@@ -1788,6 +1788,9 @@ fn action_available(state: &AppViewState, action: &ExplorerAction) -> bool {
         | ExplorerAction::UpdateMarquee { .. }
         | ExplorerAction::EndMarquee => true,
         ExplorerAction::BeginRenameFocused => {
+            if state.rename_editor().is_some() {
+                return true;
+            }
             if state.effective_view_mode() == explorer_model::ViewMode::Columns {
                 state.selected_namespace_command_enabled(explorer_model::NamespaceCommand::Rename)
             } else {

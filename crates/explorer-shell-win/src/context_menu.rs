@@ -1272,6 +1272,7 @@ fn host_command_from_verb(verb: &str) -> Option<ContextMenuHostCommand> {
         "paste" => Some(ContextMenuHostCommand::Paste),
         "copyaspath" => Some(ContextMenuHostCommand::CopyPath),
         "link" => Some(ContextMenuHostCommand::CreateShortcut),
+        "newfolder" => Some(ContextMenuHostCommand::CreateFolder),
         "delete" => Some(ContextMenuHostCommand::Delete),
         "rename" => Some(ContextMenuHostCommand::Rename),
         "windows.share" | "windows.modernshare" | "share" => Some(ContextMenuHostCommand::Share),
@@ -2836,6 +2837,7 @@ mod tests {
             ("paste", ContextMenuHostCommand::Paste),
             ("copyaspath", ContextMenuHostCommand::CopyPath),
             ("link", ContextMenuHostCommand::CreateShortcut),
+            ("NewFolder", ContextMenuHostCommand::CreateFolder),
             ("delete", ContextMenuHostCommand::Delete),
             ("rename", ContextMenuHostCommand::Rename),
             ("Windows.Share", ContextMenuHostCommand::Share),
@@ -3263,6 +3265,58 @@ mod tests {
             assert!(query_command_count(&target).expect("query menu") > 0);
         }
         // SAFETY: balances OleInitialize after all menu interfaces and windows were released.
+        unsafe { OleUninitialize() };
+    }
+
+    #[test]
+    fn real_background_new_folder_is_delegated_after_lazy_submenu_initialization() {
+        let _guard = crate::clipboard::CLIPBOARD_TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        unsafe { OleInitialize(None) }.expect("OLE initialize");
+        {
+            let fixture = explorer_test_support::OwnedTempFixture::new().expect("fixture");
+            let original_entries = std::fs::read_dir(fixture.root()).expect("fixture entries").count();
+            let target = ShellContextMenuTarget::Background {
+                parent: LocationDescriptor::file_system(fixture.root()),
+            };
+            let mut owner_state = MenuOwnerState { menu3: None };
+            let owner = OwnerWindow::create(&raw mut owner_state).expect("owner");
+            let menu = resolve_menu(&target, owner.hwnd()).expect("background menu");
+            owner_state.menu3 = menu.cast::<IContextMenu3>().ok();
+            let popup = OwnedMenu::create().expect("popup");
+            query_menu(
+                &menu,
+                popup.get(),
+                false,
+                ContextMenuInvocationProfile::Explorer,
+            )
+            .expect("query");
+            let mut fingerprints = Vec::new();
+            collect_menu_label_fingerprints(popup.get(), owner.hwnd(), 0, &mut fingerprints);
+            let mut entries = Vec::new();
+            collect_menu_entries(popup.get(), 0, &mut entries);
+            let new_folder = entries
+                .iter()
+                .find(|(_, id, _)| {
+                    *id >= COMMAND_FIRST
+                        && *id <= COMMAND_LAST
+                        && canonical_verb_at_offset(&menu, *id - COMMAND_FIRST)
+                            .is_some_and(|verb| verb.eq_ignore_ascii_case("newfolder"))
+                })
+                .expect("Shell New submenu exposes newfolder");
+            assert_eq!(
+                host_command_at_offset(&menu, popup.get(), new_folder.1 - COMMAND_FIRST, false),
+                Some(ContextMenuHostCommand::CreateFolder)
+            );
+            assert!(
+                std::fs::read_dir(fixture.root())
+                    .expect("fixture entries")
+                    .count() == original_entries,
+                "delegation must not also invoke Shell creation"
+            );
+            owner_state.menu3 = None;
+        }
         unsafe { OleUninitialize() };
     }
 

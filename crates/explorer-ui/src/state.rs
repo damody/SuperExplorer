@@ -7276,6 +7276,10 @@ impl AppViewState {
     /// the first visible row as current. Establish that same row as the selection before opening
     /// the editor so F2 remains deterministic immediately after switching directories.
     pub(crate) fn begin_focused_inline_rename(&mut self) -> bool {
+        if let Some(editor) = self.rename_editor.as_mut() {
+            editor.toggle_name_selection();
+            return true;
+        }
         if self.effective_view_mode() == explorer_model::ViewMode::Columns {
             return self.begin_active_column_rename();
         }
@@ -7707,7 +7711,22 @@ impl AppViewState {
         target: &explorer_model::ShellContextMenuTarget,
     ) -> bool {
         let explorer_model::ShellContextMenuTarget::Items { items, .. } = target else {
-            return false;
+            let explorer_model::ShellContextMenuTarget::Background { parent } = target else {
+                return false;
+            };
+            // A background command belongs to the folder that opened the menu. Do not apply
+            // a delayed command to a different folder after navigation.
+            return self
+                .column_command_parent()
+                .or_else(|| {
+                    self.tabs
+                        .active_tab()
+                        .history
+                        .current()
+                        .map(|entry| entry.location.clone())
+                })
+                .as_ref()
+                == Some(parent);
         };
         let visible = self.presentation_ids().into_iter().collect::<HashSet<_>>();
         let mut ids = items
@@ -15289,6 +15308,27 @@ mod tests {
                 gdrive_trash: false,
             })
         );
+    }
+
+    #[test]
+    fn background_context_command_requires_its_original_folder() {
+        let mut state = state_with_rows();
+        let command = state
+            .begin_context_menu_request(None, 42, 100, 200, 10.0, 20.0, false, false)
+            .expect("background menu");
+        let explorer_model::ExplorerCommand::ShowContextMenu { request, .. } = command else {
+            panic!("expected context-menu command");
+        };
+        assert!(state.restore_context_target_selection(&request.target));
+        assert!(!state.restore_context_target_selection(
+            &explorer_model::ShellContextMenuTarget::Background {
+                parent: explorer_model::LocationDescriptor::file_system("C:\\another-folder"),
+            }
+        ));
+        let request = state.create_folder_request().expect("folder request");
+        assert!(state.begin_interactive_create_folder(request));
+        assert!(state.rename_editor().is_some());
+        assert!(state.provisional_new_folder_entry().is_some());
     }
 
     #[test]
