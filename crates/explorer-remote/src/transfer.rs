@@ -80,7 +80,10 @@ pub struct TransferItemOutcome {
 
 pub struct TransferEngine<'a> {
     providers: &'a RemoteProviderRegistry,
+    conflict_resolver: Option<&'a ConflictResolver>,
 }
+
+type ConflictResolver = dyn Fn(&LocationDescriptor) -> Option<ConflictDecision> + Send + Sync;
 
 enum ConflictPlan {
     Proceed,
@@ -179,7 +182,42 @@ impl Drop for StagingReservation {
 
 impl<'a> TransferEngine<'a> {
     pub const fn new(providers: &'a RemoteProviderRegistry) -> Self {
-        Self { providers }
+        Self {
+            providers,
+            conflict_resolver: None,
+        }
+    }
+
+    /// Called on the transfer worker only when the destination already exists.
+    /// Returning None cancels the whole operation before writing this item.
+    pub fn with_conflict_resolver(mut self, resolver: &'a ConflictResolver) -> Self {
+        self.conflict_resolver = Some(resolver);
+        self
+    }
+
+    fn resolve_conflict(
+        &self,
+        target: &LocationDescriptor,
+        conflict: ConflictDecision,
+        cancellation: &CancellationToken,
+    ) -> Result<ConflictDecision> {
+        ensure_transfer_active(cancellation)?;
+        if conflict != ConflictDecision::Prompt {
+            return Ok(conflict);
+        }
+        let resolver = self
+            .conflict_resolver
+            .context("destination conflict requires a user decision")?;
+        match resolver(target) {
+            Some(decision) if decision != ConflictDecision::Prompt => {
+                ensure_transfer_active(cancellation)?;
+                Ok(decision)
+            }
+            _ => {
+                cancellation.cancel();
+                bail!("transfer cancelled at destination conflict")
+            }
+        }
     }
 
     pub fn transfer(
@@ -281,8 +319,27 @@ impl<'a> TransferEngine<'a> {
             (
                 LocationDescriptor::FileSystem(source),
                 LocationDescriptor::FileSystem(destination),
-            ) => copy_local_with_conflict(source, destination, conflict, cancellation, progress)
-                .map_err(|error| TransferFailure::new(TransferStage::LocalCopy, error)),
+            ) => {
+                let target = if destination.is_dir() {
+                    source.file_name().map(|name| destination.join(name))
+                } else {
+                    Some(destination.clone())
+                };
+                let conflict = if let Some(target) = target.filter(|path| path.exists()) {
+                    self.resolve_conflict(
+                        &LocationDescriptor::file_system(target),
+                        conflict,
+                        cancellation,
+                    )
+                    .map_err(|error| {
+                        TransferFailure::new(TransferStage::ConflictInspection, error)
+                    })?
+                } else {
+                    conflict
+                };
+                copy_local_with_conflict(source, destination, conflict, cancellation, progress)
+                    .map_err(|error| TransferFailure::new(TransferStage::LocalCopy, error))
+            }
             (LocationDescriptor::FileSystem(source), LocationDescriptor::Virtual(destination)) => {
                 ensure_transfer_active(cancellation)
                     .map_err(|error| TransferFailure::new(TransferStage::LocalCopy, error))?;
@@ -342,6 +399,18 @@ impl<'a> TransferEngine<'a> {
                     destination.join(name)
                 } else {
                     destination.clone()
+                };
+                let conflict = if target.exists() {
+                    self.resolve_conflict(
+                        &LocationDescriptor::file_system(target.clone()),
+                        conflict,
+                        cancellation,
+                    )
+                    .map_err(|error| {
+                        TransferFailure::new(TransferStage::ConflictInspection, error)
+                    })?
+                } else {
+                    conflict
                 };
                 if !local_destination_allows(&target, conflict).map_err(|error| {
                     TransferFailure::new(TransferStage::ConflictInspection, error)
@@ -494,6 +563,10 @@ impl<'a> TransferEngine<'a> {
         if !exists {
             return Ok(ConflictPlan::Proceed);
         }
+        let mut target = destination.clone();
+        target.components.push(name.to_owned());
+        let conflict =
+            self.resolve_conflict(&LocationDescriptor::Virtual(target), conflict, cancellation)?;
         match conflict {
             ConflictDecision::Skip => Ok(ConflictPlan::Skip),
             ConflictDecision::Replace => Ok(ConflictPlan::Proceed),
@@ -869,7 +942,7 @@ fn copy_local_tree_progress(
 #[cfg(test)]
 mod tests {
     use std::sync::{
-        Arc,
+        Arc, Mutex,
         atomic::{AtomicU64 as TestAtomicU64, AtomicUsize, Ordering as AtomicOrdering},
     };
 
@@ -1205,6 +1278,157 @@ mod tests {
         };
         assert_eq!(stage, TransferStage::SourceDelete);
         assert!(diagnostic.contains("fixture delete failure"));
+    }
+
+    #[test]
+    fn prompted_copy_cancels_before_writes_and_only_overwrites_after_consent() {
+        let registry = RemoteProviderRegistry::default();
+        let source_root = tempfile::tempdir().unwrap();
+        let destination = tempfile::tempdir().unwrap();
+        let source = source_root.path().join("report.txt");
+        let target = destination.path().join("report.txt");
+        fs::write(&source, b"new").unwrap();
+        fs::write(&target, b"old").unwrap();
+        let observed = Arc::new(Mutex::new(Vec::new()));
+        let capture = Arc::clone(&observed);
+        let cancel = move |target: &LocationDescriptor| {
+            capture.lock().unwrap().push(target.clone());
+            None
+        };
+        let cancellation = CancellationToken::new();
+        let outcome = TransferEngine::new(&registry)
+            .with_conflict_resolver(&cancel)
+            .transfer_with_conflict(
+                LocationDescriptor::file_system(source.clone()),
+                LocationDescriptor::file_system(destination.path().to_path_buf()),
+                TransferMode::Move,
+                ConflictDecision::Prompt,
+                &cancellation,
+            );
+        assert_eq!(outcome.result, TransferResult::Cancelled);
+        assert!(cancellation.is_cancelled());
+        assert_eq!(fs::read(&target).unwrap(), b"old");
+        assert_eq!(fs::read(&source).unwrap(), b"new");
+        assert_eq!(
+            *observed.lock().unwrap(),
+            vec![LocationDescriptor::file_system(target.clone())]
+        );
+
+        let overwrite = |_: &LocationDescriptor| Some(ConflictDecision::Replace);
+        let outcome = TransferEngine::new(&registry)
+            .with_conflict_resolver(&overwrite)
+            .transfer_with_conflict(
+                LocationDescriptor::file_system(source.clone()),
+                LocationDescriptor::file_system(destination.path().to_path_buf()),
+                TransferMode::Copy,
+                ConflictDecision::Prompt,
+                &CancellationToken::new(),
+            );
+        assert_eq!(outcome.result, TransferResult::Succeeded);
+        assert_eq!(fs::read(target).unwrap(), b"new");
+        assert!(source.exists());
+    }
+
+    #[test]
+    fn remote_download_conflict_cancels_before_provider_or_source_delete() {
+        let mut registry = RemoteProviderRegistry::default();
+        let delete_calls = Arc::new(AtomicUsize::new(0));
+        registry
+            .register(Arc::new(FakeProvider {
+                fail_delete: false,
+                delete_calls: Arc::clone(&delete_calls),
+            }))
+            .unwrap();
+        let destination = tempfile::tempdir().unwrap();
+        let target = destination.path().join("report.txt");
+        fs::write(&target, b"old").unwrap();
+        let cancel = |_: &LocationDescriptor| None;
+        let outcome = TransferEngine::new(&registry)
+            .with_conflict_resolver(&cancel)
+            .transfer_with_conflict(
+                remote("report.txt"),
+                LocationDescriptor::file_system(destination.path().to_path_buf()),
+                TransferMode::Move,
+                ConflictDecision::Prompt,
+                &CancellationToken::new(),
+            );
+        assert_eq!(outcome.result, TransferResult::Cancelled);
+        assert_eq!(fs::read(&target).unwrap(), b"old");
+        assert_eq!(delete_calls.load(AtomicOrdering::Acquire), 0);
+        let overwrite = |_: &LocationDescriptor| Some(ConflictDecision::Replace);
+        let outcome = TransferEngine::new(&registry)
+            .with_conflict_resolver(&overwrite)
+            .transfer_with_conflict(
+                remote("report.txt"),
+                LocationDescriptor::file_system(destination.path().to_path_buf()),
+                TransferMode::Copy,
+                ConflictDecision::Prompt,
+                &CancellationToken::new(),
+            );
+        assert_eq!(outcome.result, TransferResult::Succeeded);
+        assert_eq!(fs::read(target).unwrap(), b"remote");
+    }
+
+    #[test]
+    fn remote_destination_conflicts_resolve_before_upload_or_staging() {
+        let mut registry = RemoteProviderRegistry::default();
+        registry
+            .register(Arc::new(TreeProvider {
+                unknown_leaf: false,
+            }))
+            .unwrap();
+        let LocationDescriptor::Virtual(destination) = tree_root() else {
+            panic!("virtual fixture")
+        };
+        for name in ["first.bin", "nested"] {
+            let cancel = |_: &LocationDescriptor| None;
+            let cancellation = CancellationToken::new();
+            assert!(
+                TransferEngine::new(&registry)
+                    .with_conflict_resolver(&cancel)
+                    .remote_destination_plan(
+                        &destination,
+                        name,
+                        ConflictDecision::Prompt,
+                        &cancellation
+                    )
+                    .is_err()
+            );
+            assert!(cancellation.is_cancelled());
+            let overwrite = |_: &LocationDescriptor| Some(ConflictDecision::Replace);
+            assert!(matches!(
+                TransferEngine::new(&registry)
+                    .with_conflict_resolver(&overwrite)
+                    .remote_destination_plan(
+                        &destination,
+                        name,
+                        ConflictDecision::Prompt,
+                        &CancellationToken::new()
+                    )
+                    .unwrap(),
+                ConflictPlan::Proceed
+            ));
+        }
+    }
+
+    #[test]
+    fn fresh_destination_does_not_prompt() {
+        let registry = RemoteProviderRegistry::default();
+        let source_root = tempfile::tempdir().unwrap();
+        let destination = tempfile::tempdir().unwrap();
+        let source = source_root.path().join("new.txt");
+        fs::write(&source, b"new").unwrap();
+        let unexpected = |_: &LocationDescriptor| panic!("no collision must not prompt");
+        let outcome = TransferEngine::new(&registry)
+            .with_conflict_resolver(&unexpected)
+            .transfer_with_conflict(
+                LocationDescriptor::file_system(source),
+                LocationDescriptor::file_system(destination.path().to_path_buf()),
+                TransferMode::Copy,
+                ConflictDecision::Prompt,
+                &CancellationToken::new(),
+            );
+        assert_eq!(outcome.result, TransferResult::Succeeded);
     }
 
     #[test]

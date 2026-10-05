@@ -15,8 +15,8 @@ use windows::Win32::{
     System::{
         Com::{DVASPECT_CONTENT, FORMATETC, IDataObject, STGMEDIUM, TYMED_HGLOBAL},
         DataExchange::{
-            CountClipboardFormats, GetClipboardSequenceNumber, IsClipboardFormatAvailable,
-            RegisterClipboardFormatW,
+            CloseClipboard, CountClipboardFormats, EmptyClipboard, GetClipboardSequenceNumber,
+            IsClipboardFormatAvailable, OpenClipboard, RegisterClipboardFormatW, SetClipboardData,
         },
         Memory::{GMEM_MOVEABLE, GlobalAlloc, GlobalLock, GlobalSize, GlobalUnlock},
         Ole::{
@@ -126,29 +126,145 @@ pub fn publish_native_file_clipboard_with_token(
     mode: ClipboardMode,
     token: Option<[u8; 32]>,
 ) -> Result<(), ExplorerError> {
-    // SAFETY: callers use a dedicated worker thread and initialization is balanced below.
-    unsafe { OleInitialize(None) }
-        .map_err(|error| native_clipboard_error("initialize OLE clipboard worker", &error))?;
-    let result = (|| {
-        let mut runtime = ClipboardRuntime::new();
-        runtime.copy_or_cut(items, mode)?;
-        if let Some(token) = token
-            && let Some(data) = runtime.owned.as_ref()
-        {
-            set_binary_clipboard_format(
-                data,
-                windows::core::w!("SuperExplorer.RemoteClipboardToken.v1"),
-                &token,
-            )?;
+    use std::os::windows::ffi::OsStrExt as _;
+    use windows::{
+        Win32::{
+            Foundation::HANDLE,
+            UI::WindowsAndMessaging::{CreateWindowExW, DestroyWindow, WINDOW_EX_STYLE, WS_POPUP},
+        },
+        core::w,
+    };
+    if items.is_empty() {
+        return Err(clipboard_error(
+            ExplorerErrorKind::Input,
+            "publish file clipboard",
+            "請先選取至少一個項目。",
+            "empty file selection",
+        ));
+    }
+    // Eager CF_HDROP payload: DROPFILES header followed by a double-NUL-terminated
+    // UTF-16 path list. No delayed COM object or private format enumeration is
+    // left behind when this short-lived worker exits.
+    let mut dropfiles = Vec::from(20_u32.to_le_bytes());
+    dropfiles.extend_from_slice(&[0; 12]);
+    dropfiles.extend_from_slice(&1_i32.to_le_bytes());
+    for item in items {
+        let path = item.location.path().ok_or_else(|| {
+            clipboard_error(
+                ExplorerErrorKind::Input,
+                "publish file clipboard",
+                "剪貼簿來源不是本機檔案。",
+                "staged clipboard item has no filesystem path",
+            )
+        })?;
+        for unit in path.as_os_str().encode_wide().chain(Some(0)) {
+            dropfiles.extend_from_slice(&unit.to_le_bytes());
         }
-        runtime.shutdown();
-        Ok(())
-    })();
-    // SAFETY: balances successful OleInitialize on this worker thread.
-    unsafe { OleUninitialize() };
+    }
+    dropfiles.extend_from_slice(&0_u16.to_le_bytes());
+    let effect = if mode == ClipboardMode::Copy {
+        DROPEFFECT_COPY.0
+    } else {
+        DROPEFFECT_MOVE.0
+    };
+    let mut formats = vec![(u32::from(CF_HDROP.0), ClipboardMemory::new(&dropfiles)?)];
+    let effect_format = unsafe { RegisterClipboardFormatW(CFSTR_PREFERREDDROPEFFECT) };
+    if effect_format == 0 {
+        return Err(native_clipboard_error(
+            "register clipboard effect",
+            &windows::core::Error::from_win32(),
+        ));
+    }
+    formats.push((effect_format, ClipboardMemory::new(&effect.to_le_bytes())?));
+    if let Some(token) = token {
+        let token_format =
+            unsafe { RegisterClipboardFormatW(w!("SuperExplorer.RemoteClipboardToken.v1")) };
+        if token_format == 0 {
+            return Err(native_clipboard_error(
+                "register clipboard token",
+                &windows::core::Error::from_win32(),
+            ));
+        }
+        formats.push((token_format, ClipboardMemory::new(&token)?));
+    }
+    // A hidden built-in window supplies a real clipboard owner. Every format is
+    // rendered eagerly; Windows owns the transferred memory after its destruction.
+    let owner = unsafe {
+        CreateWindowExW(
+            WINDOW_EX_STYLE::default(),
+            w!("STATIC"),
+            w!("SuperExplorer Clipboard Publisher"),
+            WS_POPUP,
+            0,
+            0,
+            0,
+            0,
+            None,
+            None,
+            None,
+            None,
+        )
+    }
+    .map_err(|error| native_clipboard_error("create clipboard owner", &error))?;
+    let deadline = std::time::Instant::now() + Duration::from_secs(2);
+    let opened = loop {
+        match unsafe { OpenClipboard(Some(owner)) } {
+            Ok(()) => break Ok(()),
+            Err(_) if std::time::Instant::now() < deadline => {
+                std::thread::sleep(Duration::from_millis(10))
+            }
+            Err(error) => break Err(native_clipboard_error("open file clipboard", &error)),
+        }
+    };
+    let result = opened.and_then(|()| {
+        let result = (|| {
+            unsafe { EmptyClipboard() }
+                .map_err(|error| native_clipboard_error("replace file clipboard", &error))?;
+            for (format, memory) in &mut formats {
+                unsafe { SetClipboardData(*format, Some(HANDLE(memory.0.0))) }.map_err(
+                    |error| native_clipboard_error("publish file clipboard format", &error),
+                )?;
+                memory.0 = windows::Win32::Foundation::HGLOBAL::default();
+            }
+            Ok(())
+        })();
+        let _ = unsafe { CloseClipboard() };
+        result
+    });
+    let _ = unsafe { DestroyWindow(owner) };
     result
 }
 
+struct ClipboardMemory(windows::Win32::Foundation::HGLOBAL);
+impl ClipboardMemory {
+    fn new(bytes: &[u8]) -> Result<Self, ExplorerError> {
+        let memory = Self(
+            unsafe { GlobalAlloc(GMEM_MOVEABLE, bytes.len()) }
+                .map_err(|error| native_clipboard_error("allocate clipboard memory", &error))?,
+        );
+        let pointer = unsafe { GlobalLock(memory.0) }.cast::<u8>();
+        if pointer.is_null() {
+            return Err(native_clipboard_error(
+                "lock clipboard memory",
+                &windows::core::Error::from_win32(),
+            ));
+        }
+        unsafe {
+            std::ptr::copy_nonoverlapping(bytes.as_ptr(), pointer, bytes.len());
+        }
+        let _ = unsafe { GlobalUnlock(memory.0) };
+        Ok(memory)
+    }
+}
+impl Drop for ClipboardMemory {
+    fn drop(&mut self) {
+        if !self.0.is_invalid() {
+            let _ = unsafe { windows::Win32::Foundation::GlobalFree(Some(self.0)) };
+        }
+    }
+}
+
+#[cfg(test)]
 fn set_binary_clipboard_format(
     data: &IDataObject,
     name: windows::core::PCWSTR,
@@ -435,7 +551,7 @@ impl ClipboardRuntime {
     pub(crate) fn shutdown(&mut self) {
         if self.owned.is_some() {
             // SAFETY: flush asks OLE to render delayed formats before releasing our final ref.
-            if let Err(error) = unsafe { OleFlushClipboard() } {
+            if let Err(error) = flush_clipboard_with_retry() {
                 tracing::warn!(%error, "failed to flush owned OLE clipboard during shutdown");
             }
         }
@@ -595,6 +711,34 @@ fn set_clipboard_with_retry(data: &IDataObject) -> Result<(), ExplorerError> {
                 std::thread::sleep(Duration::from_millis(10));
             }
             Err(error) => return Err(native_clipboard_error("set OLE clipboard", &error)),
+        }
+    }
+}
+
+fn flush_clipboard_with_retry() -> Result<(), ExplorerError> {
+    retry_clipboard_flush(|| unsafe { OleFlushClipboard() })
+}
+
+fn retry_clipboard_flush(
+    mut flush: impl FnMut() -> windows::core::Result<()>,
+) -> Result<(), ExplorerError> {
+    let deadline = std::time::Instant::now() + Duration::from_secs(2);
+    loop {
+        // SAFETY: the publisher's OLE STA and IDataObject remain live until
+        // Windows has materialized the clipboard formats for other consumers.
+        match flush() {
+            Ok(()) => return Ok(()),
+            Err(error)
+                if error.code().0 == -2_147_221_040 && std::time::Instant::now() < deadline =>
+            {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            Err(error) => {
+                return Err(native_clipboard_error(
+                    "flush published file clipboard",
+                    &error,
+                ));
+            }
         }
     }
 }
@@ -887,6 +1031,107 @@ mod tests {
         paste_conflict_for_request, read_binary_clipboard_format, set_binary_clipboard_format,
         set_clipboard_with_retry, set_drop_effect, validate_inspection_duration,
     };
+
+    #[test]
+    fn short_lived_file_publisher_persists_paths_and_private_token() {
+        let _guard = CLIPBOARD_TEST_LOCK.lock().expect("clipboard lock");
+        let fixture = explorer_test_support::OwnedTempFixture::new().expect("fixture");
+        let path = fixture
+            .create_file("daq.zip", b"zip fixture")
+            .expect("file");
+        let item = ItemDescriptor {
+            id: ShellItemId::from_provider_bytes([8]).expect("identity"),
+            location: LocationDescriptor::file_system(path.clone()),
+        };
+        std::thread::spawn(move || {
+            super::publish_native_file_clipboard_with_token(
+                vec![item],
+                ClipboardMode::Copy,
+                Some([0x3a; 32]),
+            )
+        })
+        .join()
+        .expect("publisher thread")
+        .expect("publication must flush before teardown");
+        let snapshot = std::thread::spawn(super::read_native_file_clipboard_with_token)
+            .join()
+            .expect("reader thread")
+            .expect("native read")
+            .expect("file clipboard must survive publisher exit");
+        assert_eq!(snapshot.0.len(), 1);
+        assert_eq!(
+            snapshot.0[0]
+                .location
+                .path()
+                .expect("path")
+                .canonicalize()
+                .expect("canonical path"),
+            path
+        );
+        assert_eq!(snapshot.1, ClipboardMode::Copy);
+        assert_eq!(snapshot.2, Some([0x3a; 32]));
+    }
+
+    #[test]
+    fn native_file_publication_retries_clipboard_contention() {
+        use windows::Win32::System::DataExchange::{CloseClipboard, OpenClipboard};
+        let _guard = CLIPBOARD_TEST_LOCK.lock().expect("clipboard lock");
+        let fixture = explorer_test_support::OwnedTempFixture::new().expect("fixture");
+        let path = fixture.create_file("held.zip", b"held").expect("file");
+        let (ready, receiver) = std::sync::mpsc::channel();
+        let blocker = std::thread::spawn(move || {
+            let deadline = std::time::Instant::now() + Duration::from_secs(2);
+            while unsafe { OpenClipboard(None) }.is_err() {
+                assert!(std::time::Instant::now() < deadline);
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            ready.send(()).expect("ready");
+            std::thread::sleep(Duration::from_millis(100));
+            unsafe { CloseClipboard() }.expect("close clipboard");
+        });
+        receiver
+            .recv_timeout(Duration::from_secs(2))
+            .expect("blocker ready");
+        let started = std::time::Instant::now();
+        super::publish_native_file_clipboard_with_token(
+            vec![ItemDescriptor {
+                id: ShellItemId::from_provider_bytes([8]).expect("identity"),
+                location: LocationDescriptor::file_system(path),
+            }],
+            ClipboardMode::Copy,
+            Some([4; 32]),
+        )
+        .expect("publish retries busy clipboard");
+        assert!(started.elapsed() >= Duration::from_millis(50));
+        blocker.join().expect("blocker");
+        let snapshot = super::read_native_file_clipboard_with_token()
+            .expect("read")
+            .expect("file data");
+        assert_eq!(snapshot.2, Some([4; 32]));
+    }
+
+    #[test]
+    fn clipboard_flush_retries_openclipboard_failure_instead_of_reporting_success() {
+        let mut attempts = 0;
+        super::retry_clipboard_flush(|| {
+            attempts += 1;
+            if attempts < 3 {
+                Err(windows::core::Error::from_hresult(windows::core::HRESULT(
+                    -2_147_221_040,
+                )))
+            } else {
+                Ok(())
+            }
+        })
+        .expect("recoverable OpenClipboard contention");
+        assert_eq!(attempts, 3);
+        assert!(
+            super::retry_clipboard_flush(|| Err(windows::core::Error::from_hresult(
+                windows::core::HRESULT(-2_147_467_259)
+            )))
+            .is_err()
+        );
+    }
 
     #[test]
     fn background_paste_never_overwrites_a_newer_clipboard_sequence() {

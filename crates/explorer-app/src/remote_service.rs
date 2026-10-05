@@ -32,6 +32,16 @@ fn log_remote_clipboard_failure(detail: &str) {
     );
 }
 
+fn log_remote_clipboard_progress(detail: &str) {
+    explorer_common::record_process_error_message(
+        explorer_common::ErrorSeverity::Warning,
+        "remote",
+        "clipboard_stage",
+        detail,
+        Some(file!()),
+    );
+}
+
 fn remote_type_display(name: &str, kind: RemoteEntryKind) -> String {
     match kind {
         RemoteEntryKind::File => explorer_model::classify_remote_file_name(name).type_label,
@@ -1749,6 +1759,33 @@ struct RemoteClipboard {
 
 type NativeClipboardSnapshot = (Vec<ItemDescriptor>, ClipboardMode, Option<[u8; 32]>);
 
+fn project_remote_clipboard_state(
+    state: ClipboardState,
+    internal: Option<&RemoteClipboard>,
+    sequence: u32,
+) -> ClipboardState {
+    let Some(internal) = internal.filter(|value| value.native_sequence_at_capture == sequence)
+    else {
+        return state;
+    };
+    let generation = match state {
+        ClipboardState::None { generation }
+        | ClipboardState::Unsupported { generation, .. }
+        | ClipboardState::External { generation, .. }
+        | ClipboardState::Owned { generation, .. } => generation,
+    };
+    ClipboardState::Owned {
+        mode: internal.mode,
+        items: internal.items.clone(),
+        effects: if internal.mode == ClipboardMode::Copy {
+            TransferEffects::COPY
+        } else {
+            TransferEffects::MOVE
+        },
+        generation,
+    }
+}
+
 fn select_remote_paste_sources(
     native: Option<NativeClipboardSnapshot>,
     internal: Option<RemoteClipboard>,
@@ -2145,7 +2182,19 @@ impl RemoteExplorerService {
 
         let providers = Arc::clone(&self.providers);
         let staging = Arc::clone(&self.clipboard_staging);
+        let clipboard = Arc::clone(&self.clipboard);
+        let sender = self.sender.clone();
+        let publication_generation = Arc::clone(&self.clipboard_generation);
+        tracing::info!(
+            item_count = items.len(),
+            ?mode,
+            "remote clipboard staging started"
+        );
         std::thread::spawn(move || {
+            log_remote_clipboard_progress(&format!(
+                "phase=staging_started selected={} mode={mode:?}",
+                items.len()
+            ));
             let cancellation = explorer_model::CancellationToken::new();
             let root = match tempfile::Builder::new()
                 .prefix("superexplorer-remote-clipboard-")
@@ -2197,6 +2246,13 @@ impl RemoteExplorerService {
             }
             // External consumers receive a copy. A remote cut remains a move only when pasted
             // back through SuperExplorer, where completion can be observed before deletion.
+            if !clipboard
+                .lock()
+                .is_ok_and(|value| value.as_ref().is_some_and(|value| value.token == token))
+            {
+                tracing::info!("remote clipboard staging discarded because copy selection changed");
+                return;
+            }
             if let Err(error) = explorer_shell_win::publish_native_file_clipboard_with_token(
                 native_items,
                 ClipboardMode::Copy,
@@ -2205,8 +2261,45 @@ impl RemoteExplorerService {
                 log_remote_clipboard_failure(&format!(
                     "reason=native_clipboard_publish_failed error={error}"
                 ));
-            } else if let Ok(mut roots) = staging.lock() {
-                *roots = Some(root);
+            } else if let Ok(mut current_clipboard) = clipboard.lock()
+                && let Some(current) = current_clipboard
+                    .as_mut()
+                    .filter(|value| value.token == token)
+            {
+                current.native_sequence_at_capture =
+                    explorer_shell_win::native_clipboard_sequence();
+                if let Ok(mut roots) = staging.lock() {
+                    *roots = Some(root);
+                }
+                tracing::info!(
+                    sequence = current.native_sequence_at_capture,
+                    item_count = current.items.len(),
+                    "remote clipboard publication ready"
+                );
+                let generation = publication_generation
+                    .lock()
+                    .map(|mut generation| {
+                        *generation = generation.saturating_add(1);
+                        *generation
+                    })
+                    .unwrap_or(0);
+                let _ = sender.try_send(ExplorerEvent::ClipboardChanged {
+                    state: ClipboardState::Owned {
+                        mode: current.mode,
+                        items: current.items.clone(),
+                        effects: if current.mode == ClipboardMode::Copy {
+                            TransferEffects::COPY
+                        } else {
+                            TransferEffects::MOVE
+                        },
+                        generation,
+                    },
+                });
+                let sequence = current.native_sequence_at_capture;
+                drop(current_clipboard);
+                log_remote_clipboard_progress(&format!(
+                    "phase=publication_ready sequence={sequence}"
+                ));
             }
         });
         Ok(())
@@ -2220,11 +2313,6 @@ impl RemoteExplorerService {
     ) -> Result<(), ExplorerServiceError> {
         arm_request_deadline(&context);
         let active_request = self.track_remote_request(&context)?;
-        let internal = self
-            .clipboard
-            .lock()
-            .map_err(|_| ExplorerServiceError::Internal)?
-            .clone();
         let providers = Arc::clone(&self.providers);
         let sender = self.sender.clone();
         let clipboard = Arc::clone(&self.clipboard);
@@ -2235,27 +2323,45 @@ impl RemoteExplorerService {
             // The Windows clipboard is authoritative when another application replaces a
             // previously owned remote clipboard. Retain internal remote cut semantics only when
             // the staged native object carries the matching private ownership token.
-            let native = explorer_shell_win::read_native_file_clipboard_with_token()
-                .map_err(|error| anyhow::anyhow!(error.to_string()));
+            let mut internal = clipboard.lock().ok().and_then(|value| value.clone());
             let current_sequence = explorer_shell_win::native_clipboard_sequence();
-            let sources = match native {
-                Ok(native) => Ok(select_remote_paste_sources(
-                    native,
+            // Ctrl+C has already made these remote items authoritative. While
+            // the native sequence is unchanged, paste directly from the original
+            // provider instead of reading a previous or still-staging CF_HDROP.
+            let sources = if internal
+                .as_ref()
+                .is_some_and(|value| value.native_sequence_at_capture == current_sequence)
+            {
+                Ok(select_remote_paste_sources(
+                    None,
                     internal.clone(),
                     current_sequence,
-                )),
-                Err(_)
-                    if internal.as_ref().is_some_and(|value| {
-                        current_sequence == value.native_sequence_at_capture
-                    }) =>
-                {
-                    Ok(select_remote_paste_sources(
-                        None,
+                ))
+            } else {
+                let native = explorer_shell_win::read_native_file_clipboard_with_token()
+                    .map_err(|error| anyhow::anyhow!(error.to_string()));
+                let current_sequence = explorer_shell_win::native_clipboard_sequence();
+                // Staging can complete while the native read is in progress.
+                internal = clipboard.lock().ok().and_then(|value| value.clone());
+                match native {
+                    Ok(native) => Ok(select_remote_paste_sources(
+                        native,
                         internal.clone(),
                         current_sequence,
-                    ))
+                    )),
+                    Err(_)
+                        if internal.as_ref().is_some_and(|value| {
+                            current_sequence == value.native_sequence_at_capture
+                        }) =>
+                    {
+                        Ok(select_remote_paste_sources(
+                            None,
+                            internal.clone(),
+                            current_sequence,
+                        ))
+                    }
+                    Err(error) => Err(error),
                 }
-                Err(error) => Err(error),
             };
             let outcome = match sources {
                 Ok((items, mode)) if !items.is_empty() => transfer_items(
@@ -2657,7 +2763,25 @@ impl ExplorerService for RemoteExplorerService {
                 Ok(Some(event))
             }
             Err(TryRecvError::Empty) => {
-                let event = self.inner.try_recv()?;
+                let mut event = self.inner.try_recv()?;
+                if let Some(ExplorerEvent::ClipboardChanged { state }) = event.as_mut() {
+                    let internal = self
+                        .clipboard
+                        .lock()
+                        .map_err(|_| ExplorerServiceError::Internal)?;
+                    let sequence = explorer_shell_win::native_clipboard_sequence();
+                    let original = state.clone();
+                    *state = project_remote_clipboard_state(
+                        original.clone(),
+                        internal.as_ref(),
+                        sequence,
+                    );
+                    tracing::info!(
+                        sequence,
+                        retained_remote = *state != original,
+                        "native clipboard observation reconciled"
+                    );
+                }
                 if let Some(event) = event.as_ref() {
                     remember_resolved_event(event);
                 }
@@ -3128,7 +3252,10 @@ fn transfer_items(
     sender: &SyncSender<ExplorerEvent>,
     context: &explorer_model::RequestContext,
 ) -> OperationTerminal {
-    let engine = TransferEngine::new(providers);
+    let conflict_resolver = |target: &LocationDescriptor| {
+        prompt_transfer_overwrite(target).then_some(explorer_model::ConflictDecision::Replace)
+    };
+    let engine = TransferEngine::new(providers).with_conflict_resolver(&conflict_resolver);
     let reporter = TransferProgressReporter::new(sender, context, items.len(), None);
     reporter.preparing();
     let estimates = items
@@ -3209,6 +3336,117 @@ fn transfer_items(
     }
 }
 
+#[cfg(windows)]
+#[allow(
+    unsafe_code,
+    reason = "TaskDialog uses borrowed strings on the transfer worker for a synchronous user decision"
+)]
+fn prompt_transfer_overwrite(target: &LocationDescriptor) -> bool {
+    use windows::{
+        Win32::{
+            Foundation::{FreeLibrary, HWND},
+            System::{
+                LibraryLoader::{GetProcAddress, LoadLibraryW},
+                Threading::GetCurrentProcessId,
+            },
+            UI::{
+                Controls::{
+                    TASKDIALOG_BUTTON, TASKDIALOGCONFIG, TDF_ALLOW_DIALOG_CANCELLATION,
+                    TDF_POSITION_RELATIVE_TO_WINDOW,
+                },
+                WindowsAndMessaging::{
+                    GA_ROOTOWNER, GetAncestor, GetForegroundWindow, GetWindowThreadProcessId,
+                    IsWindow,
+                },
+            },
+        },
+        core::{BOOL, HRESULT, HSTRING, PCWSTR, s, w},
+    };
+    let catalog = crate::locale::live_catalog();
+    let title = HSTRING::from(catalog.t("dialog-transfer-conflict-title"));
+    let content = HSTRING::from(format!(
+        "{}\n\n{}",
+        target.editable_text(),
+        catalog.t("dialog-transfer-conflict-body")
+    ));
+    let replace = HSTRING::from(catalog.t("dialog-transfer-overwrite"));
+    let cancel = HSTRING::from(catalog.t("transfer-cancel"));
+    let buttons = [
+        TASKDIALOG_BUTTON {
+            nButtonID: 100,
+            pszButtonText: PCWSTR(replace.as_ptr()),
+        },
+        TASKDIALOG_BUTTON {
+            nButtonID: 101,
+            pszButtonText: PCWSTR(cancel.as_ptr()),
+        },
+    ];
+    // Keep consecutive choosers owned by the application, rather than the
+    // previous chooser's disappearing HWND or another foreground application.
+    let foreground = unsafe { GetAncestor(GetForegroundWindow(), GA_ROOTOWNER) };
+    let mut owner_process = 0;
+    unsafe {
+        GetWindowThreadProcessId(foreground, Some(&raw mut owner_process));
+    }
+    let owner = if unsafe { IsWindow(Some(foreground)) }.as_bool()
+        && owner_process == unsafe { GetCurrentProcessId() }
+    {
+        foreground
+    } else {
+        HWND::default()
+    };
+    let config = TASKDIALOGCONFIG {
+        cbSize: size_of::<TASKDIALOGCONFIG>() as u32,
+        hwndParent: owner,
+        dwFlags: TDF_ALLOW_DIALOG_CANCELLATION | TDF_POSITION_RELATIVE_TO_WINDOW,
+        pszWindowTitle: PCWSTR(title.as_ptr()),
+        pszMainInstruction: PCWSTR(title.as_ptr()),
+        pszContent: PCWSTR(content.as_ptr()),
+        cButtons: buttons.len() as u32,
+        pButtons: buttons.as_ptr(),
+        nDefaultButton: 101,
+        ..TASKDIALOGCONFIG::default()
+    };
+    let mut selected = 101;
+    // Resolve this optional v6 Common Controls entry point only at the call site.
+    // Hosts without the app's v6 manifest must still start normally. Failure to
+    // open the chooser must never authorize an overwrite.
+    // SAFETY: the DLL name is static and NUL-terminated.
+    let Ok(library) = (unsafe { LoadLibraryW(w!("comctl32.dll")) }) else {
+        return false;
+    };
+    let procedure = unsafe { GetProcAddress(library, s!("TaskDialogIndirect")) };
+    type TaskDialog = unsafe extern "system" fn(
+        *const TASKDIALOGCONFIG,
+        *mut i32,
+        *mut i32,
+        *mut BOOL,
+    ) -> HRESULT;
+    let result = procedure.is_some_and(|procedure| {
+        // SAFETY: this is the documented ABI of comctl32!TaskDialogIndirect.
+        let dialog: TaskDialog = unsafe { std::mem::transmute(procedure) };
+        // SAFETY: config, buttons and every UTF-16 string outlive this synchronous call.
+        unsafe {
+            dialog(
+                &raw const config,
+                &raw mut selected,
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+            )
+        }
+        .is_ok()
+    });
+    // SAFETY: the dialog has returned, and no pointer into the DLL escapes this function.
+    let _ = unsafe { FreeLibrary(library) };
+    // Closing the dialog, Escape, or a dialog creation error all cancel the transfer.
+    result && selected == 100
+}
+
+#[cfg(not(windows))]
+fn prompt_transfer_overwrite(_: &LocationDescriptor) -> bool {
+    false
+}
+
 fn remote_error(
     operation: &'static str,
     user: &'static str,
@@ -3277,6 +3515,20 @@ fn map_send_error<T>(error: TrySendError<T>) -> ExplorerServiceError {
 
 #[cfg(test)]
 mod tests {
+    // Native clipboard integration cases share a process-global Windows resource.
+    // Drain each publisher before releasing its fixture or starting the next case.
+    static REMOTE_FILE_CLIPBOARD_TEST_LOCK: Mutex<()> = Mutex::new(());
+
+    fn wait_for_clipboard_publication(service: &RemoteExplorerService) {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+        while service.clipboard_staging.lock().unwrap().is_none() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "native publication did not finish"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+    }
     use super::*;
 
     #[test]
@@ -3928,6 +4180,37 @@ mod tests {
     }
 
     #[test]
+    fn remote_copy_survives_unsupported_native_observation_until_external_replacement() {
+        let item = ItemDescriptor {
+            id: explorer_model::ShellItemId::from_provider_bytes([9; 8]).unwrap(),
+            location: remote_location(),
+        };
+        let internal = RemoteClipboard {
+            mode: ClipboardMode::Copy,
+            items: vec![item.clone()],
+            token: [5; 32],
+            native_sequence_at_capture: 42,
+        };
+        let unsupported = ClipboardState::Unsupported {
+            error: remote_error("clipboard inspection", "not files", "no CF_HDROP"),
+            generation: 8,
+        };
+        let projected = project_remote_clipboard_state(unsupported.clone(), Some(&internal), 42);
+        assert!(
+            matches!(projected, ClipboardState::Owned { items, generation: 8, .. } if items == vec![item])
+        );
+        assert_eq!(
+            project_remote_clipboard_state(unsupported.clone(), Some(&internal), 43),
+            unsupported
+        );
+        let empty = ClipboardState::None { generation: 9 };
+        assert!(matches!(
+            project_remote_clipboard_state(empty, Some(&internal), 42),
+            ClipboardState::Owned { .. }
+        ));
+    }
+
+    #[test]
     fn remote_copy_keeps_internal_token_authority() {
         let service = RemoteExplorerService::new(
             Arc::new(TelemetryService),
@@ -4021,6 +4304,7 @@ mod tests {
 
     #[test]
     fn remote_copy_immediately_pastes_through_internal_clipboard_to_local_folder() {
+        let _clipboard_guard = REMOTE_FILE_CLIPBOARD_TEST_LOCK.lock().unwrap();
         let mut providers = RemoteProviderRegistry::default();
         providers.register(Arc::new(DownloadProvider)).unwrap();
         let service = RemoteExplorerService::new(Arc::new(TelemetryService), Arc::new(providers));
@@ -4060,10 +4344,12 @@ mod tests {
             b"remote clipboard fixture"
         );
         assert!(service.clipboard.lock().unwrap().is_some());
+        wait_for_clipboard_publication(&service);
     }
 
     #[test]
     fn adb_clipboard_pastes_to_sftp_and_other_registered_virtual_providers() {
+        let _clipboard_guard = REMOTE_FILE_CLIPBOARD_TEST_LOCK.lock().unwrap();
         for provider_id in ["sftp", "archive"] {
             let observations = Arc::new(Mutex::new(Vec::new()));
             let mut providers = RemoteProviderRegistry::default();
@@ -4117,6 +4403,7 @@ mod tests {
                 destination
             );
             assert_eq!(observations[0].bytes, b"remote clipboard fixture");
+            wait_for_clipboard_publication(&service);
             assert!(!observations[0].staged_path.exists());
         }
     }
@@ -4163,6 +4450,7 @@ mod tests {
 
     #[test]
     fn failed_virtual_upload_keeps_copy_clipboard_and_cleans_staging() {
+        let _clipboard_guard = REMOTE_FILE_CLIPBOARD_TEST_LOCK.lock().unwrap();
         let observations = Arc::new(Mutex::new(Vec::new()));
         let mut providers = RemoteProviderRegistry::default();
         providers.register(Arc::new(DownloadProvider)).unwrap();
@@ -4229,6 +4517,7 @@ mod tests {
         let observations = observations.lock().unwrap();
         assert_eq!(observations.len(), 1);
         assert!(!observations[0].staged_path.exists());
+        wait_for_clipboard_publication(&service);
     }
 
     #[test]
