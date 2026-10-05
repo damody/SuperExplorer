@@ -13,12 +13,12 @@ dialog-author-line = Author: { $name } — { $bio } · { $date }
 dialog-community = Community: { $url }
 dialog-plugin-safe-mode-title = Plugin Safe Mode
 dialog-plugin-safe-mode-body = Plugin Safe Mode is on. Select plugins to re-enable, choose Apply or OK, then restart SuperExplorer.
-dialog-safe-mode-confirm-title = Safe Mode requires confirmation
-dialog-safe-mode-confirm-aria = Safe Mode confirmation required; Suspect package: { $package }
-dialog-suspect-package = Suspect package: { $package }
+dialog-safe-mode-confirm-title = An extension was temporarily disabled
+dialog-safe-mode-confirm-aria = Extension temporarily disabled: { $package }
+dialog-suspect-package = Affected feature: { $package }
 dialog-interface = Interface: { $value }
 dialog-operation = Operation: { $value }
-dialog-confirm-reenable = Confirm and re-enable
+dialog-confirm-reenable = Allow loading on next startup
 dialog-bookmark-action = Bookmark action
 dialog-delete-bookmark = Delete bookmark
 dialog-delete-bookmark-prompt = Delete bookmark “{ $name }”?
@@ -141,3 +141,27 @@ dialog-gdrive-trash-aria =
 
 ftp-sign-in = Sign in to { $host }
 ftp-sign-in-unencrypted = Sign in to { $host } — This connection is not encrypted
+
+dialog-safe-mode-unfinished-body = The previous attempt to load or use this extension left an unfinished record. The app may have closed unexpectedly, or the record may not have been cleared. This does not prove the extension is faulty.
+
+dialog-safe-mode-unverified-body = The extension loading records could not be verified, so extension loading has been paused.
+
+dialog-safe-mode-reenable-help = Keep it disabled to continue using other features. Allowing it again clears this protection record and lets the app try loading it on the next startup.
+
+dialog-safe-mode-show-details = Show technical details
+
+dialog-safe-mode-hide-details = Hide technical details
+
+dialog-safe-mode-package-id = Package ID:
+
+dialog-safe-mode-keep-disabled = Continue
+
+dialog-safe-mode-extension-lock-owners = File locking processes column
+
+dialog-safe-mode-extension-code-lines = Code line count column
+
+dialog-safe-mode-extension-folder-size = Folder size column
+
+dialog-safe-mode-extension-size-map = Storage usage map
+
+dialog-safe-mode-extension-unknown = Unidentified extension

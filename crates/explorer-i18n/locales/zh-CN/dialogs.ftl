@@ -23,17 +23,17 @@ dialog-plugin-safe-mode-title = Plugin Safe Mode
 
 dialog-plugin-safe-mode-body = Plugin Safe Mode 已启用。勾选要重新启用的 Plugin，按 Apply 或 OK，然后重新启动 SuperExplorer。
 
-dialog-safe-mode-confirm-title = Safe Mode requires confirmation
+dialog-safe-mode-confirm-title = 扩展功能已暂时停用
 
-dialog-safe-mode-confirm-aria = Safe Mode confirmation required; Suspect package: { $package }
+dialog-safe-mode-confirm-aria = 扩展功能已暂时停用：{ $package }
 
-dialog-suspect-package = Suspect package: { $package }
+dialog-suspect-package = 受影响的功能：{ $package }
 
 dialog-interface = Interface: { $value }
 
 dialog-operation = Operation: { $value }
 
-dialog-confirm-reenable = Confirm and re-enable
+dialog-confirm-reenable = 允许下次启动重新加载
 
 dialog-bookmark-action = 书签操作
 
@@ -211,3 +211,27 @@ dialog-gdrive-trash-aria = 将 { $count } 个项目移到 Google Drive 回收站
 
 ftp-sign-in = 登录 { $host }
 ftp-sign-in-unencrypted = 登录 { $host } — 此连接未加密
+
+dialog-safe-mode-unfinished-body = 上次加载或使用这个扩展功能时，留下了未完成的记录。可能是程序突然关闭，也可能是记录没有正确清除；这不代表扩展功能一定故障。
+
+dialog-safe-mode-unverified-body = 无法确认扩展功能的加载记录是否完整，因此已暂停加载扩展功能。
+
+dialog-safe-mode-reenable-help = 保持停用仍可继续使用其他功能。选择重新加载会清除这条保护记录，并在下次启动时再次尝试加载。
+
+dialog-safe-mode-show-details = 显示技术详细信息
+
+dialog-safe-mode-hide-details = 隐藏技术详细信息
+
+dialog-safe-mode-package-id = 软件包代码：
+
+dialog-safe-mode-keep-disabled = 继续使用
+
+dialog-safe-mode-extension-lock-owners = 文件锁定进程列
+
+dialog-safe-mode-extension-code-lines = 代码行数列
+
+dialog-safe-mode-extension-folder-size = 文件夹大小列
+
+dialog-safe-mode-extension-size-map = 空间使用量地图
+
+dialog-safe-mode-extension-unknown = 无法识别名称的扩展功能

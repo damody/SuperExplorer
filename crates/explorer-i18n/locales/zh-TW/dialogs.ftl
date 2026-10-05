@@ -13,12 +13,12 @@ dialog-author-line = 作者：{ $name } — { $bio } · { $date }
 dialog-community = 社群：{ $url }
 dialog-plugin-safe-mode-title = Plugin Safe Mode
 dialog-plugin-safe-mode-body = Plugin Safe Mode 已啟用。勾選要重新啟用的 Plugin，按 Apply 或 OK，然後重新啟動 SuperExplorer。
-dialog-safe-mode-confirm-title = Safe Mode requires confirmation
-dialog-safe-mode-confirm-aria = Safe Mode confirmation required; Suspect package: { $package }
-dialog-suspect-package = Suspect package: { $package }
+dialog-safe-mode-confirm-title = 擴充功能已暫時停用
+dialog-safe-mode-confirm-aria = 擴充功能已暫時停用：{ $package }
+dialog-suspect-package = 受影響的功能：{ $package }
 dialog-interface = Interface: { $value }
 dialog-operation = Operation: { $value }
-dialog-confirm-reenable = Confirm and re-enable
+dialog-confirm-reenable = 允許下次啟動重新載入
 dialog-bookmark-action = 書籤操作
 dialog-delete-bookmark = 刪除書籤
 dialog-delete-bookmark-prompt = 刪除書籤「{ $name }」？
@@ -117,3 +117,27 @@ dialog-gdrive-trash-aria = 將 { $count } 個項目移到 Google Drive 垃圾桶
 
 ftp-sign-in = 登入 { $host }
 ftp-sign-in-unencrypted = 登入 { $host } — 此連線未加密
+
+dialog-safe-mode-unfinished-body = 上次載入或使用這個擴充功能時，留下了未完成的記錄。可能是程式突然關閉，也可能是記錄沒有正確清除；這不代表擴充功能一定故障。
+
+dialog-safe-mode-unverified-body = 無法確認擴充功能的載入記錄是否完整，因此已暫停載入擴充功能。
+
+dialog-safe-mode-reenable-help = 保持停用仍可繼續使用其他功能。選擇重新載入會清除這筆保護記錄，並在下次啟動時再次嘗試載入。
+
+dialog-safe-mode-show-details = 顯示技術詳細資料
+
+dialog-safe-mode-hide-details = 隱藏技術詳細資料
+
+dialog-safe-mode-package-id = 套件代碼：
+
+dialog-safe-mode-keep-disabled = 繼續使用
+
+dialog-safe-mode-extension-lock-owners = 檔案鎖定程序欄位
+
+dialog-safe-mode-extension-code-lines = 程式碼行數欄位
+
+dialog-safe-mode-extension-folder-size = 資料夾大小欄位
+
+dialog-safe-mode-extension-size-map = 空間使用量地圖
+
+dialog-safe-mode-extension-unknown = 無法辨識名稱的擴充功能

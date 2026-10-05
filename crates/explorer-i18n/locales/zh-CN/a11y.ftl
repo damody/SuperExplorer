@@ -126,7 +126,7 @@ a11y-timeout = 等待关闭超时
 
 a11y-process = 进程 { $pid }
 
-a11y-confirm-and-reenable = Confirm and re-enable
+a11y-confirm-and-reenable = 允许下次启动重新加载
 
 a11y-folder-options-scrollbar = 文件夹选项垂直滚动条
 
