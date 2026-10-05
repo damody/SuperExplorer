@@ -1477,6 +1477,7 @@ pub struct ExplorerRoot {
     last_window_title: Option<String>,
     navigation_history_release_deadline: Option<Instant>,
     safe_mode_offers: Vec<SafeModeOfferV1>,
+    safe_mode_details_expanded: bool,
     safe_mode_confirm: Option<SafeModeConfirmObserverV1>,
     safe_mode_confirmation_error: Option<String>,
     extension_ui_pump: Option<Box<dyn ExtensionUiPumpPortV1>>,
@@ -1783,6 +1784,20 @@ pub struct SafeModeOfferV1 {
     pub primary_interface_namespace: Option<u32>,
     pub primary_interface_value: Option<u64>,
     pub operation: String,
+}
+
+fn safe_mode_extension_label(offer: &SafeModeOfferV1, catalog: explorer_i18n::Catalog) -> String {
+    let key = match (
+        offer.primary_interface_namespace,
+        offer.primary_interface_value,
+    ) {
+        (Some(0x5345_0001), Some(4001 | 4002)) => "dialog-safe-mode-extension-lock-owners",
+        (Some(0x5345_0001), Some(3001 | 3002)) => "dialog-safe-mode-extension-code-lines",
+        (Some(0x5345_0001), Some(1001 | 1002)) => "dialog-safe-mode-extension-folder-size",
+        (Some(0x5345_0001), Some(2001 | 2002)) => "dialog-safe-mode-extension-size-map",
+        _ => "dialog-safe-mode-extension-unknown",
+    };
+    catalog.t(key)
 }
 /// Application-owned confirmation bridge. `Ok(())` is the sole condition that removes an offer.
 pub type SafeModeConfirmObserverV1 = Arc<dyn Fn(u64) -> Result<(), String> + Send + Sync>;
@@ -2207,6 +2222,7 @@ impl ExplorerRoot {
             last_window_title: None,
             navigation_history_release_deadline: None,
             safe_mode_offers: Vec::new(),
+            safe_mode_details_expanded: false,
             safe_mode_confirm: None,
             safe_mode_confirmation_error: None,
             extension_ui_pump: None,
@@ -4622,6 +4638,7 @@ impl ExplorerRoot {
             last_window_title: None,
             navigation_history_release_deadline: None,
             safe_mode_offers: Vec::new(),
+            safe_mode_details_expanded: false,
             safe_mode_confirm: None,
             safe_mode_confirmation_error: None,
             extension_ui_pump: None,
@@ -4747,6 +4764,7 @@ impl ExplorerRoot {
             last_window_title: None,
             navigation_history_release_deadline: None,
             safe_mode_offers: Vec::new(),
+            safe_mode_details_expanded: false,
             safe_mode_confirm: None,
             safe_mode_confirmation_error: None,
             extension_ui_pump: None,
@@ -4917,6 +4935,7 @@ impl ExplorerRoot {
         confirm: SafeModeConfirmObserverV1,
     ) {
         self.safe_mode_offers = offers;
+        self.safe_mode_details_expanded = false;
         self.safe_mode_confirm = Some(confirm);
         self.safe_mode_confirmation_error = None;
     }
@@ -4940,10 +4959,23 @@ impl ExplorerRoot {
         match confirm(presentation_token) {
             Ok(()) => {
                 self.safe_mode_offers.remove(index);
+                self.safe_mode_details_expanded = false;
                 self.safe_mode_confirmation_error = None;
             }
             Err(error) => self.safe_mode_confirmation_error = Some(error),
         }
+    }
+
+    fn defer_safe_mode_offer(&mut self, presentation_token: u64) {
+        self.safe_mode_offers
+            .retain(|offer| offer.presentation_token != presentation_token);
+        self.safe_mode_details_expanded = false;
+        self.safe_mode_confirmation_error = None;
+        // Dismiss only the presentation. The host's durable denial is unchanged.
+        interaction_log::record_ui_interaction(
+            "safe_mode",
+            &format!("result=kept_disabled presentation_token={presentation_token}"),
+        );
     }
 
     fn notify_durable_state(&self) -> bool {
@@ -11445,6 +11477,7 @@ impl Render for ExplorerRoot {
                     cx.stop_propagation();
                     if matches!(event.keystroke.key.as_str(), "enter" | "space") {
                         this.confirm_safe_mode_offer(presentation_token);
+                        cx.notify();
                     }
                     return;
                 }
@@ -11853,6 +11886,12 @@ impl Render for ExplorerRoot {
             .child(content)
             .when_some(safe_mode_offer, |element, offer| {
                 let package = offer.package_id.as_deref().unwrap_or("unknown package");
+                let extension_name = safe_mode_extension_label(&offer, self.catalog());
+                let explanation = self.catalog().t(if offer.package_id.is_some() {
+                    "dialog-safe-mode-unfinished-body"
+                } else {
+                    "dialog-safe-mode-unverified-body"
+                });
                 let interface = offer
                     .primary_interface_namespace
                     .zip(offer.primary_interface_value)
@@ -11879,47 +11918,112 @@ impl Render for ExplorerRoot {
                                 .role(Role::Dialog)
                                 .aria_label({
                                     let mut args = explorer_i18n::FluentArgs::new();
-                                    args.set("package", package);
+                                    args.set("package", extension_name.clone());
                                     self.catalog()
                                         .t_args("dialog-safe-mode-confirm-aria", &args)
                                 })
                                 .w(px(480.0))
+                                .max_h(gpui::relative(0.9))
+                                .overflow_y_scroll()
                                 .p(px(20.0))
                                 .rounded(px(8.0))
                                 .bg(self.tokens.theme.colors.surface.to_gpui())
+                                .text_color(self.tokens.theme.colors.text_primary.to_gpui())
                                 .flex()
                                 .flex_col()
                                 .gap(px(12.0))
                                 .child(
                                     div()
                                         .text_size(px(20.0))
+                                        .id("safe-mode-title")
+                                        .role(Role::Group)
+                                        .aria_label(
+                                            self.catalog().t("dialog-safe-mode-confirm-title"),
+                                        )
                                         .child(self.catalog().t("dialog-safe-mode-confirm-title")),
                                 )
                                 .child(
                                     div()
                                         .id("safe-mode-suspect-package")
-                                        .role(Role::Label)
+                                        .role(Role::Group)
                                         .aria_label({
                                             let mut args = explorer_i18n::FluentArgs::new();
-                                            args.set("package", package);
+                                            args.set("package", extension_name.clone());
                                             self.catalog().t_args("dialog-suspect-package", &args)
                                         })
                                         .child({
                                             let mut args = explorer_i18n::FluentArgs::new();
-                                            args.set("package", package);
+                                            args.set("package", extension_name.clone());
                                             self.catalog().t_args("dialog-suspect-package", &args)
                                         }),
                                 )
-                                .child(div().child({
-                                    let mut args = explorer_i18n::FluentArgs::new();
-                                    args.set("value", interface);
-                                    self.catalog().t_args("dialog-interface", &args)
-                                }))
-                                .child(div().child({
-                                    let mut args = explorer_i18n::FluentArgs::new();
-                                    args.set("value", offer.operation.clone());
-                                    self.catalog().t_args("dialog-operation", &args)
-                                }))
+                                .child(
+                                    div()
+                                        .id("safe-mode-explanation")
+                                        .role(Role::Group)
+                                        .aria_label(explanation.clone())
+                                        .child(explanation),
+                                )
+                                .child(
+                                    div()
+                                        .id("safe-mode-choice-help")
+                                        .role(Role::Group)
+                                        .aria_label(
+                                            self.catalog().t("dialog-safe-mode-reenable-help"),
+                                        )
+                                        .child(self.catalog().t("dialog-safe-mode-reenable-help")),
+                                )
+                                .child(
+                                    div()
+                                        .id("safe-mode-details-toggle")
+                                        .role(Role::Button)
+                                        .aria_label(self.catalog().t(
+                                            if self.safe_mode_details_expanded {
+                                                "dialog-safe-mode-hide-details"
+                                            } else {
+                                                "dialog-safe-mode-show-details"
+                                            },
+                                        ))
+                                        .cursor_pointer()
+                                        .child(self.catalog().t(
+                                            if self.safe_mode_details_expanded {
+                                                "dialog-safe-mode-hide-details"
+                                            } else {
+                                                "dialog-safe-mode-show-details"
+                                            },
+                                        ))
+                                        .on_click(cx.listener(|this, _, _, cx| {
+                                            this.safe_mode_details_expanded =
+                                                !this.safe_mode_details_expanded;
+                                            cx.notify();
+                                        })),
+                                )
+                                .when(self.safe_mode_details_expanded, |dialog| {
+                                    dialog
+                                        .child(
+                                            div()
+                                                .id("safe-mode-package-code")
+                                                .role(Role::Group)
+                                                .aria_label(format!(
+                                                    "{} {package}",
+                                                    self.catalog().t("dialog-safe-mode-package-id")
+                                                ))
+                                                .child(format!(
+                                                    "{} {package}",
+                                                    self.catalog().t("dialog-safe-mode-package-id")
+                                                )),
+                                        )
+                                        .child(div().child({
+                                            let mut args = explorer_i18n::FluentArgs::new();
+                                            args.set("value", interface);
+                                            self.catalog().t_args("dialog-interface", &args)
+                                        }))
+                                        .child(div().child({
+                                            let mut args = explorer_i18n::FluentArgs::new();
+                                            args.set("value", offer.operation.clone());
+                                            self.catalog().t_args("dialog-operation", &args)
+                                        }))
+                                })
                                 .when_some(safe_mode_error, |dialog, error| {
                                     dialog.child(
                                         div()
@@ -11940,8 +12044,26 @@ impl Render for ExplorerRoot {
                                             self.tokens.theme.colors.selected_text.to_gpui(),
                                         )
                                         .child(self.catalog().t("dialog-confirm-reenable"))
-                                        .on_click(cx.listener(move |this, _, _, _| {
+                                        .on_click(cx.listener(move |this, _, _, cx| {
                                             this.confirm_safe_mode_offer(offer.presentation_token);
+                                            cx.notify();
+                                        })),
+                                )
+                                .child(
+                                    div()
+                                        .id("safe-mode-keep-disabled")
+                                        .role(Role::Button)
+                                        .aria_label(
+                                            self.catalog().t("dialog-safe-mode-keep-disabled"),
+                                        )
+                                        .p(px(8.0))
+                                        .rounded(px(4.0))
+                                        .border(px(1.0))
+                                        .border_color(self.tokens.theme.colors.divider.to_gpui())
+                                        .child(self.catalog().t("dialog-safe-mode-keep-disabled"))
+                                        .on_click(cx.listener(move |this, _, _, cx| {
+                                            this.defer_safe_mode_offer(offer.presentation_token);
+                                            cx.notify();
                                         })),
                                 ),
                         ),
@@ -14494,6 +14616,68 @@ mod tests {
         root.configure_safe_mode_offers(root.safe_mode_offers.clone(), Arc::new(|_| Ok(())));
         root.confirm_safe_mode_offer(1);
         assert_eq!(root.safe_mode_offer_count(), 0);
+    }
+
+    #[test]
+    fn safe_mode_defer_dismisses_only_the_prompt_without_confirmation() {
+        let attempts = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let observed = Arc::clone(&attempts);
+        let mut root = ExplorerRoot::default();
+        root.configure_safe_mode_offers(
+            vec![SafeModeOfferV1 {
+                presentation_token: 1,
+                package_id: Some("direct-5345001-0000000000000fa1".into()),
+                primary_interface_namespace: Some(0x5345_0001),
+                primary_interface_value: Some(4002),
+                operation: "RegistrarInProgress".into(),
+            }],
+            Arc::new(move |_| {
+                observed.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                Ok(())
+            }),
+        );
+        root.safe_mode_details_expanded = true;
+        root.defer_safe_mode_offer(1);
+        assert_eq!(root.safe_mode_offer_count(), 0);
+        assert_eq!(attempts.load(std::sync::atomic::Ordering::SeqCst), 0);
+        assert!(!root.safe_mode_details_expanded);
+    }
+
+    #[test]
+    fn safe_mode_names_and_explanations_are_readable_and_localized() {
+        let offer = SafeModeOfferV1 {
+            presentation_token: 1,
+            package_id: Some("direct-5345001-0000000000000fa1".into()),
+            primary_interface_namespace: Some(0x5345_0001),
+            primary_interface_value: Some(4002),
+            operation: "RegistrarInProgress".into(),
+        };
+        for locale in [
+            explorer_i18n::AppLocale::En,
+            explorer_i18n::AppLocale::ZhTw,
+            explorer_i18n::AppLocale::ZhCn,
+        ] {
+            let catalog = explorer_i18n::Catalog::new(locale);
+            let name = super::safe_mode_extension_label(&offer, catalog);
+            assert!(!name.contains("5345"));
+            assert!(!name.starts_with("dialog-"));
+            for key in [
+                "dialog-safe-mode-unfinished-body",
+                "dialog-safe-mode-unverified-body",
+                "dialog-safe-mode-keep-disabled",
+                "dialog-safe-mode-show-details",
+                "dialog-confirm-reenable",
+            ] {
+                assert_ne!(catalog.t(key), key);
+            }
+        }
+        assert_eq!(
+            super::safe_mode_extension_label(
+                &offer,
+                explorer_i18n::Catalog::new(explorer_i18n::AppLocale::ZhTw)
+            ),
+            "檔案鎖定程序欄位"
+        );
     }
 
     #[test]
