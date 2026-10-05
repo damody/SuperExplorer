@@ -3469,7 +3469,7 @@ impl ExplorerRoot {
             (
                 tab.id,
                 tab.generation,
-                snapshot.entries().to_vec(),
+                snapshot.shared_entries(),
                 tab.history.current().map(|entry| entry.location.clone()),
             )
         };
@@ -3530,7 +3530,12 @@ impl ExplorerRoot {
         if let Some(visuals) = self.folder_size_visuals.as_mut() {
             visuals.begin_context(&request_context);
             visuals.activate_location(self.folder_size_location.as_ref());
-            visuals.hydrate_items(entries.iter().map(|entry| entry.id.clone()));
+            visuals.hydrate_items(
+                entries
+                    .iter()
+                    .filter(|entry| entry.is_container)
+                    .map(|entry| entry.id.clone()),
+            );
         }
         let visuals = self.folder_size_visuals.as_ref();
         let requests = entries
@@ -3684,24 +3689,20 @@ impl ExplorerRoot {
             changed = true;
         }
         visuals.retain_snapshots(&live_snapshots);
-        let visible_ids = self
-            .state
-            .tabs()
-            .active_tab()
-            .visible_snapshot()
-            .map(|snapshot| {
-                snapshot
-                    .entries()
-                    .iter()
-                    .map(|entry| entry.id.clone())
-                    .collect::<HashSet<_>>()
-            })
-            .unwrap_or_default();
+        let snapshot = self.state.tabs().active_tab().visible_snapshot().cloned();
         let previous_value_count = visuals.values.len();
-        visuals
-            .values
-            .retain(|item_id, _| visible_ids.contains(item_id));
-        if visuals.hydrate_items(visible_ids.iter().cloned()) {
+        visuals.values.retain(|item_id, _| {
+            snapshot
+                .as_ref()
+                .is_some_and(|snapshot| snapshot.get(item_id).is_some())
+        });
+        if visuals.hydrate_items(
+            snapshot
+                .iter()
+                .flat_map(|snapshot| snapshot.entries().iter())
+                .filter(|entry| entry.is_container)
+                .map(|entry| entry.id.clone()),
+        ) {
             changed = true;
         }
         if visuals.values.len() != previous_value_count {
@@ -3747,13 +3748,25 @@ impl ExplorerRoot {
         changed
     }
 
-    fn submit_code_lines_requests(&mut self) {
+    fn submit_code_lines_requests(&mut self, realized_entries: &[explorer_model::FileEntry]) {
+        if self.code_lines_runtimes.is_empty() {
+            return;
+        }
         let (tab_id, generation, entries) = {
             let tab = self.state.tabs().active_tab();
             let Some(snapshot) = tab.visible_snapshot() else {
                 return;
             };
-            (tab.id, tab.generation, snapshot.entries().to_vec())
+            let entries = if self
+                .code_lines_runtimes
+                .iter()
+                .any(|runtime| !runtime.visible_entries_only())
+            {
+                snapshot.shared_entries()
+            } else {
+                Arc::new(Vec::new())
+            };
+            (tab.id, tab.generation, entries)
         };
         let request_context = explorer_model::RequestContext::new(tab_id, generation);
         // This runs in the render path before we clone visuals into the GPUI
@@ -3771,7 +3784,12 @@ impl ExplorerRoot {
             }
             let column_id = config.descriptor.id;
             let mut requests = Vec::new();
-            for entry in &entries {
+            let requested_entries = if runtime.visible_entries_only() {
+                realized_entries
+            } else {
+                &entries
+            };
+            for entry in requested_entries {
                 let explorer_model::LocationDescriptor::FileSystem(path) = &entry.location else {
                     continue;
                 };
@@ -3825,6 +3843,9 @@ impl ExplorerRoot {
     /// still enforces the same context on accepted results; this only removes
     /// already-painted values before the next render snapshot is built.
     fn begin_code_lines_contexts(&mut self, context: explorer_model::RequestContext) -> bool {
+        if self.code_lines_visuals.is_empty() {
+            return false;
+        }
         let location = self
             .state
             .tabs()
@@ -3832,19 +3853,7 @@ impl ExplorerRoot {
             .history
             .current()
             .map(|entry| entry.location.clone());
-        let visible_item_ids = self
-            .state
-            .tabs()
-            .active_tab()
-            .visible_snapshot()
-            .map(|snapshot| {
-                snapshot
-                    .entries()
-                    .iter()
-                    .map(|entry| entry.id.clone())
-                    .collect::<Vec<_>>()
-            })
-            .unwrap_or_default();
+        let snapshot = self.state.tabs().active_tab().visible_snapshot().cloned();
         let same_directory = match (self.code_lines_location.as_ref(), location.as_ref()) {
             (Some(previous), Some(current)) => {
                 folder_size_column::directory_identity_key(previous)
@@ -3854,7 +3863,13 @@ impl ExplorerRoot {
             _ => false,
         };
         let mut changed = false;
-        if same_directory {
+        if same_directory
+            && self.code_lines_visuals.iter().any(|visuals| {
+                visuals.context.as_ref().is_none_or(|current| {
+                    current.tab_id != context.tab_id || current.generation != context.generation
+                })
+            })
+        {
             self.code_lines_requested = self
                 .code_lines_requested
                 .drain()
@@ -3866,28 +3881,23 @@ impl ExplorerRoot {
                     }
                 })
                 .collect();
-        } else {
+        } else if !same_directory {
             for visuals in &mut self.code_lines_visuals {
                 visuals.store_current_directory();
             }
             self.cancel_active_code_lines_context();
         }
         for visuals in &mut self.code_lines_visuals {
-            if visuals.begin_context(context.clone()) {
+            let mut column_changed = visuals.begin_context(context.clone());
+            column_changed |= visuals.activate_location(location.as_ref());
+            column_changed |= visuals.hydrate_snapshot(snapshot.as_ref());
+            if column_changed {
                 self.state.set_code_lines_sort_values(
                     visuals.config.descriptor.id.clone(),
                     visuals.exact_sort_values(),
                 );
                 changed = true;
             }
-            if visuals.activate_location(location.as_ref()) {
-                self.state.set_code_lines_sort_values(
-                    visuals.config.descriptor.id.clone(),
-                    visuals.exact_sort_values(),
-                );
-                changed = true;
-            }
-            changed |= visuals.hydrate_items(visible_item_ids.iter().cloned());
         }
         self.code_lines_location = location;
         changed
@@ -3924,24 +3934,15 @@ impl ExplorerRoot {
     }
 
     fn pump_code_lines_runtime(&mut self) -> bool {
+        if self.code_lines_runtimes.is_empty() {
+            return false;
+        }
         let mut changed = false;
         let active_tab = self.state.tabs().active_tab();
         let current_context =
             explorer_model::RequestContext::new(active_tab.id, active_tab.generation);
         changed |= self.begin_code_lines_contexts(current_context.clone());
-        let visible_ids = self
-            .state
-            .tabs()
-            .active_tab()
-            .visible_snapshot()
-            .map(|snapshot| {
-                snapshot
-                    .entries()
-                    .iter()
-                    .map(|entry| entry.id.clone())
-                    .collect::<HashSet<_>>()
-            })
-            .unwrap_or_default();
+        let snapshot = self.state.tabs().active_tab().visible_snapshot().cloned();
         for (runtime, visuals) in self
             .code_lines_runtimes
             .iter()
@@ -3967,10 +3968,19 @@ impl ExplorerRoot {
             }
             let old_values = visuals.values.len();
             let old_errors = visuals.errors.len();
-            visuals.values.retain(|id, _| visible_ids.contains(id));
-            visuals.errors.retain(|id, _| visible_ids.contains(id));
-            changed |= visuals.hydrate_items(visible_ids.iter().cloned());
-            changed |= visuals.values.len() != old_values || visuals.errors.len() != old_errors;
+            visuals.values.retain(|id, _| {
+                snapshot
+                    .as_ref()
+                    .is_some_and(|snapshot| snapshot.get(id).is_some())
+            });
+            visuals.errors.retain(|id, _| {
+                snapshot
+                    .as_ref()
+                    .is_some_and(|snapshot| snapshot.get(id).is_some())
+            });
+
+            let mut values_changed = visuals.values.len() != old_values;
+            changed |= values_changed || visuals.errors.len() != old_errors;
             if visuals.config != config {
                 visuals.config = config;
                 changed = true;
@@ -3984,9 +3994,12 @@ impl ExplorerRoot {
                     visuals.remember_value(result.item_id.clone(), value.clone());
                     if visuals.values.insert(result.item_id, value.clone()) != Some(value) {
                         changed = true;
+                        values_changed = true;
                     }
                 } else {
-                    visuals.values.remove(&result.item_id);
+                    let removed = visuals.values.remove(&result.item_id).is_some();
+                    values_changed |= removed;
+                    changed |= removed;
                     if let Some(error) = result.error {
                         visuals.remember_error(result.item_id.clone(), error.clone());
                         if visuals.errors.insert(result.item_id, error.clone()) != Some(error) {
@@ -3995,8 +4008,10 @@ impl ExplorerRoot {
                     }
                 }
             }
-            self.state
-                .set_code_lines_sort_values(column_id, visuals.exact_sort_values());
+            if values_changed {
+                self.state
+                    .set_code_lines_sort_values(column_id, visuals.exact_sort_values());
+            }
         }
         changed
     }
@@ -5038,6 +5053,7 @@ impl ExplorerRoot {
                         let preview_content_changed = this.preview_content.poll();
                         let operation_notice_changed =
                             this.state.operation_notice_needs_repaint(Instant::now());
+                        let paste_notice_changed = this.state.expire_paste_notice(Instant::now());
                         let apk_notice_changed =
                             this.state.apk_notice_needs_repaint(Instant::now());
                         if extension_changed
@@ -5051,6 +5067,7 @@ impl ExplorerRoot {
                             || size_map_changed
                             || preview_content_changed
                             || operation_notice_changed
+                            || paste_notice_changed
                             || apk_notice_changed
                         {
                             cx.notify();
@@ -7099,6 +7116,12 @@ impl ExplorerRoot {
             self.navigation_started
                 .insert(context.request_id, Instant::now());
         }
+        if matches!(
+            command,
+            explorer_model::ExplorerCommand::ShowContextMenu { .. }
+        ) {
+            tracing::info!("Context menu submitted to Shell STA");
+        }
         if let Err(error) = service.submit(command) {
             if matches!(error, ExplorerServiceError::Overloaded) {
                 self.service_qos.observations_mut().record_overload();
@@ -7964,18 +7987,22 @@ impl ExplorerRoot {
             self.prune_closed_file_scrolls();
         }
         if let Some(before) = drag_before {
-            interaction_log::record_ui_interaction(
-                if matches!(action, ExplorerAction::CancelFileDrag) {
-                    "pointer_drag_release"
-                } else {
-                    "pointer_drag_begin"
-                },
-                &format!(
-                    "action={} before={before} after={:?}",
-                    action.name(),
-                    self.state.drag_session().state()
-                ),
-            );
+            let after = format!("{:?}", self.state.drag_session().state());
+            // Every visible row receives mouse-up. Releasing while no drag is
+            // active used to write one warning per row into the error log.
+            let idle_release = matches!(action, ExplorerAction::CancelFileDrag)
+                && before == "Idle"
+                && after == "Idle";
+            if !idle_release {
+                interaction_log::record_ui_interaction(
+                    if matches!(action, ExplorerAction::CancelFileDrag) {
+                        "pointer_drag_release"
+                    } else {
+                        "pointer_drag_begin"
+                    },
+                    &format!("action={} before={before} after={after}", action.name()),
+                );
+            }
         }
         if matches!(
             action,
@@ -11221,9 +11248,12 @@ impl Render for ExplorerRoot {
         }
         self.synchronize_preview_handler(preview_entry.as_ref());
         self.synchronize_preview_content(preview_entry.as_ref());
-        self.submit_folder_size_requests();
-        self.submit_code_lines_requests();
-        self.submit_size_map_requests();
+        let ((), measurement) = measure_callback("SubmitDetailsColumns", || {
+            self.submit_folder_size_requests();
+            self.submit_code_lines_requests(&realized_entries);
+            self.submit_size_map_requests();
+        });
+        measurement.record();
         let size_map_context = {
             let tab = self.state.tabs().active_tab();
             self.size_map_visual_context
@@ -11257,10 +11287,17 @@ impl Render for ExplorerRoot {
             .with_column_handler_phase(column_view::column_handler_phase(
                 self.preview_coordinator.lifecycle(),
             ))
-            .with_folder_size_visuals(self.folder_size_visuals.clone())
+            .with_folder_size_visuals(
+                self.folder_size_visuals
+                    .as_ref()
+                    .map(|visuals| Arc::new(visuals.render_snapshot())),
+            )
             .with_visual_column_runtime(self.visual_column_runtime.clone())
             .with_code_lines_columns(
-                self.code_lines_visuals.clone(),
+                self.code_lines_visuals
+                    .iter()
+                    .map(|visuals| Arc::new(visuals.render_snapshot()))
+                    .collect(),
                 self.code_lines_runtimes.clone(),
             )
             .with_size_map(
@@ -11322,6 +11359,22 @@ impl Render for ExplorerRoot {
                     event,
                     &format!("{:?}", this.state.focused_surface()),
                 );
+                let paste_key = event.keystroke.modifiers.control
+                    && !event.keystroke.modifiers.shift
+                    && !event.keystroke.modifiers.alt
+                    && event.keystroke.key.eq_ignore_ascii_case("v");
+                if paste_key
+                    && (this.state.about_dialog().is_some()
+                        || !this.safe_mode_offers.is_empty()
+                        || this.state.lock_recovery().is_some()
+                        || this.state.permanent_delete_confirmation_count().is_some())
+                {
+                    this.state.reject_paste("status-paste-modal");
+                    shortcut.note("paste_blocked_by_dialog");
+                    cx.stop_propagation();
+                    cx.notify();
+                    return;
+                }
                 if this.state.bookmark_folder_menu().is_some() && event.keystroke.key == "escape" {
                     cx.stop_propagation();
                     this.state.dismiss_bookmark_browse_menus();
@@ -11475,6 +11528,10 @@ impl Render for ExplorerRoot {
                     cx.stop_propagation();
                 } else {
                     shortcut.note_if_pending(clipboard_shortcut_ignore_reason(this, event));
+                    if paste_key {
+                        this.state.reject_paste("status-paste-focus");
+                        cx.notify();
+                    }
                 }
             }))
             .on_action(cx.listener(|this, _: &actions::NavigateBack, window, cx| {
@@ -12053,11 +12110,16 @@ mod tests {
 
     #[derive(Default)]
     struct RecordingCodeLinesRuntimeV1 {
+        visible_only: bool,
         requests: Mutex<Vec<super::code_lines_column::CodeLinesRequestV1>>,
         cancels: Mutex<Vec<explorer_model::RequestContext>>,
+        results: Mutex<Vec<super::code_lines_column::CodeLinesResultV1>>,
     }
 
     impl super::code_lines_column::CodeLinesRuntimePortV1 for RecordingCodeLinesRuntimeV1 {
+        fn visible_entries_only(&self) -> bool {
+            self.visible_only
+        }
         fn config(&self) -> super::code_lines_column::CodeLinesColumnConfigV1 {
             super::code_lines_column::CodeLinesColumnConfigV1::default()
         }
@@ -12076,7 +12138,7 @@ mod tests {
         fn invalidate_directory_cache(&self, _: &std::path::Path) {}
 
         fn drain_code_lines_results(&self) -> Vec<super::code_lines_column::CodeLinesResultV1> {
-            Vec::new()
+            std::mem::take(&mut *self.results.lock().unwrap())
         }
 
         fn render_cell(
@@ -12332,6 +12394,85 @@ mod tests {
     }
 
     #[test]
+    fn viewport_only_column_queries_new_visible_files_once() {
+        let runtime = Arc::new(RecordingCodeLinesRuntimeV1 {
+            visible_only: true,
+            ..Default::default()
+        });
+        let mut root = ExplorerRoot::default();
+        seed_active_visual_tab(&mut root.state, "Viewport", true, false);
+        let files = root
+            .state
+            .tabs()
+            .active_tab()
+            .visible_snapshot()
+            .unwrap()
+            .entries()
+            .iter()
+            .filter(|entry| !entry.is_container)
+            .cloned()
+            .collect::<Vec<_>>();
+        assert_eq!(files.len(), 2);
+        root.attach_code_lines_runtime(runtime.clone());
+        root.submit_code_lines_requests(&files[..1]);
+        root.submit_code_lines_requests(&files[..1]);
+        assert_eq!(runtime.requests.lock().unwrap().len(), 1);
+        assert_eq!(runtime.requests.lock().unwrap()[0].item_id, files[0].id);
+        root.submit_code_lines_requests(&files[1..]);
+        let requests = runtime.requests.lock().unwrap();
+        assert_eq!(requests.len(), 2);
+        assert_eq!(requests[1].item_id, files[1].id);
+    }
+
+    #[test]
+    fn code_lines_pump_updates_values_and_handles_removal_without_idle_redraw() {
+        let runtime = Arc::new(RecordingCodeLinesRuntimeV1::default());
+        let mut root = ExplorerRoot::default();
+        seed_active_visual_tab(&mut root.state, "Pump", true, false);
+        root.attach_code_lines_runtime(runtime.clone());
+        root.pump_code_lines_runtime();
+        let tab = root.state.tabs().active_tab();
+        let context = explorer_model::RequestContext::new(tab.id, tab.generation);
+        let id = tab.visible_snapshot().unwrap().entries()[0].id.clone();
+        runtime
+            .results
+            .lock()
+            .unwrap()
+            .push(super::code_lines_column::CodeLinesResultV1 {
+                context: context.clone(),
+                item_id: id.clone(),
+                error: None,
+                value: Some(super::code_lines_column::CodeLinesValueV1 {
+                    language: "Rust".into(),
+                    code: 20,
+                    comments: 3,
+                    blanks: 2,
+                    total: 25,
+                }),
+            });
+        assert!(root.pump_code_lines_runtime());
+        assert_eq!(root.code_lines_visuals[0].values[&id].code, 20);
+        assert!(!root.pump_code_lines_runtime());
+        runtime
+            .results
+            .lock()
+            .unwrap()
+            .push(super::code_lines_column::CodeLinesResultV1 {
+                context,
+                item_id: id.clone(),
+                value: None,
+                error: None,
+            });
+        assert!(root.pump_code_lines_runtime());
+        assert!(!root.code_lines_visuals[0].values.contains_key(&id));
+        assert!(!root.pump_code_lines_runtime());
+        assert!(
+            !root.code_lines_visuals[0].values.contains_key(&id),
+            "idle hydration must not restore a removed result"
+        );
+    }
+
+    #[test]
     fn hidden_file_count_blocks_folder_code_lines_without_starting_count_queries() {
         let facts = Arc::new(RecordingDirectoryFactsRuntimeV1::default());
         let code_lines = Arc::new(RecordingCodeLinesRuntimeV1::default());
@@ -12343,7 +12484,7 @@ mod tests {
         root.attach_code_lines_runtime(code_lines.clone());
 
         root.submit_folder_size_requests();
-        root.submit_code_lines_requests();
+        root.submit_code_lines_requests(&[]);
 
         assert!(facts.requests.lock().unwrap().is_empty());
         let requests = code_lines.requests.lock().unwrap();

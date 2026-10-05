@@ -1,6 +1,6 @@
 //! Dedicated interactive bookmark manager window.
 
-use std::{collections::HashSet, rc::Rc};
+use std::{collections::HashSet, rc::Rc, sync::Arc};
 
 use crate::{
     ExplorerRoot, UiTokens,
@@ -158,6 +158,8 @@ pub(crate) struct BookmarkManagerUiState {
     pub history_index: usize,
     pub open_menu: Option<BookmarkManagerMenu>,
     pub submenu: Option<BookmarkManagerSubmenu>,
+    pub restore_backups: Arc<Vec<chrome::BookmarkHistoryBackup>>,
+    restore_backups_loading: bool,
     pub sort_column: BookmarkManagerSortColumn,
     pub descending: bool,
     pub columns: BookmarkManagerColumns,
@@ -178,6 +180,8 @@ impl Default for BookmarkManagerUiState {
             history_index: 0,
             open_menu: None,
             submenu: None,
+            restore_backups: Arc::new(Vec::new()),
+            restore_backups_loading: false,
             sort_column: BookmarkManagerSortColumn::None,
             descending: false,
             columns: BookmarkManagerColumns::default(),
@@ -780,6 +784,23 @@ impl Render for BookmarkManagerWindow {
                     && this.ui.submenu == previous_submenu
                 {
                     return;
+                }
+                if *action == BookmarkManagerUiAction::OpenSubmenu(BookmarkManagerSubmenu::Restore)
+                    && !this.ui.restore_backups_loading
+                {
+                    this.ui.restore_backups_loading = true;
+                    let scan = cx
+                        .background_executor()
+                        .spawn(async { chrome::list_bookmark_history_backups() });
+                    cx.spawn(async move |this, cx| {
+                        let backups = scan.await;
+                        let _ = this.update(cx, |this, cx| {
+                            this.ui.restore_backups = Arc::new(backups);
+                            this.ui.restore_backups_loading = false;
+                            cx.notify();
+                        });
+                    })
+                    .detach();
                 }
                 cx.notify();
                 window.refresh();

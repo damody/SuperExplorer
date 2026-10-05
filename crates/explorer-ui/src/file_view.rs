@@ -4,7 +4,7 @@ use std::{
     cmp::Ordering,
     collections::{HashMap, HashSet},
     ops::Range,
-    sync::Arc,
+    sync::{Arc, OnceLock},
     time::{SystemTime, UNIX_EPOCH},
 };
 
@@ -175,6 +175,7 @@ pub struct DirectoryPresentation {
     filters: DetailsFilters,
     entries: Arc<Vec<FileEntry>>,
     ordered_indices: Arc<Vec<usize>>,
+    visible_positions: Arc<OnceLock<HashMap<explorer_model::ShellItemId, usize>>>,
 }
 
 impl DirectoryPresentation {
@@ -216,6 +217,7 @@ impl DirectoryPresentation {
             filters,
             entries,
             ordered_indices: Arc::new(ordered_indices),
+            visible_positions: Arc::new(OnceLock::new()),
         }
     }
 
@@ -247,11 +249,16 @@ impl DirectoryPresentation {
     }
 
     pub fn visible_position(&self, id: &explorer_model::ShellItemId) -> Option<usize> {
-        self.ordered_indices.iter().position(|index| {
-            self.entries
-                .get(*index)
-                .is_some_and(|entry| &entry.id == id)
-        })
+        self.visible_positions
+            .get_or_init(|| {
+                self.ordered_indices
+                    .iter()
+                    .enumerate()
+                    .map(|(position, index)| (self.entries[*index].id.clone(), position))
+                    .collect()
+            })
+            .get(id)
+            .copied()
     }
 
     pub fn visible_entry(&self, id: &explorer_model::ShellItemId) -> Option<&FileEntry> {
@@ -300,6 +307,7 @@ impl DirectoryPresentation {
         });
         Self {
             ordered_indices: Arc::new(ordered_indices),
+            visible_positions: Arc::new(OnceLock::new()),
             ..self.clone()
         }
     }
@@ -347,6 +355,21 @@ impl DirectoryPresentationCache {
         sort: &SortDescriptor,
         filters: DetailsFilters,
     ) -> DirectoryPresentation {
+        self.resolve_filtered_with(snapshot, hidden_items, sort, filters, |presentation| {
+            presentation
+        })
+    }
+
+    /// Cache the final projection, including asynchronous column sorting.
+    /// Callers clear this cache when external sort values change.
+    pub fn resolve_filtered_with(
+        &mut self,
+        snapshot: &DirectorySnapshot,
+        hidden_items: bool,
+        sort: &SortDescriptor,
+        filters: DetailsFilters,
+        finish: impl FnOnce(DirectoryPresentation) -> DirectoryPresentation,
+    ) -> DirectoryPresentation {
         if let Some(current) = self
             .current
             .as_ref()
@@ -354,8 +377,12 @@ impl DirectoryPresentationCache {
         {
             return current.clone();
         }
-        let presentation =
-            DirectoryPresentation::build_filtered(snapshot, hidden_items, sort.clone(), filters);
+        let presentation = finish(DirectoryPresentation::build_filtered(
+            snapshot,
+            hidden_items,
+            sort.clone(),
+            filters,
+        ));
         self.current = Some(presentation.clone());
         self.rebuilds = self.rebuilds.saturating_add(1);
         presentation
@@ -408,6 +435,11 @@ impl ColumnProjectionCache {
 
     pub fn invalidate(&mut self) {
         self.slots.clear();
+    }
+
+    pub fn invalidate_sort_column(&mut self, column: &ColumnId) {
+        self.slots
+            .retain(|presentation| &presentation.sort.column != column);
     }
 
     pub const fn rebuilds(&self) -> u64 {
@@ -959,6 +991,113 @@ mod tests {
                 "small.bin",
                 "missing.bin"
             ]
+        );
+    }
+
+    #[test]
+    fn identity_lookup_is_shared_and_rebuilt_after_numeric_reordering() {
+        let alpha = entry(1, "Alpha");
+        let beta = entry(2, "Beta");
+        let values = HashMap::from([(alpha.id.clone(), Some(20)), (beta.id.clone(), Some(10))]);
+        let mut snapshot = DirectorySnapshot::default();
+        snapshot.upsert(alpha.clone());
+        snapshot.upsert(beta.clone());
+        let base = DirectoryPresentation::build(&snapshot, false, SortDescriptor::default());
+        assert_eq!(base.visible_position(&alpha.id), Some(0));
+        let shared = base.clone();
+        assert!(Arc::ptr_eq(
+            &base.visible_positions,
+            &shared.visible_positions
+        ));
+        let sorted = base.sorted_by_extension_bytes(&values, SortDirection::Ascending);
+        assert_eq!(sorted.visible_position(&alpha.id), Some(1));
+        assert_eq!(sorted.visible_position(&beta.id), Some(0));
+        assert_eq!(
+            sorted.visible_entry(&alpha.id).unwrap().display_name,
+            "Alpha"
+        );
+        assert_eq!(base.visible_position(&alpha.id), Some(0));
+    }
+
+    #[test]
+    #[ignore = "manual comparison of large-directory render paths"]
+    fn large_directory_render_path_comparison() {
+        use std::{hint::black_box, time::Instant};
+        const ROWS: usize = 20_679;
+        const FRAMES: usize = 64;
+        let mut snapshot = DirectorySnapshot::default();
+        let mut values = HashMap::new();
+        for index in 0..ROWS {
+            let item = entry(index as u64 + 1, &format!("item-{index:05}.txt"));
+            values.insert(item.id.clone(), Some(((index * 7919) % ROWS) as u64));
+            snapshot.upsert(item);
+        }
+        let sort = SortDescriptor {
+            column: ColumnId::Size,
+            direction: SortDirection::Ascending,
+        };
+        let mut old_cache = DirectoryPresentationCache::default();
+        let mut new_cache = DirectoryPresentationCache::default();
+        let original = old_cache
+            .resolve(&snapshot, false, &sort)
+            .sorted_by_extension_bytes(&values, sort.direction);
+        let cached = new_cache.resolve_filtered_with(
+            &snapshot,
+            false,
+            &sort,
+            DetailsFilters::default(),
+            |base| base.sorted_by_extension_bytes(&values, sort.direction),
+        );
+        assert_eq!(original.ordered_indices(), cached.ordered_indices());
+        let started = Instant::now();
+        for _ in 0..FRAMES {
+            black_box(
+                old_cache
+                    .resolve(&snapshot, false, &sort)
+                    .sorted_by_extension_bytes(&values, sort.direction),
+            );
+        }
+        let old_sort_us = started.elapsed().as_micros();
+        let started = Instant::now();
+        for _ in 0..FRAMES {
+            black_box(new_cache.resolve_filtered_with(
+                &snapshot,
+                false,
+                &sort,
+                DetailsFilters::default(),
+                |_| panic!("unchanged numeric values must use the cached final projection"),
+            ));
+        }
+        let cached_sort_us = started.elapsed().as_micros();
+        let started = Instant::now();
+        for _ in 0..FRAMES {
+            black_box(snapshot.entries().to_vec());
+        }
+        let cloned_entries_us = started.elapsed().as_micros();
+        let started = Instant::now();
+        for _ in 0..FRAMES {
+            black_box(snapshot.shared_entries());
+        }
+        let shared_entries_us = started.elapsed().as_micros();
+        let last_id = cached.entry(ROWS - 1).unwrap().1.id.clone();
+        assert_eq!(cached.visible_position(&last_id), Some(ROWS - 1));
+        let started = Instant::now();
+        for _ in 0..1_000 {
+            black_box(
+                cached
+                    .ordered_indices
+                    .iter()
+                    .position(|index| cached.entries[*index].id == last_id),
+            );
+        }
+        let linear_lookup_us = started.elapsed().as_micros();
+        let started = Instant::now();
+        for _ in 0..1_000 {
+            black_box(cached.visible_position(&last_id));
+        }
+        let indexed_lookup_us = started.elapsed().as_micros();
+        eprintln!(
+            "{{\"rows\":{ROWS},\"frames\":{FRAMES},\"profile\":\"debug\",\"old_sort_us\":{old_sort_us},\"cached_sort_us\":{cached_sort_us},\"cloned_entries_us\":{cloned_entries_us},\"shared_entries_us\":{shared_entries_us},\"linear_lookup_us\":{linear_lookup_us},\"indexed_lookup_us\":{indexed_lookup_us}}}"
         );
     }
 

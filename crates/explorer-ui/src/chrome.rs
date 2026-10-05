@@ -788,9 +788,9 @@ pub struct ExplorerWindow {
     preview_thumbnail_failed: bool,
     column_preview_content: Option<crate::preview_content::PreviewContent>,
     column_handler_phase: crate::column_view::ColumnHandlerPhase,
-    folder_size_visuals: Option<crate::folder_size_column::FolderSizeColumnVisuals>,
+    folder_size_visuals: Option<Arc<crate::folder_size_column::FolderSizeColumnVisuals>>,
     visual_column_runtime: Option<crate::folder_size_column::VisualColumnRuntimeHandleV1>,
-    code_lines_visuals: Vec<crate::code_lines_column::CodeLinesColumnVisuals>,
+    code_lines_visuals: Vec<Arc<crate::code_lines_column::CodeLinesColumnVisuals>>,
     code_lines_runtimes: Vec<crate::code_lines_column::CodeLinesRuntimeHandleV1>,
     size_map_active: bool,
     size_map_visuals: Option<crate::size_map_view::SizeMapVisualsV1>,
@@ -944,7 +944,7 @@ impl ExplorerWindow {
     #[must_use]
     pub fn with_folder_size_visuals(
         mut self,
-        visuals: Option<crate::folder_size_column::FolderSizeColumnVisuals>,
+        visuals: Option<Arc<crate::folder_size_column::FolderSizeColumnVisuals>>,
     ) -> Self {
         self.folder_size_visuals = visuals;
         self
@@ -962,7 +962,7 @@ impl ExplorerWindow {
     #[must_use]
     pub fn with_code_lines_columns(
         mut self,
-        visuals: Vec<crate::code_lines_column::CodeLinesColumnVisuals>,
+        visuals: Vec<Arc<crate::code_lines_column::CodeLinesColumnVisuals>>,
         runtimes: Vec<crate::code_lines_column::CodeLinesRuntimeHandleV1>,
     ) -> Self {
         self.code_lines_visuals = visuals;
@@ -1327,6 +1327,22 @@ impl RenderOnce for ExplorerWindow {
                 folder_size_backend_status,
                 self.on_action.clone(),
             ))
+            .when_some(self.state.paste_notice(), |element, (message, failed)| {
+                element.child(
+                    div()
+                        .id("clipboard-paste-notice")
+                        .role(Role::Status)
+                        .aria_label(message.to_owned())
+                        .flex_none()
+                        .px(px(12.0))
+                        .py(px(8.0))
+                        .border_t(px(1.0))
+                        .border_color(self.tokens.theme.colors.divider.to_gpui())
+                        .bg(self.tokens.theme.colors.subtle_surface.to_gpui())
+                        .text_color(self.tokens.theme.colors.text_primary.to_gpui())
+                        .child(format!("{} {}", if failed { "⚠" } else { "✓" }, message)),
+                )
+            })
             .when_some(self.state.bookmark_context_menu(), |element, menu| {
                 element.child(bookmark_context_menu(
                     self.tokens,
@@ -3025,7 +3041,7 @@ pub(crate) fn bookmark_manager(
             ui.open_menu == Some(crate::bookmark_manager_window::BookmarkManagerMenu::Transfer)
                 && ui.submenu == Some(crate::bookmark_manager_window::BookmarkManagerSubmenu::Restore),
             |element| {
-                let backups = list_bookmark_history_backups();
+                let backups = &ui.restore_backups;
                 let mut restore_menu = bookmark_manager_popup(
                     "bookmark-manager-restore-popup",
                     72.0,
@@ -3035,7 +3051,7 @@ pub(crate) fn bookmark_manager(
                 )
                 .max_h(px(360.0))
                 .overflow_y_scroll();
-                for (index, backup) in backups.into_iter().enumerate() {
+                for (index, backup) in backups.iter().enumerate() {
                     let restore = ExplorerAction::RestoreBookmarksBackup {
                         path: backup.path.clone(),
                     };
@@ -3049,7 +3065,7 @@ pub(crate) fn bookmark_manager(
                             .px(px(10.0))
                             .py(px(6.0))
                             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                            .child(backup.label)
+                            .child(backup.label.clone())
                             .when_some(cb, move |row, cb| {
                                 row.on_mouse_down(MouseButton::Left, move |_, window, cx| {
                                     cx.stop_propagation();
@@ -4115,7 +4131,8 @@ fn bookmark_manager_checked_row(
         })
 }
 
-struct BookmarkHistoryBackup {
+#[derive(Clone, Debug)]
+pub(crate) struct BookmarkHistoryBackup {
     path: String,
     label: String,
 }
@@ -4125,7 +4142,7 @@ pub(crate) fn bookmark_history_dir() -> Option<std::path::PathBuf> {
         .map(|root| std::path::PathBuf::from(root).join("RustGpuiExplorer\\bookmarks\\v1\\history"))
 }
 
-fn list_bookmark_history_backups() -> Vec<BookmarkHistoryBackup> {
+pub(crate) fn list_bookmark_history_backups() -> Vec<BookmarkHistoryBackup> {
     let Some(dir) = bookmark_history_dir() else {
         return Vec::new();
     };
@@ -12482,7 +12499,7 @@ impl RenderOnce for NavigationPane {
                         );
                     }
                 }
-                flattened.into_iter().map(|item| {
+                flattened.into_iter().enumerate().map(|(index, item)| {
                     let texture = navigation_item_shell_texture(
                         item.icon,
                         item.icon_location.as_ref(),
@@ -12492,6 +12509,7 @@ impl RenderOnce for NavigationPane {
                         self.shell_icon_dpi,
                     );
                     navigation_item_row(
+                        index,
                         item.clone(),
                         is_selected(&item, current_location.as_ref()),
                         self.tokens,
@@ -12889,6 +12907,7 @@ fn append_navigation_descendants(
 }
 
 fn navigation_item_row(
+    index: usize,
     item: NavigationItem,
     selected: bool,
     tokens: UiTokens,
@@ -12897,10 +12916,13 @@ fn navigation_item_row(
     on_action: Option<ActionCallback>,
 ) -> gpui::AnyElement {
     let colors = tokens.theme.colors;
+    // The same folder can appear under two expanded parents. The row index keeps
+    // each accessibility node id unique for that frame.
+    let row_element_id = format!("nav-{index}-{}", item.id);
     if item.kind == NavigationItemKind::Separator {
         let probe_id = format!("navigation-item-{}", item.id);
         return div()
-            .id(format!("nav-{}", item.id))
+            .id(row_element_id)
             .h(px(tokens.layout.navigation_separator_height.value()))
             .flex_none()
             .border_b(px(1.0))
@@ -12915,7 +12937,7 @@ fn navigation_item_row(
 
     let probe_id = format!("navigation-item-{}", item.id);
     let chevron_probe_id = format!("navigation-item-{}-chevron", item.id);
-    let chevron_element_id = format!("nav-chevron-{}", item.id);
+    let chevron_element_id = format!("nav-chevron-{index}-{}", item.id);
     let location = item.location.clone();
     let available = item.availability == NavigationItemAvailability::Available;
     let has_chevron = available
@@ -12938,7 +12960,7 @@ fn navigation_item_row(
     let context_location = item.location.clone();
     let context_callback = on_action.clone();
     let row = div()
-        .id(format!("nav-{}", item.id))
+        .id(row_element_id)
         .debug_selector({
             let id = item.id.clone();
             move || format!("navigation-item-{id}")
@@ -13222,9 +13244,9 @@ pub struct FileViewHost {
     details_filters: crate::file_view::DetailsFilters,
     details_filter_options:
         HashMap<explorer_model::ColumnId, Vec<crate::file_view::DetailsFilterOption>>,
-    folder_size_visuals: Option<crate::folder_size_column::FolderSizeColumnVisuals>,
+    folder_size_visuals: Option<Arc<crate::folder_size_column::FolderSizeColumnVisuals>>,
     visual_column_runtime: Option<crate::folder_size_column::VisualColumnRuntimeHandleV1>,
-    code_lines_visuals: Vec<crate::code_lines_column::CodeLinesColumnVisuals>,
+    code_lines_visuals: Vec<Arc<crate::code_lines_column::CodeLinesColumnVisuals>>,
     code_lines_runtimes: Vec<crate::code_lines_column::CodeLinesRuntimeHandleV1>,
     size_map_active: bool,
     size_map_visuals: Option<crate::size_map_view::SizeMapVisualsV1>,
@@ -13273,9 +13295,9 @@ impl FileViewHost {
             explorer_model::ColumnId,
             Vec<crate::file_view::DetailsFilterOption>,
         >,
-        folder_size_visuals: Option<crate::folder_size_column::FolderSizeColumnVisuals>,
+        folder_size_visuals: Option<Arc<crate::folder_size_column::FolderSizeColumnVisuals>>,
         visual_column_runtime: Option<crate::folder_size_column::VisualColumnRuntimeHandleV1>,
-        code_lines_visuals: Vec<crate::code_lines_column::CodeLinesColumnVisuals>,
+        code_lines_visuals: Vec<Arc<crate::code_lines_column::CodeLinesColumnVisuals>>,
         code_lines_runtimes: Vec<crate::code_lines_column::CodeLinesRuntimeHandleV1>,
         size_map_active: bool,
         size_map_visuals: Option<crate::size_map_view::SizeMapVisualsV1>,
@@ -13912,6 +13934,11 @@ impl RenderOnce for FileViewHost {
         let visual_column_theme = shared_visual_column_theme(colors);
         let (rename_text, rename_selection, rename_selection_text, rename_caret) =
             editable_input_colors(self.tokens);
+        let rename_background = crate::theme::Rgba8 {
+            alpha: u8::MAX,
+            ..colors.control_fill
+        }
+        .to_gpui();
         let background_cue = matches!(
             drag_state,
             explorer_model::DragSessionState::Dragging {
@@ -14909,8 +14936,14 @@ impl RenderOnce for FileViewHost {
                                     self.tokens.typography.file_row.line_height.value(),
                                     layout.focus_stroke.value() / 2.0,
                                 );
-                                div()
+                                // Paint the editor after the other cells so a long filename
+                                // covers their text, while keeping the column layout unchanged.
+                                deferred(div()
                                     .id("inline-rename-editor-container")
+                                    .bg(rename_background)
+                                    .occlude()
+                                    .flex_none()
+                                    .whitespace_nowrap()
                                     .on_mouse_down(MouseButton::Left, |_, _, cx| {
                                         cx.stop_propagation();
                                     })
@@ -14958,7 +14991,7 @@ impl RenderOnce for FileViewHost {
                                                 .size
                                                 .value()))
                                             .line_height(px(rename_metrics.line_height))
-                                            .bg(colors.control_fill.to_gpui())
+                                            .bg(rename_background)
                                             .text_color(rename_text)
                                             .selection_color(rename_selection.into())
                                             .selection_text_color(rename_selection_text.into())
@@ -14978,7 +15011,7 @@ impl RenderOnce for FileViewHost {
                                                 .child(error.user_message),
                                         )
                                     })
-                                    .into_any_element()
+                                    ).with_priority(10).into_any_element()
                             } else if drive_view {
                                 match view_settings.mode {
                                     explorer_model::ViewMode::Details => div()
@@ -16205,7 +16238,7 @@ fn ordered_detail_extension_column_ids<'a>(
 #[derive(Clone)]
 enum CodeLinesDetailColumn {
     Ready(
-        crate::code_lines_column::CodeLinesColumnVisuals,
+        Arc<crate::code_lines_column::CodeLinesColumnVisuals>,
         crate::code_lines_column::CodeLinesRuntimeHandleV1,
     ),
     Unavailable(explorer_model::ColumnDescriptor),
@@ -16250,7 +16283,7 @@ fn unavailable_detail_cell(
     reason = "details-cell rendering receives one immutable row snapshot"
 )]
 fn folder_size_detail_cell(
-    visuals: crate::folder_size_column::FolderSizeColumnVisuals,
+    visuals: Arc<crate::folder_size_column::FolderSizeColumnVisuals>,
     runtime: crate::folder_size_column::VisualColumnRuntimeHandleV1,
     entry_id: &explorer_model::ShellItemId,
     selected: bool,
@@ -16538,7 +16571,7 @@ impl Render for AdmissionLimitTooltip {
     reason = "details-cell rendering receives one immutable row snapshot"
 )]
 fn code_lines_detail_cell(
-    visuals: crate::code_lines_column::CodeLinesColumnVisuals,
+    visuals: Arc<crate::code_lines_column::CodeLinesColumnVisuals>,
     runtime: crate::code_lines_column::CodeLinesRuntimeHandleV1,
     entry_id: &explorer_model::ShellItemId,
     selected: bool,
@@ -16770,8 +16803,8 @@ fn details_column_menu(
     anchor: Option<(f32, f32)>,
     settings: explorer_model::ViewSettings,
     registry: &explorer_model::ColumnRegistry,
-    folder_size_visuals: Option<crate::folder_size_column::FolderSizeColumnVisuals>,
-    code_lines_visuals: Vec<crate::code_lines_column::CodeLinesColumnVisuals>,
+    folder_size_visuals: Option<Arc<crate::folder_size_column::FolderSizeColumnVisuals>>,
+    code_lines_visuals: Vec<Arc<crate::code_lines_column::CodeLinesColumnVisuals>>,
     on_action: Option<ActionCallback>,
 ) -> impl IntoElement {
     let colors = tokens.theme.colors;
@@ -18260,6 +18293,9 @@ impl RenderOnce for StatusBar {
             || format!("{phase}{status}"),
             |operation| format!("{phase}{status} · {operation}"),
         );
+        if self.state.rename_editor().is_some() {
+            full_status = format!("{} · {full_status}", catalog.t("status-rename-f2-hint"));
+        }
         if let Some(error) = self.state.context_menu_error() {
             full_status.push_str(" · ");
             full_status.push_str(&error.user_message);

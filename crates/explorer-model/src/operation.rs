@@ -91,10 +91,7 @@ impl RenameEditorState {
         let selection_end = if is_container {
             original_name.len()
         } else {
-            original_name
-                .rfind('.')
-                .filter(|offset| *offset > 0)
-                .unwrap_or(original_name.len())
+            crate::file_presentation::file_name_stem_end(&original_name)
         };
         Self {
             item,
@@ -112,10 +109,7 @@ impl RenameEditorState {
         let end = if self.is_container || self.select_full_name {
             self.buffer.len()
         } else {
-            self.buffer
-                .rfind('.')
-                .filter(|offset| *offset > 0)
-                .unwrap_or(self.buffer.len())
+            crate::file_presentation::file_name_stem_end(&self.buffer)
         };
         self.selection = 0..end;
     }
@@ -880,6 +874,11 @@ mod tests {
         };
         for (name, is_container, stem) in [
             ("報告.final.txt", false, "報告.final"),
+            ("5.1.4.bin.gz", false, "5.1.4"),
+            ("5.1.4.BIN.GZ", false, "5.1.4"),
+            ("備份.5.1.4.tar.gz", false, "備份.5.1.4"),
+            ("5.1.4.gz", false, "5.1.4"),
+            ("folder.bin.gz", true, "folder.bin.gz"),
             ("report", false, "report"),
             (".gitignore", false, ".gitignore"),
             ("folder.txt", true, "folder.txt"),

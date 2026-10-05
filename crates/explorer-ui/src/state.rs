@@ -1039,6 +1039,8 @@ pub struct AppViewState {
     divider: DividerInteraction,
     operation_center: OperationCenterState,
     operation_terminal_notice: Option<(explorer_common::RequestId, Instant)>,
+    paste_notice: Option<(String, bool, Instant)>,
+    paste_requests: HashSet<explorer_common::RequestId>,
     apk_install_notices: VecDeque<ApkInstallNotice>,
     cancelling_operations: HashSet<explorer_common::RequestId>,
     rename_editor: Option<explorer_model::RenameEditorState>,
@@ -1153,9 +1155,11 @@ pub struct AppViewState {
     file_view_typeahead: Option<FileViewTypeAhead>,
     /// Exact values for the one P0 runtime column. Keeping these in view state
     /// makes its sorted presentation authoritative for every row action.
-    folder_size_sort_values: HashMap<ShellItemId, Option<u64>>,
-    builtin_count_sort_values: HashMap<explorer_model::ColumnId, HashMap<ShellItemId, Option<u64>>>,
-    code_lines_sort_values: HashMap<explorer_model::ColumnId, HashMap<ShellItemId, Option<u64>>>,
+    folder_size_sort_values: Arc<HashMap<ShellItemId, Option<u64>>>,
+    builtin_count_sort_values:
+        Arc<HashMap<explorer_model::ColumnId, HashMap<ShellItemId, Option<u64>>>>,
+    code_lines_sort_values:
+        Arc<HashMap<explorer_model::ColumnId, HashMap<ShellItemId, Option<u64>>>>,
     presentation_cache: Arc<Mutex<crate::file_view::DirectoryPresentationCache>>,
     /// Filtered order for each Columns directory. Independent from the one-slot file-surface cache.
     column_projection_cache: Arc<Mutex<crate::file_view::ColumnProjectionCache>>,
@@ -1643,6 +1647,8 @@ impl AppViewState {
             divider: DividerInteraction::default(),
             operation_center: OperationCenterState::default(),
             operation_terminal_notice: None,
+            paste_notice: None,
+            paste_requests: HashSet::new(),
             apk_install_notices: VecDeque::with_capacity(APK_INSTALL_NOTICE_CAPACITY),
             cancelling_operations: HashSet::new(),
             rename_editor: None,
@@ -1757,9 +1763,9 @@ impl AppViewState {
             scrollbar_drag: None,
             marquee: None,
             file_view_typeahead: None,
-            folder_size_sort_values: HashMap::new(),
-            builtin_count_sort_values: HashMap::new(),
-            code_lines_sort_values: HashMap::new(),
+            folder_size_sort_values: Arc::new(HashMap::new()),
+            builtin_count_sort_values: Arc::new(HashMap::new()),
+            code_lines_sort_values: Arc::new(HashMap::new()),
             presentation_cache: Arc::new(Mutex::new(
                 crate::file_view::DirectoryPresentationCache::default(),
             )),
@@ -1848,11 +1854,14 @@ impl AppViewState {
         &mut self,
         values: HashMap<ShellItemId, Option<u64>>,
     ) -> bool {
-        if self.folder_size_sort_values == values {
+        if self.folder_size_sort_values.as_ref() == &values {
             return false;
         }
-        self.folder_size_sort_values = values;
-        self.invalidate_directory_projections();
+        self.folder_size_sort_values = Arc::new(values);
+        self.invalidate_sort_value_projections(&explorer_model::ColumnId::Size);
+        self.invalidate_sort_value_projections(
+            &crate::folder_size_column::folder_size_column_descriptor().id,
+        );
         true
     }
 
@@ -1864,8 +1873,8 @@ impl AppViewState {
         if self.code_lines_sort_values.get(&column_id) == Some(&values) {
             return false;
         }
-        self.code_lines_sort_values.insert(column_id, values);
-        self.invalidate_directory_projections();
+        self.invalidate_sort_value_projections(&column_id);
+        Arc::make_mut(&mut self.code_lines_sort_values).insert(column_id, values);
         true
     }
 
@@ -1877,8 +1886,8 @@ impl AppViewState {
         if self.builtin_count_sort_values.get(&column_id) == Some(&values) {
             return false;
         }
-        self.builtin_count_sort_values.insert(column_id, values);
-        self.invalidate_directory_projections();
+        self.invalidate_sort_value_projections(&column_id);
+        Arc::make_mut(&mut self.builtin_count_sort_values).insert(column_id, values);
         true
     }
 
@@ -2864,6 +2873,30 @@ impl AppViewState {
             })
     }
 
+    pub(crate) fn set_paste_notice(&mut self, message: String, failed: bool) {
+        self.paste_notice = Some((message, failed, Instant::now()));
+    }
+
+    pub(crate) fn paste_notice(&self) -> Option<(&str, bool)> {
+        self.paste_notice
+            .as_ref()
+            .and_then(|(message, failed, until)| {
+                (until.elapsed() < Duration::from_secs(12)).then_some((message.as_str(), *failed))
+            })
+    }
+
+    pub(crate) fn expire_paste_notice(&mut self, now: Instant) -> bool {
+        if self
+            .paste_notice
+            .as_ref()
+            .is_some_and(|(_, _, at)| now.saturating_duration_since(*at) >= Duration::from_secs(12))
+        {
+            self.paste_notice = None;
+            return true;
+        }
+        false
+    }
+
     pub(crate) fn apk_install_notices(&self) -> &VecDeque<ApkInstallNotice> {
         &self.apk_install_notices
     }
@@ -3611,7 +3644,7 @@ impl AppViewState {
         };
         let removed = self.column_registry.unregister_package(package_id) != 0;
         if removed {
-            self.code_lines_sort_values.remove(&descriptor.id);
+            Arc::make_mut(&mut self.code_lines_sort_values).remove(&descriptor.id);
             self.invalidate_directory_projections();
         }
         removed
@@ -3732,7 +3765,7 @@ impl AppViewState {
             }
             if !self.extension_enabled("rust-lock-owner-column") {
                 self.column_registry.unregister_package("rust-lock-owner");
-                self.code_lines_sort_values.retain(|column_id, _| {
+                Arc::make_mut(&mut self.code_lines_sort_values).retain(|column_id, _| {
                     !matches!(column_id, explorer_model::ColumnId::Extension { package_id, .. } if package_id == "rust-lock-owner")
                 });
                 self.invalidate_directory_projections();
@@ -6898,6 +6931,53 @@ impl AppViewState {
                     false
                 };
             let operation_applied = self.operation_center.apply_event(&event);
+            if let ExplorerEvent::OperationFinished { context, outcome } = &event
+                && self.paste_requests.remove(&context.request_id)
+            {
+                match outcome {
+                    OperationTerminal::Failed(error) => {
+                        self.set_paste_notice(
+                            format!(
+                                "{}：{}",
+                                self.catalog().t("status-paste-failed"),
+                                error.user_message
+                            ),
+                            true,
+                        );
+                        tracing::error!(request_id = ?context.request_id, error = ?error, "Paste failed");
+                        crate::interaction_log::record_ui_interaction(
+                            "clipboard_paste_failed",
+                            &format!("request_id={:?} error={error:?}", context.request_id),
+                        );
+                    }
+                    OperationTerminal::Partial { outcomes } => {
+                        let reasons = outcomes
+                            .iter()
+                            .filter_map(|item| match &item.result {
+                                explorer_model::OperationItemResult::Failed(error)
+                                | explorer_model::OperationItemResult::Partial(error) => {
+                                    Some(error.user_message.as_str())
+                                }
+                                _ => None,
+                            })
+                            .collect::<Vec<_>>()
+                            .join("; ");
+                        self.set_paste_notice(
+                            format!("{} {reasons}", self.catalog().t("status-paste-partial")),
+                            true,
+                        );
+                        tracing::error!(request_id = ?context.request_id, outcomes = ?outcomes, "Paste partially failed");
+                        crate::interaction_log::record_ui_interaction(
+                            "clipboard_paste_failed",
+                            &format!("request_id={:?} outcomes={outcomes:?}", context.request_id),
+                        );
+                    }
+                    OperationTerminal::Cancelled => {
+                        self.set_paste_notice(self.catalog().t("status-paste-cancelled"), false);
+                    }
+                    OperationTerminal::Finished => {}
+                }
+            }
             if operation_applied
                 && let ExplorerEvent::OperationFinished { context, .. } = &event
                 && self
@@ -7259,13 +7339,14 @@ impl AppViewState {
         let Some(entry) = self.presentation_entry(row_index) else {
             return false;
         };
+        let is_directory = rename_entry_is_directory(&entry);
         self.rename_editor = Some(explorer_model::RenameEditorState::begin(
             ItemDescriptor {
                 id: entry.id,
                 location: entry.location,
             },
             entry.display_name,
-            entry.is_container,
+            is_directory,
         ));
         true
     }
@@ -7526,6 +7607,19 @@ impl AppViewState {
         Some((parent, name, entry.display_name))
     }
 
+    fn invalidate_sort_value_projections(&self, column: &explorer_model::ColumnId) {
+        if &self.tabs.active_tab().view.settings.sort.column == column {
+            self.presentation_cache
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .clear();
+        }
+        self.column_projection_cache
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .invalidate_sort_column(column);
+    }
+
     fn invalidate_directory_projections(&self) {
         self.presentation_cache
             .lock()
@@ -7544,7 +7638,7 @@ impl AppViewState {
             .presentation_cache
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .resolve_filtered(
+            .resolve_filtered_with(
                 snapshot,
                 tab.view.settings.hidden_items,
                 &tab.view.settings.sort,
@@ -7552,15 +7646,18 @@ impl AppViewState {
                     .get(&self.tabs.active_tab_id())
                     .cloned()
                     .unwrap_or_default(),
+                |presentation| {
+                    Self::finish_directory_presentation(
+                        snapshot,
+                        presentation,
+                        &tab.view.settings.sort,
+                        &self.folder_size_sort_values,
+                        &self.builtin_count_sort_values,
+                        &self.code_lines_sort_values,
+                    )
+                },
             );
-        Some(Self::finish_directory_presentation(
-            snapshot,
-            presentation,
-            &tab.view.settings.sort,
-            &self.folder_size_sort_values,
-            &self.builtin_count_sort_values,
-            &self.code_lines_sort_values,
-        ))
+        Some(presentation)
     }
 
     fn finish_directory_presentation(
@@ -7654,11 +7751,12 @@ impl AppViewState {
 
     pub(crate) fn focused_row_index(&self) -> Option<usize> {
         let focused = self.tabs.active_tab().selection.focused()?;
-        self.presentation_ids().iter().position(|id| id == focused)
+        self.directory_presentation()?.visible_position(focused)
     }
 
     pub(crate) fn visible_row_count(&self) -> usize {
-        self.presentation_ids().len()
+        self.directory_presentation()
+            .map_or(0, |presentation| presentation.len())
     }
 
     pub(crate) fn prepare_context_selection(&mut self, item_id: Option<&ShellItemId>) {
@@ -7667,7 +7765,10 @@ impl AppViewState {
             self.tabs.active_tab_mut().selection.clear();
             return;
         };
-        if !self.presentation_ids().iter().any(|id| id == item_id) {
+        if self
+            .directory_presentation()
+            .is_none_or(|presentation| presentation.visible_position(item_id).is_none())
+        {
             return;
         }
         if self.tabs.active_tab().selection.contains(item_id) {
@@ -7696,7 +7797,10 @@ impl AppViewState {
         if let Some(column_index) = column_index {
             return self.begin_column_context_gesture(column_index, item_id, x, y, extended_verbs);
         }
-        if !self.presentation_ids().iter().any(|id| id == &item_id) {
+        if self
+            .directory_presentation()
+            .is_none_or(|presentation| presentation.visible_position(&item_id).is_none())
+        {
             return false;
         }
         self.prepare_context_selection(Some(&item_id));
@@ -8675,6 +8779,7 @@ impl AppViewState {
         conflict: explorer_model::ConflictDecision,
     ) -> Option<ExplorerCommand> {
         if !self.active_presentation().can_write {
+            self.reject_paste("status-paste-read-only");
             return None;
         }
         let destination = self.column_paste_destination().or_else(|| {
@@ -8683,7 +8788,11 @@ impl AppViewState {
                 .history
                 .current()
                 .map(|entry| entry.location.clone())
-        })?;
+        });
+        let Some(destination) = destination else {
+            self.reject_paste("status-paste-no-destination");
+            return None;
+        };
         let (items, total_items, mode) = match &self.clipboard {
             explorer_model::ClipboardState::Owned { items, mode, .. } => {
                 (items.clone(), items.len(), *mode)
@@ -8693,8 +8802,14 @@ impl AppViewState {
                 item_count.unwrap_or(0),
                 explorer_model::ClipboardMode::Copy,
             ),
-            explorer_model::ClipboardState::None { .. }
-            | explorer_model::ClipboardState::Unsupported { .. } => return None,
+            explorer_model::ClipboardState::None { .. } => {
+                self.reject_paste("status-paste-empty");
+                return None;
+            }
+            explorer_model::ClipboardState::Unsupported { .. } => {
+                self.reject_paste("status-paste-unsupported");
+                return None;
+            }
         };
         let tab = self.tabs.active_tab();
         let context = RequestContext::new(tab.id, tab.generation);
@@ -8717,6 +8832,8 @@ impl AppViewState {
         debug_assert!(started, "new paste record starts exactly once");
         let _ = self.operation_center.insert(record);
         self.operation_terminal_notice = None;
+        self.paste_requests.insert(context.request_id);
+        self.set_paste_notice(self.catalog().t("status-paste-started"), false);
         Some(ExplorerCommand::DataTransfer {
             context,
             request: explorer_model::DataTransferRequest::Paste {
@@ -8724,6 +8841,21 @@ impl AppViewState {
                 conflict,
             },
         })
+    }
+
+    pub(crate) fn reject_paste(&mut self, reason_key: &str) {
+        let message = self.catalog().t(reason_key);
+        tracing::error!(reason = %message, clipboard = ?self.clipboard, destination = ?self.tabs.active_tab().history.current(), focus = ?self.focused_surface(), "Paste rejected");
+        crate::interaction_log::record_ui_interaction(
+            "clipboard_paste_failed",
+            &format!(
+                "reason={message} clipboard={:?} destination={:?} focus={:?}",
+                self.clipboard,
+                self.tabs.active_tab().history.current(),
+                self.focused_surface()
+            ),
+        );
+        self.set_paste_notice(message, true);
     }
 
     pub(crate) fn download_selected_to_downloads_request(&self) -> Option<FileOperationRequest> {
@@ -9630,6 +9762,16 @@ fn move_bounded_menu_index(current: usize, direction: i8, last: usize) -> usize 
     }
 }
 
+fn rename_entry_is_directory(entry: &explorer_model::FileEntry) -> bool {
+    // SFGAO_FOLDER also describes browsable archives. Prefer cached on-disk attributes
+    // for rename selection without performing filesystem I/O on the UI thread.
+    if entry.metadata.filesystem_attributes != 0 {
+        entry.metadata.filesystem_attributes & 0x10 != 0 // FILE_ATTRIBUTE_DIRECTORY
+    } else {
+        entry.is_container
+    }
+}
+
 fn operation_item_count(request: &FileOperationRequest) -> usize {
     match &request.kind {
         FileOperationKind::CreateFolder { .. }
@@ -10369,13 +10511,14 @@ impl AppViewState {
         let Some(entry) = self.column_visible_entry(column, &item_id) else {
             return false;
         };
+        let is_directory = rename_entry_is_directory(&entry);
         self.rename_editor = Some(explorer_model::RenameEditorState::begin(
             ItemDescriptor {
                 id: entry.id,
                 location: entry.location,
             },
             entry.display_name,
-            entry.is_container,
+            is_directory,
         ));
         true
     }
@@ -14494,6 +14637,37 @@ mod tests {
     }
 
     #[test]
+    fn rename_archive_container_uses_file_stem_not_directory_selection() {
+        let mut entry = explorer_model::FileEntry {
+            id: explorer_model::ShellItemId::from_provider_bytes([77]).expect("id"),
+            location: explorer_model::LocationDescriptor::file_system(r"C:\fixture\5.1.4.bin.gz"),
+            display_name: "5.1.4.bin.gz".to_owned(),
+            is_container: true,
+            metadata: explorer_model::FileEntryMetadata {
+                filesystem_attributes: 0x20,
+                ..Default::default()
+            },
+        };
+        assert!(!super::rename_entry_is_directory(&entry));
+        let editor = explorer_model::RenameEditorState::begin(
+            explorer_model::ItemDescriptor {
+                id: entry.id.clone(),
+                location: entry.location.clone(),
+            },
+            entry.display_name.clone(),
+            super::rename_entry_is_directory(&entry),
+        );
+        assert_eq!(&editor.buffer[editor.selection], "5.1.4");
+        entry.metadata.filesystem_attributes = 0x10;
+        assert!(super::rename_entry_is_directory(&entry));
+        entry.metadata.filesystem_attributes = 0;
+        assert!(
+            super::rename_entry_is_directory(&entry),
+            "namespace folder fallback"
+        );
+    }
+
+    #[test]
     fn interactive_new_folder_is_provisional_until_rename_commit() {
         let mut state = state_with_rows();
         let request = state.create_folder_request().expect("writable fixture");
@@ -16789,6 +16963,143 @@ mod tests {
     }
 
     #[test]
+    fn numeric_column_projections_reuse_final_sort_and_refresh_on_value_changes() {
+        use std::{collections::HashMap, sync::Arc};
+        let extension = explorer_model::ColumnId::Extension {
+            package_id: "performance-test".into(),
+            column_id: "lines".into(),
+        };
+        for column in [
+            explorer_model::ColumnId::Size,
+            crate::folder_size_column::folder_size_column_descriptor().id,
+            explorer_model::ColumnId::FileCount,
+            extension.clone(),
+        ] {
+            let mut state = state_with_rows();
+            state.tabs.active_tab_mut().view.settings.sort.column = column.clone();
+            let first = state
+                .directory_presentation()
+                .expect("initial numeric projection");
+            assert!(state.select_row(0));
+            let same = state
+                .directory_presentation()
+                .expect("selection projection");
+            assert!(
+                Arc::ptr_eq(first.ordered_indices(), same.ordered_indices()),
+                "{column:?}"
+            );
+            let id = first.entry(0).expect("fixture row").1.id.clone();
+            let rendered_state = state.clone();
+            assert!(Arc::ptr_eq(
+                &state.folder_size_sort_values,
+                &rendered_state.folder_size_sort_values
+            ));
+            assert!(Arc::ptr_eq(
+                &state.builtin_count_sort_values,
+                &rendered_state.builtin_count_sort_values
+            ));
+            assert!(Arc::ptr_eq(
+                &state.code_lines_sort_values,
+                &rendered_state.code_lines_sort_values
+            ));
+            let values = HashMap::from([(id, Some(42))]);
+            if column == explorer_model::ColumnId::FileCount {
+                assert!(state.set_builtin_count_sort_values(column.clone(), values.clone()));
+                assert!(!state.set_builtin_count_sort_values(column.clone(), values));
+            } else if column == extension {
+                assert!(state.set_code_lines_sort_values(column.clone(), values.clone()));
+                assert!(!state.set_code_lines_sort_values(column.clone(), values));
+            } else {
+                assert!(state.set_folder_size_sort_values(values.clone()));
+                assert!(!state.set_folder_size_sort_values(values));
+            }
+            assert!(rendered_state.folder_size_sort_values.is_empty());
+            assert!(rendered_state.builtin_count_sort_values.is_empty());
+            assert!(rendered_state.code_lines_sort_values.is_empty());
+            let updated = state
+                .directory_presentation()
+                .expect("updated numeric projection");
+            assert!(!Arc::ptr_eq(
+                first.ordered_indices(),
+                updated.ordered_indices()
+            ));
+            let same_updated = state
+                .directory_presentation()
+                .expect("cached updated projection");
+            assert!(Arc::ptr_eq(
+                updated.ordered_indices(),
+                same_updated.ordered_indices()
+            ));
+            state.set_sort_direction(explorer_model::SortDirection::Descending);
+            let descending = state
+                .directory_presentation()
+                .expect("descending projection");
+            assert!(!Arc::ptr_eq(
+                updated.ordered_indices(),
+                descending.ordered_indices()
+            ));
+        }
+    }
+
+    #[test]
+    fn unrelated_background_values_preserve_name_order_and_apply_when_sort_changes() {
+        use std::{collections::HashMap, sync::Arc};
+        let mut state = state_with_rows();
+        let first = state.directory_presentation().unwrap();
+        let values = HashMap::from([(first.entry(0).unwrap().1.id.clone(), Some(123))]);
+        assert!(state.set_folder_size_sort_values(values.clone()));
+        assert!(
+            state
+                .set_builtin_count_sort_values(explorer_model::ColumnId::FileCount, values.clone())
+        );
+        assert!(state.set_code_lines_sort_values(
+            crate::code_lines_column::code_lines_column_descriptor().id,
+            values
+        ));
+        let after = state.directory_presentation().unwrap();
+        assert!(Arc::ptr_eq(
+            first.ordered_indices(),
+            after.ordered_indices()
+        ));
+        state.set_sort_column(explorer_model::ColumnId::Size);
+        let numeric = state.directory_presentation().unwrap();
+        assert!(!Arc::ptr_eq(
+            first.ordered_indices(),
+            numeric.ordered_indices()
+        ));
+        assert_eq!(
+            state.folder_size_sort_values.values().copied().next(),
+            Some(Some(123))
+        );
+    }
+
+    #[test]
+    fn background_values_invalidate_inactive_numeric_column_projections() {
+        use std::{collections::HashMap, sync::Arc};
+        let mut state = state_with_rows();
+        let snapshot = state.tabs.active_tab().visible_snapshot().unwrap().clone();
+        state.tabs.active_tab_mut().view.settings.sort.column = explorer_model::ColumnId::Size;
+        let old_numeric = state.project_column_snapshot(&snapshot);
+        state.tabs.active_tab_mut().view.settings.sort.column = explorer_model::ColumnId::Name;
+        let names = state.project_column_snapshot(&snapshot);
+        state.set_folder_size_sort_values(HashMap::from([(
+            old_numeric.entry(0).unwrap().1.id.clone(),
+            Some(42),
+        )]));
+        let same_names = state.project_column_snapshot(&snapshot);
+        assert!(Arc::ptr_eq(
+            names.ordered_indices(),
+            same_names.ordered_indices()
+        ));
+        state.tabs.active_tab_mut().view.settings.sort.column = explorer_model::ColumnId::Size;
+        let refreshed = state.project_column_snapshot(&snapshot);
+        assert!(!Arc::ptr_eq(
+            old_numeric.ordered_indices(),
+            refreshed.ordered_indices()
+        ));
+    }
+
+    #[test]
     fn permanent_delete_confirmation_cancel_creates_no_request_and_confirm_is_explicit() {
         let mut state = state_with_rows();
         assert!(state.select_row(1));
@@ -17046,6 +17357,98 @@ mod tests {
             panic!("expected context command");
         };
         assert!(!request.paste_available);
+    }
+
+    #[test]
+    fn paste_notice_explains_empty_unsupported_and_read_only_clipboard() {
+        let mut state = state_with_rows();
+        assert!(
+            state
+                .begin_paste_request(explorer_model::ConflictDecision::Prompt)
+                .is_none()
+        );
+        assert_eq!(
+            state.paste_notice(),
+            Some((state.catalog().t("status-paste-empty").as_str(), true))
+        );
+        state.apply_service_event(explorer_model::ExplorerEvent::ClipboardChanged {
+            state: explorer_model::ClipboardState::Unsupported {
+                error: explorer_common::ExplorerError::new(
+                    explorer_common::ExplorerErrorKind::Input,
+                    "clipboard",
+                    false,
+                    "Unsupported format",
+                    "CF_HDROP is absent",
+                ),
+                generation: 1,
+            },
+        });
+        assert!(
+            state
+                .begin_paste_request(explorer_model::ConflictDecision::Prompt)
+                .is_none()
+        );
+        assert_eq!(
+            state.paste_notice(),
+            Some((state.catalog().t("status-paste-unsupported").as_str(), true))
+        );
+        let command = state.begin_active_location_load().unwrap();
+        state.apply_service_event(explorer_model::ExplorerEvent::LocationResolved {
+            context: command.context().unwrap().clone(),
+            metadata: explorer_model::LocationMetadata {
+                descriptor: explorer_model::LocationDescriptor::file_system(r"C:\fixture"),
+                display_title: "fixture".into(),
+                can_go_up: true,
+                can_write: false,
+            },
+        });
+        assert!(
+            state
+                .begin_paste_request(explorer_model::ConflictDecision::Prompt)
+                .is_none()
+        );
+        assert_eq!(
+            state.paste_notice(),
+            Some((state.catalog().t("status-paste-read-only").as_str(), true))
+        );
+    }
+
+    #[test]
+    fn paste_notice_tracks_start_failure_and_expires_once() {
+        let mut state = state_with_rows();
+        state.apply_service_event(explorer_model::ExplorerEvent::ClipboardChanged {
+            state: explorer_model::ClipboardState::External {
+                effects: explorer_model::TransferEffects::COPY,
+                item_count: Some(1),
+                generation: 1,
+            },
+        });
+        let command = state
+            .begin_paste_request(explorer_model::ConflictDecision::Prompt)
+            .unwrap();
+        assert_eq!(
+            state.paste_notice(),
+            Some((state.catalog().t("status-paste-started").as_str(), false))
+        );
+        let error = explorer_common::ExplorerError::new(
+            explorer_common::ExplorerErrorKind::Authorization,
+            "adb_pull",
+            true,
+            "Access denied",
+            "ADB pull exited 1: permission denied /sdcard/Download/daq.zip",
+        )
+        .with_native_code(5);
+        state.apply_service_event(explorer_model::ExplorerEvent::OperationFinished {
+            context: command.context().unwrap().clone(),
+            outcome: explorer_model::OperationTerminal::Failed(error),
+        });
+        let (notice, failed) = state.paste_notice().unwrap();
+        assert!(failed);
+        assert!(notice.contains("Access denied"));
+        assert!(state.paste_requests.is_empty());
+        assert!(state.expire_paste_notice(Instant::now() + Duration::from_secs(13)));
+        assert!(state.paste_notice().is_none());
+        assert!(!state.expire_paste_notice(Instant::now() + Duration::from_secs(14)));
     }
 
     #[test]

@@ -12,6 +12,99 @@ use windows::{
 
 const SESSION_MUTEX_NAME: &str = r"Local\SuperExplorer.LaunchSession.v1";
 
+/// Explicit navigation, Win+E and History requests must create their requested window.
+pub const fn should_activate_existing_window(repeated: bool, explicit_target: bool) -> bool {
+    repeated && !explicit_target
+}
+
+/// Finds the existing main window of this exact executable, in desktop Z order.
+pub fn activate_existing_window() -> bool {
+    use windows::Win32::{
+        Foundation::{HWND, LPARAM},
+        System::Threading::{
+            OpenProcess, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION,
+            QueryFullProcessImageNameW,
+        },
+        UI::WindowsAndMessaging::{
+            EnumWindows, GW_OWNER, GetWindow, GetWindowThreadProcessId, IsIconic, IsWindowVisible,
+            SW_RESTORE, SetForegroundWindow, ShowWindow,
+        },
+    };
+    use windows::core::{BOOL, PWSTR};
+
+    struct Search {
+        executable: std::path::PathBuf,
+        window: Option<HWND>,
+    }
+    // SAFETY: EnumWindows invokes this synchronously while Search is exclusively borrowed.
+    #[expect(
+        unsafe_code,
+        reason = "enumerating and activating a sibling main window requires Win32"
+    )]
+    unsafe extern "system" fn visit(hwnd: HWND, data: LPARAM) -> BOOL {
+        let search = unsafe { &mut *(data.0 as *mut Search) };
+        if !unsafe { IsWindowVisible(hwnd) }.as_bool()
+            || unsafe { GetWindow(hwnd, GW_OWNER) }.is_ok_and(|owner| !owner.is_invalid())
+        {
+            return BOOL(1);
+        }
+        let mut pid = 0;
+        unsafe { GetWindowThreadProcessId(hwnd, Some(&mut pid)) };
+        if pid == std::process::id() {
+            return BOOL(1);
+        }
+        let Ok(process) = (unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid) })
+        else {
+            return BOOL(1);
+        };
+        let mut buffer = vec![0_u16; 32_768];
+        let mut length = buffer.len() as u32;
+        let result = unsafe {
+            QueryFullProcessImageNameW(
+                process,
+                PROCESS_NAME_WIN32,
+                PWSTR(buffer.as_mut_ptr()),
+                &mut length,
+            )
+        };
+        let _ = unsafe { CloseHandle(process) };
+        if result.is_ok() {
+            let path =
+                std::path::PathBuf::from(String::from_utf16_lossy(&buffer[..length as usize]));
+            if path
+                .to_string_lossy()
+                .eq_ignore_ascii_case(&search.executable.to_string_lossy())
+            {
+                search.window = Some(hwnd);
+                return BOOL(0);
+            }
+        }
+        BOOL(1)
+    }
+    let Ok(executable) = std::env::current_exe() else {
+        return false;
+    };
+    let mut search = Search {
+        executable,
+        window: None,
+    };
+    // SAFETY: Search and the callback remain live throughout synchronous enumeration.
+    #[expect(
+        unsafe_code,
+        reason = "activating a verified sibling window requires Win32"
+    )]
+    unsafe {
+        let _ = EnumWindows(Some(visit), LPARAM((&raw mut search) as isize));
+        let Some(window) = search.window else {
+            return false;
+        };
+        if IsIconic(window).as_bool() {
+            let _ = ShowWindow(window, SW_RESTORE);
+        }
+        SetForegroundWindow(window).as_bool()
+    }
+}
+
 /// Whether this invocation should participate in repeated-launch detection.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum LaunchKind {
@@ -163,6 +256,14 @@ impl Drop for LaunchSession {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ordinary_repeat_activates_existing_tabs_but_explicit_launches_do_not() {
+        assert!(should_activate_existing_window(true, false));
+        assert!(!should_activate_existing_window(false, false));
+        assert!(!should_activate_existing_window(true, true));
+        assert!(!should_activate_existing_window(false, true));
+    }
 
     #[test]
     fn plugin_development_launch_is_isolated() {

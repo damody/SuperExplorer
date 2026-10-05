@@ -48,6 +48,28 @@ const COMPOUND_EXTENSION_MAPPINGS: &[(&str, RemoteFileIconKind)] = &[
     ("svg.gz", RemoteFileIconKind::Image),
 ];
 
+/// Byte boundary of the editable filename, preserving recognized compound extensions.
+/// Version numbers and other dots in the stem remain part of the editable name.
+pub(crate) fn file_name_stem_end(name: &str) -> usize {
+    let lowercase = name.to_ascii_lowercase();
+    COMPOUND_EXTENSION_MAPPINGS
+        .iter()
+        .map(|(extension, _)| *extension)
+        .chain(std::iter::once("bin.gz"))
+        .filter_map(|extension| {
+            lowercase
+                .strip_suffix(&format!(".{extension}"))
+                .filter(|stem| !stem.is_empty())
+                .map(str::len)
+        })
+        .min()
+        .unwrap_or_else(|| {
+            name.rfind('.')
+                .filter(|offset| *offset > 0)
+                .unwrap_or(name.len())
+        })
+}
+
 const EXTENSION_ICON_MAPPINGS: &[(&str, RemoteFileIconKind)] = &[
     ("pdf", RemoteFileIconKind::Pdf),
     ("xps", RemoteFileIconKind::Pdf),

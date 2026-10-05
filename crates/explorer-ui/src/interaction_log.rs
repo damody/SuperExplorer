@@ -1,7 +1,7 @@
 //! Interaction traces for clicks, clipboard shortcuts, and drag release.
 //!
-//! These are written even when the gesture is ignored, so a silent no-op still
-//! leaves a line in `error.log`.
+//! These are ordinary gestures. They stay on the info trace and are not written
+//! into the process error log.
 
 use gpui::{
     DispatchPhase, KeyDownEvent, MouseButton, MouseDownEvent, MouseUpEvent, Styled, canvas,
@@ -9,13 +9,6 @@ use gpui::{
 
 pub(crate) fn record_ui_interaction(operation: &str, detail: &str) {
     tracing::info!(operation, detail, "Explorer interaction");
-    explorer_common::record_process_error_message(
-        explorer_common::ErrorSeverity::Warning,
-        "ui",
-        operation,
-        detail,
-        Some(file!()),
-    );
 }
 
 pub(crate) fn interaction_event_layer() -> impl gpui::IntoElement {
@@ -54,6 +47,12 @@ pub(crate) struct ShortcutTrace {
 
 impl ShortcutTrace {
     pub(crate) fn begin(event: &KeyDownEvent, focus: &str) -> Self {
+        if let Some(chord) = watched_shortcut(event) {
+            record_ui_interaction(
+                "key_shortcut",
+                &format!("chord={chord} phase=received focus={focus}"),
+            );
+        }
         Self {
             chord: watched_shortcut(event),
             focus: focus.to_owned(),

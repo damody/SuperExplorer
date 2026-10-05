@@ -126,6 +126,19 @@ fn run(
     let repeated_launch = launch_session
         .as_ref()
         .is_some_and(LaunchSession::is_repeated);
+    let explicit_target = [
+        "EXPLORER_INITIAL_PATH",
+        explorer_import::WIN_E_ENV,
+        explorer_import::INITIAL_TABS_ENV,
+        explorer_import::INITIAL_TABS_FILE_ENV,
+        explorer_import::RESTORE_WINDOW_ID_ENV,
+    ]
+    .iter()
+    .any(|name| std::env::var_os(name).is_some());
+    let reuse_window = explorer_app::launch_coordination::should_activate_existing_window(
+        repeated_launch,
+        explicit_target,
+    );
     diagnostics.record_event(
         "startup",
         &[
@@ -137,6 +150,12 @@ fn run(
             ),
         ],
     )?;
+
+    if reuse_window && explorer_app::launch_coordination::activate_existing_window() {
+        diagnostics.record_event("startup_existing_window_activated", &[])?;
+        tracing::info!("Ordinary repeated launch activated existing tabs");
+        return Ok(());
+    }
 
     let mut lifecycle =
         ApplicationLifecycle::start_with_plugins(diagnostics.clone(), &plugin_dlls)?;
@@ -158,7 +177,7 @@ fn run(
     let import = explorer_import::consume_launch_import(
         launch_session
             .as_ref()
-            .is_some_and(|session| !session.is_repeated()),
+            .is_some_and(|session| !session.is_repeated() || reuse_window),
     );
     if std::env::var_os("EXPLORER_VISUAL_FIXTURE").is_none()
         && std::env::var_os("EXPLORER_AUTO_CLOSE_MS").is_none()
@@ -166,11 +185,9 @@ fn run(
         win_e_hotkey::start_win_e_hotkey();
         explorer_handoff::start_handoff_server();
     }
-    let initial_path = if import.this_pc {
-        None
-    } else {
-        repeated_launch.then(|| std::path::PathBuf::from(r"C:\"))
-    };
+    // A repeated-launch marker is not a navigation request. If its owner has no
+    // usable main window, use the normal saved-session restore instead of C:\.
+    let initial_path = None;
     let restore_window_id = explorer_import::parse_restore_window_id();
     lifecycle.run_gpui_with_launch(
         initial_path,
