@@ -277,7 +277,7 @@ impl MftSqliteStoreV1 {
         let verified = read_identity(&verify_connection)?;
         let verified_index = load_index_from_connection(&verify_connection)?;
         drop(verify_connection);
-        if verified != identity || verified_index.entries.len() != index.entries.len() {
+        if verified != identity || verified_index.entries().len() != index.entries().len() {
             return Err("migration temporary verification mismatch".to_owned());
         }
         let canonical_still_exists = canonical.is_file();
@@ -397,7 +397,8 @@ impl MftSqliteStoreV1 {
             if failure == MigrationFailurePointV1::PostVerify {
                 return Err("injected migration post-verify failure".into());
             }
-            if store.identity() != identity || store.entry_count()? != index.entries.len() as u64 {
+            if store.identity() != identity || store.entry_count()? != index.entries().len() as u64
+            {
                 return Err("promoted MFT SQLite verification mismatch".to_owned());
             }
             if max_candidate_bytes.is_some_and(|limit| {
@@ -672,7 +673,7 @@ impl MftSqliteStoreV1 {
             Self::open(canonical, fixed_root, expected_volume, expected_journal_id)
         })?;
         if store.identity() != backup_identity
-            || store.entry_count()? != backup_index.entries.len() as u64
+            || store.entry_count()? != backup_index.entries().len() as u64
         {
             return Err("recovered MFT SQLite backup verification mismatch".to_owned());
         }
@@ -1135,7 +1136,7 @@ fn install_migration_entries_guarded(
              VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
             )
             .map_err(|error| error.to_string())?;
-        for entry in index.entries.values() {
+        for entry in index.entries().values() {
             if !lifecycle_open() {
                 return Err("MFT SQLite lifecycle closed during migration build".to_owned());
             }
@@ -1532,7 +1533,7 @@ fn install_snapshot_transaction(
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
             )
             .map_err(|error| error.to_string())?;
-        for entry in index.entries.values() {
+        for entry in index.entries().values() {
             insert
                 .execute(params![
                     encode_u64(entry.reference),
@@ -2440,7 +2441,7 @@ mod tests {
                 )
                 .unwrap();
                 assert_eq!(admitted, identity());
-                assert_eq!(loaded.entries.len(), 1);
+                assert_eq!(loaded.entries().len(), 1);
             }
         }
     }
@@ -2498,8 +2499,8 @@ mod tests {
             )
             .unwrap();
             assert_eq!(restored_identity.cursor, next(1), "{failure:?}");
-            assert!(restored.entries.contains_key(&20), "{failure:?}");
-            assert!(!restored.entries.contains_key(&99), "{failure:?}");
+            assert!(restored.entries().contains_key(&20), "{failure:?}");
+            assert!(!restored.entries().contains_key(&99), "{failure:?}");
             assert!(
                 !PathBuf::from(format!("{}.replacement-backup", canonical.display())).exists(),
                 "{failure:?} left an unmanaged safety copy"
@@ -2553,7 +2554,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(recovered.identity().cursor, next(1));
-        assert!(recovered.load_index().unwrap().entries.contains_key(&42));
+        assert!(recovered.load_index().unwrap().entries().contains_key(&42));
         assert!(!backup.exists());
     }
 
@@ -2596,7 +2597,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(admitted.cursor, next(1));
-        assert!(index.entries.contains_key(&43));
+        assert!(index.entries().contains_key(&43));
     }
 
     #[test]
@@ -2681,7 +2682,7 @@ mod tests {
             for change in &replay {
                 memory.apply_change(change).unwrap();
             }
-            assert_eq!(memory.entries.len(), 3);
+            assert_eq!(memory.entries().len(), 3);
             assert_eq!(store.identity().cursor, next(1));
             assert_eq!(store.entry_count().unwrap(), 1);
         }
@@ -3088,7 +3089,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(admitted.cursor, next(1));
-        assert!(index.entries.contains_key(&70));
+        assert!(index.entries().contains_key(&70));
         let after_names = std::fs::read_dir(root.path())
             .unwrap()
             .map(|entry| entry.unwrap().file_name())

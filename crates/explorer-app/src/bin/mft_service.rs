@@ -673,15 +673,20 @@ fn enforce_live_budgets_locked(
         let Some(runtime) = live.get_mut(&letter) else {
             continue;
         };
-        if trim_index_to_live_budget(
-            Arc::make_mut(&mut runtime.index),
-            volume_remaining,
-            file_remaining,
-        ) {
+        let mut memory = runtime.index.memory_breakdown();
+        // Most journal batches fit. Do not clone a query's shared snapshot or
+        // repeatedly walk every entry unless a hard limit actually needs a trim.
+        if (memory.volume_index_bytes > volume_remaining || memory.file_data_bytes > file_remaining)
+            && trim_index_to_live_budget(
+                Arc::make_mut(&mut runtime.index),
+                volume_remaining,
+                file_remaining,
+            )
+        {
             runtime.mark_inexact();
             trimmed.insert(letter);
+            memory = runtime.index.memory_breakdown();
         }
-        let memory = runtime.index.memory_breakdown();
         volume_remaining = volume_remaining.saturating_sub(memory.volume_index_bytes);
         file_remaining = file_remaining.saturating_sub(memory.file_data_bytes);
     }
@@ -1718,12 +1723,22 @@ impl SharedFolderQueryServiceV1 {
         cache_memory_mb: u16,
     ) -> Result<mft_query::FolderAggregateQueryV1, String> {
         let _volume_query_permit = self.acquire_volume_query(letter)?;
+        let started = Instant::now();
+        // Capture a fixed watermark, rather than chasing a moving journal
+        // tail. Deletions completed before this query must be in its snapshot.
+        let required_journal = mft_journal::query_journal(volume_root)?;
         prefer_live_volume(live_budgets, live_volumes, letter)?;
         wait_for_active_volume_exact(
             live_budgets,
             live_volumes,
             letter,
             ACTIVE_VOLUME_EXACT_WAIT_V1,
+        )?;
+        wait_for_query_journal(
+            live_volumes,
+            letter,
+            required_journal,
+            ACTIVE_VOLUME_EXACT_WAIT_V1.saturating_sub(started.elapsed()),
         )?;
         let (observed, durable, exact, index) = {
             let live = live_volumes
@@ -1846,15 +1861,13 @@ impl SharedFolderQueryServiceV1 {
             require_exact_folder_aggregate(value, observed, durable, exact, aggregate_limit)
         })
         .and_then(|value| {
-            let current = live_volumes
+            let (current, current_exact) = live_volumes
                 .lock()
                 .map_err(|_| "MFT live volume state is unavailable".to_owned())?
                 .get(&letter)
-                .map(|volume| volume.observed)
+                .map(|volume| (volume.observed, volume.is_exact()))
                 .ok_or_else(|| "MFT live volume is unavailable".to_owned())?;
-            (current == observed)
-                .then_some(value)
-                .ok_or_else(|| "MFT folder aggregate generation changed during query".to_owned())
+            validate_live_query_snapshot(value, observed, current, current_exact)
         });
 
         if let Ok(value) = computed {
@@ -1862,7 +1875,16 @@ impl SharedFolderQueryServiceV1 {
                 cache.clock = cache.clock.wrapping_add(1).max(1);
                 let clock = cache.clock;
                 cache.generation = cache.generation.max(value.generation);
-                cache.results.insert((letter, reference), (value, clock));
+                // An older flight can finish after a newer one. Its coherent
+                // snapshot may satisfy its callers, but must not replace a
+                // newer result in the shared cache.
+                if cache
+                    .results
+                    .get(&(letter, reference))
+                    .is_none_or(|(cached, _)| cached.generation <= value.generation)
+                {
+                    cache.results.insert((letter, reference), (value, clock));
+                }
                 cache.recount_result_bytes();
                 cache.evict_for(0);
             }
@@ -1876,6 +1898,61 @@ impl SharedFolderQueryServiceV1 {
         }
         computed
     }
+}
+
+fn query_journal_is_observed(
+    observed: mft_persistence::JournalCursorV1,
+    exact: bool,
+    required: mft_journal::JournalMetadataV2,
+) -> bool {
+    exact && observed.journal_id == required.journal_id && observed.next_usn >= required.next_usn
+}
+
+fn wait_for_query_journal(
+    live_volumes: &Arc<Mutex<HashMap<char, mft_runtime::VolumeMemoryRuntimeV1>>>,
+    letter: char,
+    required: mft_journal::JournalMetadataV2,
+    budget: Duration,
+) -> Result<(), String> {
+    let started = Instant::now();
+    loop {
+        {
+            let live = live_volumes
+                .lock()
+                .map_err(|_| "MFT live volume state is unavailable".to_owned())?;
+            let volume = live
+                .get(&letter)
+                .ok_or_else(|| "MFT live volume is unavailable".to_owned())?;
+            if query_journal_is_observed(volume.observed, volume.is_exact(), required) {
+                return Ok(());
+            }
+        }
+        if STOPPED.load(Ordering::Acquire) {
+            return Err("MFT service stopped during query journal catch-up".to_owned());
+        }
+        if started.elapsed() >= budget {
+            return Err("MFT query journal catch-up deadline exceeded".to_owned());
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+fn validate_live_query_snapshot(
+    value: mft_query::FolderAggregateQueryV1,
+    observed: mft_persistence::JournalCursorV1,
+    current: mft_persistence::JournalCursorV1,
+    current_exact: bool,
+) -> Result<mft_query::FolderAggregateQueryV1, String> {
+    // The aggregate was computed from one immutable Arc index. Journal edits
+    // elsewhere on the volume must not starve a query for a large subtree.
+    // Its generation still identifies the captured snapshot, so a later query
+    // cannot mistake this result for a newer generation's cache hit.
+    (current_exact
+        && current.journal_id == observed.journal_id
+        && current.next_usn >= observed.next_usn
+        && current.generation >= observed.generation)
+        .then_some(value)
+        .ok_or_else(|| "MFT folder aggregate snapshot invalidated during query".to_owned())
 }
 
 fn require_exact_folder_aggregate(
@@ -2789,7 +2866,18 @@ fn watch_volume_memory(
     let mut retired_telemetry = mft_sqlite::StoreTelemetryV1::default();
     let mut budget_blocked_epoch = None::<u64>;
     let mut read_only_reload_epoch = None::<u64>;
+    let mut previous_iteration = Instant::now() - Duration::from_millis(100);
     while !STOPPED.load(Ordering::Acquire) {
+        // A USN read may complete immediately with just a cursor (including
+        // unrelated background writes). Bound every path through this loop,
+        // including retries, rather than relying on overlapped I/O to block.
+        if let Some(delay) = Duration::from_millis(100).checked_sub(previous_iteration.elapsed()) {
+            std::thread::sleep(delay);
+        }
+        if STOPPED.load(Ordering::Acquire) {
+            break;
+        }
+        previous_iteration = Instant::now();
         let now = monotonic_now();
         let runtime_snapshot = live_volumes.lock().ok().and_then(|live| {
             live.get(&letter).map(|runtime| {
@@ -3809,6 +3897,14 @@ fn watch_volume_memory(
             startup_store = StartupStoreV1::FreshRebuildRequired;
             continue;
         }
+        if let Ok(mut live) = live_volumes.lock()
+            && let Some(runtime) = live.get_mut(&letter)
+            && runtime.advance_exact_observed_cursor(read_next_usn).is_err()
+        {
+            runtime.mark_inexact();
+            startup_store = StartupStoreV1::FreshRebuildRequired;
+            continue;
+        }
         next_usn = next_usn.max(read_next_usn);
 
         let now = monotonic_now();
@@ -4188,6 +4284,79 @@ mod tests {
     use std::{collections::BTreeMap, fs, path::Path};
 
     #[test]
+    fn query_journal_watermark_requires_pre_query_deletions_but_not_a_quiet_volume() {
+        let required = mft_journal::JournalMetadataV2 {
+            journal_id: 7,
+            first_usn: 0,
+            next_usn: 200,
+            lowest_valid_usn: 0,
+        };
+        let observed = mft_persistence::JournalCursorV1 {
+            journal_id: 7,
+            next_usn: 100,
+            generation: 1,
+        };
+        assert!(!query_journal_is_observed(observed, true, required));
+        let caught_up = mft_persistence::JournalCursorV1 {
+            next_usn: 250,
+            ..observed
+        };
+        assert!(query_journal_is_observed(caught_up, true, required));
+        assert!(!query_journal_is_observed(caught_up, false, required));
+        assert!(!query_journal_is_observed(
+            mft_persistence::JournalCursorV1 {
+                journal_id: 8,
+                ..caught_up
+            },
+            true,
+            required
+        ));
+    }
+
+    #[test]
+    fn live_query_snapshot_survives_concurrent_journal_progress() {
+        let observed = mft_persistence::JournalCursorV1 {
+            journal_id: 1,
+            next_usn: 100,
+            generation: 20,
+        };
+        let current = mft_persistence::JournalCursorV1 {
+            next_usn: 200,
+            generation: 30,
+            ..observed
+        };
+        let value = mft_query::FolderAggregateQueryV1 {
+            generation: 20,
+            logical_bytes: 175,
+            partial: false,
+            ..Default::default()
+        };
+        let accepted = validate_live_query_snapshot(value, observed, current, true).unwrap();
+        assert_eq!(accepted.logical_bytes, 175);
+        assert_eq!(
+            accepted.generation, 20,
+            "retain the captured generation for cache freshness"
+        );
+        assert!(validate_live_query_snapshot(value, observed, current, false).is_err());
+        for invalid in [
+            mft_persistence::JournalCursorV1 {
+                journal_id: 2,
+                ..current
+            },
+            mft_persistence::JournalCursorV1 {
+                next_usn: 99,
+                ..current
+            },
+            mft_persistence::JournalCursorV1 {
+                generation: 19,
+                ..current
+            },
+        ] {
+            assert!(validate_live_query_snapshot(value, observed, invalid, true).is_err());
+        }
+    }
+
+    #[test]
     fn stop_pending_status_gives_scm_a_bounded_wait_hint() {
         let status = service_status(SERVICE_STOP_PENDING, 0);
         assert_eq!(status.current_state, SERVICE_STOP_PENDING);
@@ -4222,7 +4391,7 @@ mod tests {
             load_legacy_memory_index(temporary.path(), 'C', checkpoint, usize::MAX, usize::MAX)
                 .unwrap();
         assert!(complete);
-        let entry = index.entries.get(&2).unwrap();
+        let entry = index.entries().get(&2).unwrap();
         assert_eq!(entry.name, "after.txt");
         assert_eq!(entry.logical_bytes, 24);
         assert!(mft_journal::read_status(&valid.join("C.semftstatus")).is_ok());
@@ -4420,6 +4589,21 @@ mod tests {
     }
 
     #[test]
+    fn budget_enforcement_preserves_shared_snapshot_when_it_fits() {
+        let cursor = mft_persistence::JournalCursorV1 {
+            journal_id: 2,
+            next_usn: 3,
+            generation: 4,
+        };
+        let runtime = mft_runtime::VolumeMemoryRuntimeV1::new(fixture(100), cursor);
+        let snapshot = Arc::clone(&runtime.index);
+        let mut live = HashMap::from([('C', runtime)]);
+        assert!(enforce_live_budgets_locked(&mut live, &LiveBudgetStateV1::default()).is_empty());
+        assert!(Arc::ptr_eq(&snapshot, &live[&'C'].index));
+        assert!(live[&'C'].is_exact());
+    }
+
+    #[test]
     fn live_usn_growth_is_trimmed_before_queries_can_observe_exact_over_budget_state() {
         let cursor = mft_persistence::JournalCursorV1 {
             journal_id: 2,
@@ -4522,14 +4706,14 @@ mod tests {
         prefer_live_volume(&budgets, &live, 'D').unwrap();
         {
             let live = live.lock().unwrap();
-            assert!(live[&'C'].index.entries.is_empty());
+            assert!(live[&'C'].index.entries().is_empty());
             assert_eq!(live[&'C'].durable, cursor);
             assert!(live[&'D'].is_exact());
         }
         prefer_live_volume(&budgets, &live, 'C').unwrap();
         {
             let live = live.lock().unwrap();
-            assert!(live[&'D'].index.entries.is_empty());
+            assert!(live[&'D'].index.entries().is_empty());
             assert_eq!(live[&'D'].durable, cursor);
             let used = live.values().fold(
                 mft_size_map::MftIndexMemoryBreakdownV1::default(),
@@ -4577,7 +4761,7 @@ mod tests {
                 budget_epoch: recovery_epoch,
             })
         );
-        assert!(live.lock().unwrap()[&'D'].index.entries.is_empty());
+        assert!(live.lock().unwrap()[&'D'].index.entries().is_empty());
 
         prefer_live_volume(&budgets, &live, 'D').unwrap();
         assert_eq!(budgets.lock().unwrap().epoch, recovery_epoch);
@@ -4610,7 +4794,7 @@ mod tests {
         assert!(error.contains("recovering_volume=D"));
         assert!(error.contains("requested_volume=C"));
         assert_eq!(budgets.lock().unwrap().preferred_volume, Some('D'));
-        assert!(!live.lock().unwrap()[&'C'].index.entries.is_empty());
+        assert!(!live.lock().unwrap()[&'C'].index.entries().is_empty());
     }
 
     #[test]

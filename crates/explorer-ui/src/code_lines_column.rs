@@ -154,6 +154,12 @@ pub struct CodeLinesResultV1 {
 
 pub trait CodeLinesRuntimePortV1: Send + Sync {
     fn config(&self) -> CodeLinesColumnConfigV1;
+    /// Expensive live queries can limit work to the realized viewport.
+    fn visible_entries_only(&self) -> bool {
+        false
+    }
+    /// Finish native callbacks before the application tears down the host.
+    fn shutdown(&self) {}
     fn submit_code_lines_requests(&self, requests: Vec<CodeLinesRequestV1>);
     fn cancel_code_lines_context(&self, context: &RequestContext);
     /// Invalidates only values whose items belong directly to this directory.
@@ -183,6 +189,7 @@ pub struct CodeLinesColumnVisuals {
     item_cache: HashMap<ShellItemId, CodeLinesValueV1>,
     item_error_cache: HashMap<ShellItemId, String>,
     item_lru: VecDeque<ShellItemId>,
+    hydrated_entries: Option<Arc<Vec<explorer_model::FileEntry>>>,
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -193,6 +200,16 @@ struct CodeLinesDirectorySnapshotV1 {
 }
 
 impl CodeLinesColumnVisuals {
+    /// Only current cells cross the render boundary; history stays with the host.
+    pub fn render_snapshot(&self) -> Self {
+        let mut snapshot = Self::new(self.config.clone());
+        snapshot.context = self.context.clone();
+        snapshot.values = self.values.clone();
+        snapshot.errors = self.errors.clone();
+        snapshot.admissions = self.admissions.clone();
+        snapshot
+    }
+
     pub fn new(config: CodeLinesColumnConfigV1) -> Self {
         Self {
             config,
@@ -206,6 +223,7 @@ impl CodeLinesColumnVisuals {
             item_cache: HashMap::new(),
             item_error_cache: HashMap::new(),
             item_lru: VecDeque::new(),
+            hydrated_entries: None,
         }
     }
 
@@ -222,6 +240,7 @@ impl CodeLinesColumnVisuals {
             .as_ref()
             .is_some_and(|current| current.tab_id == context.tab_id);
         self.context = Some(context);
+        self.hydrated_entries = None;
         if !same_tab {
             self.values.clear();
             self.errors.clear();
@@ -255,6 +274,7 @@ impl CodeLinesColumnVisuals {
         let had_location = self.location_key.is_some();
         self.store_current_directory();
         self.location_key = new_key.clone();
+        self.hydrated_entries = None;
         if let Some(key) = new_key {
             if let Some(snapshot) = self.directory_cache.get(&key).cloned() {
                 self.values = snapshot.values;
@@ -271,6 +291,28 @@ impl CodeLinesColumnVisuals {
             self.admissions.clear();
         }
         true
+    }
+
+    /// Hydrate once per immutable listing, rather than scanning it every UI tick.
+    pub fn hydrate_snapshot(
+        &mut self,
+        snapshot: Option<&explorer_model::DirectorySnapshot>,
+    ) -> bool {
+        let Some(snapshot) = snapshot else {
+            self.hydrated_entries = None;
+            return false;
+        };
+        let entries = snapshot.shared_entries();
+        if self
+            .hydrated_entries
+            .as_ref()
+            .is_some_and(|previous| Arc::ptr_eq(previous, &entries))
+        {
+            return false;
+        }
+        let changed = self.hydrate_items(entries.iter().map(|entry| entry.id.clone()));
+        self.hydrated_entries = Some(entries);
+        changed
     }
 
     pub fn hydrate_items(&mut self, item_ids: impl IntoIterator<Item = ShellItemId>) -> bool {
@@ -303,6 +345,7 @@ impl CodeLinesColumnVisuals {
     }
 
     pub fn clear_directory_cache(&mut self) {
+        self.hydrated_entries = None;
         if let Some(key) = self.location_key.as_ref() {
             self.directory_cache.remove(key);
             self.directory_lru.retain(|cached| cached != key);
@@ -446,6 +489,68 @@ pub fn is_supported_code_lines_descriptor(descriptor: &ColumnDescriptor) -> bool
 mod tests {
     use super::*;
     use explorer_model::{Generation, TabId};
+
+    #[test]
+    fn snapshot_hydration_skips_idle_ticks_and_revisits_changed_listings() {
+        let mut visuals = CodeLinesColumnVisuals::new(CodeLinesColumnConfigV1::default());
+        let id = ShellItemId::from_provider_bytes([44]).unwrap();
+        let mut listing = explorer_model::DirectorySnapshot::default();
+        let entry = explorer_model::FileEntry {
+            id: id.clone(),
+            location: LocationDescriptor::file_system(r"C:\fixture\test.rs"),
+            display_name: "test.rs".into(),
+            is_container: false,
+            metadata: Default::default(),
+        };
+        listing.upsert(entry.clone());
+        visuals.remember_error(id.clone(), "cached".into());
+        assert!(visuals.hydrate_snapshot(Some(&listing)));
+        visuals.errors.clear();
+        assert!(!visuals.hydrate_snapshot(Some(&listing.clone())));
+        assert!(
+            visuals.errors.is_empty(),
+            "unchanged listing must not hydrate again"
+        );
+        let mut updated = entry;
+        updated.display_name = "renamed.rs".into();
+        listing.upsert(updated);
+        assert!(visuals.hydrate_snapshot(Some(&listing)));
+        visuals.errors.clear();
+        visuals.begin_context(RequestContext::new(TabId::new(), Generation::new(1)));
+        assert!(
+            visuals.hydrate_snapshot(Some(&listing)),
+            "new context rehydrates cached items"
+        );
+        visuals.clear_directory_cache();
+        visuals.errors.clear();
+        assert!(
+            !visuals.hydrate_snapshot(Some(&listing)),
+            "explicit refresh must not revive invalidated data"
+        );
+    }
+
+    #[test]
+    fn render_snapshot_preserves_cells_without_copying_history() {
+        let mut visuals = CodeLinesColumnVisuals::new(CodeLinesColumnConfigV1::default());
+        let request = RequestContext::new(TabId::new(), Generation::new(1));
+        let id = ShellItemId::from_provider_bytes([1]).unwrap();
+        visuals.begin_context(request.clone());
+        visuals.activate_location(Some(&LocationDescriptor::FileSystem("C:\\one".into())));
+        visuals.remember_error(id.clone(), "unavailable".into());
+        visuals.hydrate_items([id.clone()]);
+        visuals.set_admission(id, Some(FolderAdmissionStateV1::Pending));
+        visuals.store_current_directory();
+        let snapshot = visuals.render_snapshot();
+        assert_eq!(snapshot.values, visuals.values);
+        assert_eq!(snapshot.errors, visuals.errors);
+        assert_eq!(snapshot.admissions, visuals.admissions);
+        assert_eq!(snapshot.context, visuals.context);
+        assert!(snapshot.directory_cache.is_empty());
+        assert!(snapshot.item_cache.is_empty());
+        assert!(snapshot.item_error_cache.is_empty());
+        assert!(!visuals.directory_cache.is_empty());
+        assert!(!visuals.item_error_cache.is_empty());
+    }
 
     #[test]
     fn descriptor_uses_exact_integer_background_batch_semantics() {

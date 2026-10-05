@@ -39,10 +39,22 @@ pub struct MftEntryV1 {
     pub is_directory: bool,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub struct MftIndexV1 {
-    pub entries: BTreeMap<u64, MftEntryV1>,
+    entries: BTreeMap<u64, MftEntryV1>,
     children: BTreeMap<u64, Vec<u64>>,
+    memory_cache: std::sync::OnceLock<MftIndexMemoryBreakdownV1>,
+}
+
+impl Clone for MftIndexV1 {
+    fn clone(&self) -> Self {
+        // String/Vec cloning can change capacities, so recompute for the copy.
+        Self {
+            entries: self.entries.clone(),
+            children: self.children.clone(),
+            memory_cache: Default::default(),
+        }
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -248,10 +260,14 @@ fn add_aggregate(target: &mut MftAggregateV1, source: MftAggregateV1) {
 }
 
 impl MftIndexV1 {
+    pub fn entries(&self) -> &BTreeMap<u64, MftEntryV1> {
+        &self.entries
+    }
     pub fn from_entries(entries: BTreeMap<u64, MftEntryV1>) -> Self {
         Self::from_entries_cancelled(entries, || false).unwrap_or_else(|error| {
             tracing::error!(%error, "in-memory MFT construction failed");
             Self {
+                memory_cache: Default::default(),
                 entries: BTreeMap::new(),
                 children: BTreeMap::new(),
             }
@@ -274,7 +290,11 @@ impl MftIndexV1 {
                     .push(entry.reference);
             }
         }
-        Ok(Self { entries, children })
+        Ok(Self {
+            entries,
+            children,
+            memory_cache: Default::default(),
+        })
     }
 
     pub fn try_from_entries(entries: BTreeMap<u64, MftEntryV1>) -> Result<Self, String> {
@@ -348,6 +368,7 @@ impl MftIndexV1 {
     /// Persisted records are individually removable acceleration data. Keep
     /// one indivisible record even when it alone exceeds the configured cap.
     pub fn trim_persisted_to_bytes(&mut self, limit: usize) -> bool {
+        self.memory_cache.take();
         let mut trimmed = false;
         while self.serialized_bytes() > limit && self.entries.len() > 1 {
             let Some(reference) = self.entries.keys().next_back().copied() else {
@@ -364,6 +385,7 @@ impl MftIndexV1 {
     }
 
     pub fn trim_file_data_to_bytes(&mut self, limit: usize) -> bool {
+        self.memory_cache.take();
         let mut trimmed = false;
         let mut used = self
             .entries
@@ -385,19 +407,38 @@ impl MftIndexV1 {
     }
 
     pub fn trim_volume_index_to_bytes(&mut self, limit: usize) -> bool {
-        let mut trimmed = false;
-        while self.memory_breakdown().volume_index_bytes > limit && self.entries.len() > 1 {
+        self.memory_cache.take();
+        let mut removed = HashSet::new();
+        let mut child_capacity_bytes = self
+            .children
+            .values()
+            .map(|references| references.capacity().saturating_mul(8))
+            .sum::<usize>();
+        // Retaining references does not shrink Vec capacity. Track the capacity
+        // of removed child lists and tree lengths instead of walking the entire
+        // index once for every evicted record (quadratic on large volumes).
+        while estimate_btree_bytes::<u64, MftEntryV1>(self.entries.len())
+            .saturating_add(estimate_btree_bytes::<u64, Vec<u64>>(self.children.len()))
+            .saturating_add(child_capacity_bytes)
+            > limit
+            && self.entries.len() > 1
+        {
             let Some(reference) = self.entries.keys().next_back().copied() else {
                 break;
             };
             self.entries.remove(&reference);
-            self.children.remove(&reference);
-            for children in self.children.values_mut() {
-                children.retain(|child| *child != reference);
+            if let Some(children) = self.children.remove(&reference) {
+                child_capacity_bytes =
+                    child_capacity_bytes.saturating_sub(children.capacity().saturating_mul(8));
             }
-            trimmed = true;
+            removed.insert(reference);
         }
-        trimmed
+        if !removed.is_empty() {
+            for children in self.children.values_mut() {
+                children.retain(|child| !removed.contains(child));
+            }
+        }
+        !removed.is_empty()
     }
     pub fn estimated_resident_bytes(&self) -> usize {
         let breakdown = self.memory_breakdown();
@@ -407,6 +448,10 @@ impl MftIndexV1 {
     }
 
     pub fn memory_breakdown(&self) -> MftIndexMemoryBreakdownV1 {
+        *self.memory_cache.get_or_init(|| self.measure_memory())
+    }
+
+    fn measure_memory(&self) -> MftIndexMemoryBreakdownV1 {
         let entries = estimate_btree_bytes::<u64, MftEntryV1>(self.entries.len());
         let names = self
             .entries
@@ -434,6 +479,24 @@ impl MftIndexV1 {
             return Err("MFT topology change requires recovery".to_owned());
         }
 
+        let memory_before = self.memory_breakdown();
+        let entries_before = self.entries.len();
+        let children_before = self.children.len();
+        let name_before = self
+            .entries
+            .get(&change.reference)
+            .map_or(0, |entry| entry.name.capacity());
+        let mut touched = vec![change.reference, change.parent_reference];
+        if let Some(old) = self.entries.get(&change.reference) {
+            touched.push(old.parent_reference);
+        }
+        touched.sort_unstable();
+        touched.dedup();
+        let capacity_before = touched
+            .iter()
+            .filter_map(|reference| self.children.get(reference))
+            .map(|children| children.capacity() * 8)
+            .sum::<usize>();
         let mut affected = self.ancestor_references(change.reference);
         if let Some(old) = self.entries.get(&change.reference).cloned()
             && let Some(children) = self.children.get_mut(&old.parent_reference)
@@ -469,6 +532,31 @@ impl MftIndexV1 {
         }
         affected.sort_unstable();
         affected.dedup();
+        let capacity_after = touched
+            .iter()
+            .filter_map(|reference| self.children.get(reference))
+            .map(|children| children.capacity() * 8)
+            .sum::<usize>();
+        let name_after = self
+            .entries
+            .get(&change.reference)
+            .map_or(0, |entry| entry.name.capacity());
+        let memory = MftIndexMemoryBreakdownV1 {
+            volume_index_bytes: memory_before
+                .volume_index_bytes
+                .saturating_sub(estimate_btree_bytes::<u64, MftEntryV1>(entries_before))
+                .saturating_sub(estimate_btree_bytes::<u64, Vec<u64>>(children_before))
+                .saturating_sub(capacity_before)
+                .saturating_add(estimate_btree_bytes::<u64, MftEntryV1>(self.entries.len()))
+                .saturating_add(estimate_btree_bytes::<u64, Vec<u64>>(self.children.len()))
+                .saturating_add(capacity_after),
+            file_data_bytes: memory_before
+                .file_data_bytes
+                .saturating_sub(name_before)
+                .saturating_add(name_after),
+        };
+        self.memory_cache.take();
+        let _ = self.memory_cache.set(memory);
         Ok(affected)
     }
 
@@ -1034,7 +1122,11 @@ pub fn read_volume_index_bounded(
                 .push(entry.reference);
         }
     }
-    let mut index = MftIndexV1 { entries, children };
+    let mut index = MftIndexV1 {
+        entries,
+        children,
+        memory_cache: Default::default(),
+    };
     if index.memory_breakdown().volume_index_bytes > volume_limit_bytes {
         diagnostics.volume_limit_hit = true;
         index.trim_volume_index_to_bytes(volume_limit_bytes);
@@ -1309,9 +1401,61 @@ mod tests {
             children.entry(1).or_insert_with(Vec::new).push(reference);
         }
         MftIndexV1 {
+            memory_cache: Default::default(),
             entries: records,
             children,
         }
+    }
+
+    #[test]
+    fn incremental_memory_matches_full_measurement_after_mutations_and_clones() {
+        use crate::mft_journal::{MftChangeKindV2, MftChangeV2};
+        let mut index = budget_fixture(128);
+        for ordinal in 0..256 {
+            let reference = 3 + ordinal % 126;
+            let change = MftChangeV2 {
+                kind: if ordinal % 5 == 0 {
+                    MftChangeKindV2::Delete
+                } else {
+                    MftChangeKindV2::Upsert
+                },
+                reference,
+                parent_reference: if ordinal % 3 == 0 { 1 } else { 2 },
+                name: "n".repeat((1 + ordinal % 80) as usize),
+                logical_bytes: 0,
+                allocated_bytes: 0,
+                is_directory: false,
+                reason: 0,
+            };
+            index.apply_change(&change).unwrap();
+            assert_eq!(index.memory_breakdown(), index.measure_memory());
+        }
+        let cloned = index.clone();
+        assert_eq!(cloned.memory_breakdown(), cloned.measure_memory());
+        index.trim_file_data_to_bytes(64);
+        assert_eq!(index.memory_breakdown(), index.measure_memory());
+        index.trim_volume_index_to_bytes(4096);
+        assert_eq!(index.memory_breakdown(), index.measure_memory());
+        index.trim_persisted_to_bytes(128);
+        assert_eq!(index.memory_breakdown(), index.measure_memory());
+    }
+
+    #[test]
+    fn large_volume_trim_keeps_budget_accounting_and_child_links_consistent() {
+        let mut index = budget_fixture(20_000);
+        let started = std::time::Instant::now();
+        assert!(index.trim_volume_index_to_bytes(300_000));
+        assert!(index.memory_breakdown().volume_index_bytes <= 300_000);
+        assert!(index.entries.contains_key(&1));
+        assert!(
+            index
+                .children
+                .values()
+                .flatten()
+                .all(|reference| index.entries.contains_key(reference))
+        );
+        index.validate_topology().unwrap();
+        println!("20,000-record budget trim: {:?}", started.elapsed());
     }
 
     #[test]
@@ -1534,6 +1678,7 @@ mod tests {
             is_directory: false,
         };
         let index = MftIndexV1 {
+            memory_cache: Default::default(),
             entries: BTreeMap::from([(entry.reference, entry.clone())]),
             children: BTreeMap::from([(entry.parent_reference, vec![entry.reference])]),
         };
@@ -1611,6 +1756,7 @@ mod tests {
             is_directory: false,
         };
         let index = MftIndexV1 {
+            memory_cache: Default::default(),
             entries: BTreeMap::from([(1, root), (2, file)]),
             children: BTreeMap::from([(1, vec![2])]),
         };
@@ -1659,7 +1805,11 @@ mod tests {
             children.get_mut(&1).unwrap().push(directory);
             children.insert(directory, vec![file]);
         }
-        let index = MftIndexV1 { entries, children };
+        let index = MftIndexV1 {
+            entries,
+            children,
+            memory_cache: Default::default(),
+        };
         let aggregates = MftAggregateIndexV1::build(&index, 64).unwrap();
         assert_eq!(aggregates.worker_count(), 8);
         assert_eq!(aggregates.get(2).unwrap().logical_bytes, 2);
@@ -1674,6 +1824,7 @@ mod tests {
     #[test]
     fn delta_move_reports_old_and_new_ancestor_chains() {
         let mut index = MftIndexV1 {
+            memory_cache: Default::default(),
             entries: BTreeMap::from([
                 (
                     1,

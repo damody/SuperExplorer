@@ -206,9 +206,18 @@ pub struct FolderSizeColumnVisuals {
     directory_lru: VecDeque<String>,
     item_cache: HashMap<ShellItemId, FolderSizeValueV1>,
     item_lru: VecDeque<ShellItemId>,
+    refresh_barriers: HashMap<TabId, Generation>,
 }
 
 impl FolderSizeColumnVisuals {
+    /// Only current cells cross the render boundary; history stays with the host.
+    pub fn render_snapshot(&self) -> Self {
+        let mut snapshot = Self::new(self.config.clone());
+        snapshot.context = self.context.clone();
+        snapshot.values = self.values.clone();
+        snapshot
+    }
+
     pub fn new(config: VisualColumnConfigV1) -> Self {
         Self {
             config,
@@ -220,6 +229,7 @@ impl FolderSizeColumnVisuals {
             directory_lru: VecDeque::new(),
             item_cache: HashMap::new(),
             item_lru: VecDeque::new(),
+            refresh_barriers: HashMap::new(),
         }
     }
 
@@ -259,6 +269,10 @@ impl FolderSizeColumnVisuals {
     }
 
     pub fn clear_values(&mut self) {
+        if let Some(context) = self.context.as_ref() {
+            self.refresh_barriers
+                .insert(context.tab_id, context.generation);
+        }
         if let Some(key) = self.location_key.as_ref() {
             self.directory_cache.remove(key);
             self.directory_lru.retain(|cached| cached != key);
@@ -349,6 +363,13 @@ impl FolderSizeColumnVisuals {
     }
 
     pub fn insert_result(&mut self, result: FolderSizeResultV1) -> bool {
+        if self
+            .refresh_barriers
+            .get(&result.context.tab_id)
+            .is_some_and(|generation| result.context.generation.value() <= generation.value())
+        {
+            return false;
+        }
         let key = FolderSizeSnapshotKeyV1::from(&result.context);
         let rejected_partial = result.partial;
         let value = FolderSizeValueV1 {
@@ -574,6 +595,35 @@ pub fn is_supported_folder_size_descriptor(descriptor: &ColumnDescriptor) -> boo
 mod tests {
     use super::*;
 
+    #[test]
+    fn render_snapshot_preserves_cells_without_copying_history() {
+        let mut visuals = FolderSizeColumnVisuals::new(VisualColumnConfigV1::default());
+        let request = context(TabId::new(), 1);
+        visuals.begin_context(&request);
+        visuals.activate_location(Some(&LocationDescriptor::FileSystem("C:\\one".into())));
+        visuals.insert_result(FolderSizeResultV1 {
+            context: request.clone(),
+            item_id: item(1),
+            exact_bytes: Some(42),
+            directory_facts: None,
+            partial: false,
+            error: None,
+        });
+        visuals.store_current_directory();
+        let snapshot = Arc::new(visuals.render_snapshot());
+        assert_eq!(snapshot.values, visuals.values);
+        assert_eq!(snapshot.context, visuals.context);
+        assert!(snapshot.snapshots.is_empty());
+        assert!(snapshot.directory_cache.is_empty());
+        assert!(snapshot.item_cache.is_empty());
+        assert!(!visuals.directory_cache.is_empty());
+        assert!(!visuals.item_cache.is_empty());
+        let row = Arc::clone(&snapshot);
+        assert!(Arc::ptr_eq(&snapshot, &row));
+        visuals.clear_values();
+        assert_eq!(snapshot.value_for(&item(1)), Some(42));
+    }
+
     fn context(tab_id: TabId, generation: u64) -> explorer_model::RequestContext {
         explorer_model::RequestContext::new(tab_id, Generation::new(generation))
     }
@@ -725,6 +775,37 @@ mod tests {
         assert!(visuals.hydrate_items([item(3)]));
         assert_eq!(visuals.value_for(&item(3)), Some(99));
         assert_eq!(visuals.file_count_for(&item(3)), Some(4));
+    }
+
+    #[test]
+    fn manual_refresh_rejects_late_pre_deletion_sizes_and_counts() {
+        let tab = TabId::new();
+        let id = item(92);
+        let old = context(tab, 1);
+        let fresh = context(tab, 2);
+        let result = |context, bytes, files| FolderSizeResultV1 {
+            context,
+            item_id: id.clone(),
+            exact_bytes: Some(bytes),
+            directory_facts: Some(DirectoryFactsV1 {
+                mft_generation: files,
+                file_count: files,
+                folder_count: 1,
+            }),
+            partial: false,
+            error: None,
+        };
+        let mut visuals = FolderSizeColumnVisuals::new(VisualColumnConfigV1::default());
+        visuals.begin_context(&old);
+        visuals.insert_result(result(old.clone(), 858, 100));
+        visuals.clear_values();
+        // Queued results can arrive before the next render establishes context.
+        assert!(!visuals.insert_result(result(old.clone(), 858, 100)));
+        visuals.begin_context(&fresh);
+        assert!(visuals.insert_result(result(fresh, 175, 20)));
+        assert!(!visuals.insert_result(result(old, 858, 100)));
+        assert_eq!(visuals.value_for(&id), Some(175));
+        assert_eq!(visuals.file_count_for(&id), Some(20));
     }
 
     #[test]

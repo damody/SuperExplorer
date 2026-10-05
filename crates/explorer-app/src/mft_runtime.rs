@@ -86,15 +86,34 @@ impl VolumeMemoryRuntimeV1 {
             return Err("MFT observation is non-contiguous or ambiguous".to_owned());
         }
         Arc::make_mut(&mut self.index).apply_change(&change)?;
-        self.pending.insert(change.reference, change);
+        let change_bytes = 49_usize.saturating_add(change.name.len());
+        if let Some(previous) = self.pending.insert(change.reference, change) {
+            self.pending_bytes = self
+                .pending_bytes
+                .saturating_sub(49_usize.saturating_add(previous.name.len()));
+        }
+        self.pending_bytes = self.pending_bytes.saturating_add(change_bytes);
         self.observed.next_usn = next_usn;
         self.observed.generation = self.observed.generation.saturating_add(1);
-        self.recount_pending_bytes();
         Ok(())
     }
 
     pub const fn is_exact(&self) -> bool {
         self.exact
+    }
+
+    /// A complete journal response can contain only intentionally ignored
+    /// cache-file events. Its cursor must still advance so foreground queries
+    /// can prove they include all changes preceding their fixed watermark.
+    pub fn advance_exact_observed_cursor(&mut self, next_usn: i64) -> Result<(), String> {
+        if !self.exact || next_usn < self.observed.next_usn {
+            return Err("MFT exact cursor advance is non-contiguous".to_owned());
+        }
+        if next_usn > self.observed.next_usn {
+            self.observed.next_usn = next_usn;
+            self.observed.generation = self.observed.generation.saturating_add(1);
+        }
+        Ok(())
     }
 
     pub fn has_pending(&self) -> bool {
@@ -186,6 +205,21 @@ mod tests {
         }
     }
 
+    #[test]
+    fn ignored_journal_response_advances_exact_cursor_without_mutating_the_index() {
+        let mut runtime = VolumeMemoryRuntimeV1::new(base(), cursor());
+        let before = Arc::clone(&runtime.index);
+        runtime.advance_exact_observed_cursor(20).unwrap();
+        assert_eq!(runtime.observed.next_usn, 20);
+        assert_eq!(runtime.observed.generation, 1);
+        assert!(Arc::ptr_eq(&before, &runtime.index));
+        assert_eq!(runtime.pending_count(), 0);
+        assert!(runtime.advance_exact_observed_cursor(19).is_err());
+        runtime.mark_inexact();
+        assert!(runtime.advance_exact_observed_cursor(30).is_err());
+        assert_eq!(runtime.observed.next_usn, 20);
+    }
+
     fn base() -> MftIndexV1 {
         MftIndexV1::from_entries(BTreeMap::from([(
             5,
@@ -217,7 +251,7 @@ mod tests {
     fn live_index_advances_while_durable_cursor_waits() {
         let mut runtime = VolumeMemoryRuntimeV1::new(base(), cursor());
         runtime.observe(change(20, "live"), 11).unwrap();
-        assert!(runtime.index.entries.contains_key(&20));
+        assert!(runtime.index.entries().contains_key(&20));
         assert_eq!(runtime.durable.next_usn, 10);
         assert_eq!(runtime.observed.next_usn, 11);
         assert!(runtime.has_pending());
@@ -262,6 +296,28 @@ mod tests {
     }
 
     #[test]
+    fn coalesced_pending_bytes_match_capture_after_replacements() {
+        let mut runtime = VolumeMemoryRuntimeV1::new(base(), cursor());
+        for (reference, name) in [(20, "long original name"), (21, "other"), (20, "x")] {
+            runtime.observe(change(reference, name), 11).unwrap();
+            let expected: usize = runtime
+                .pending
+                .values()
+                .map(|change| 49 + change.name.len())
+                .sum();
+            assert_eq!(runtime.pending_bytes(), expected);
+        }
+        let batch = runtime.capture().unwrap();
+        assert_eq!(runtime.pending_bytes(), 0);
+        runtime.observe(change(20, "newer"), 12).unwrap();
+        runtime.commit_failed(batch);
+        assert_eq!(
+            runtime.pending_bytes(),
+            49 + "newer".len() + 49 + "other".len()
+        );
+    }
+
+    #[test]
     fn ambiguity_marks_state_inexact_and_discards_pending_detail() {
         let mut runtime = VolumeMemoryRuntimeV1::new(base(), cursor());
         runtime.observe(change(20, "valid"), 11).unwrap();
@@ -294,7 +350,7 @@ mod tests {
 
         runtime.evict_index_for_active_volume_paging();
 
-        assert!(runtime.index.entries.is_empty());
+        assert!(runtime.index.entries().is_empty());
         assert_eq!(runtime.durable, durable);
         assert_eq!(runtime.observed, observed);
         assert!(!runtime.is_exact());

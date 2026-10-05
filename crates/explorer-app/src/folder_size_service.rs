@@ -522,6 +522,7 @@ pub(crate) struct FolderSizeServiceV1 {
     snapshots: HashMap<SnapshotLeaseKeyV1, Arc<FolderSnapshotV1>>,
     modified_snapshots: HashMap<PathBuf, (u128, Arc<FolderSnapshotV1>)>,
     aggregate_snapshot_roots: HashSet<PathBuf>,
+    invalidated_trees: HashSet<PathBuf>,
     leases: HashMap<SnapshotLeaseKeyV1, usize>,
     lru: VecDeque<SnapshotLeaseKeyV1>,
     capacity: usize,
@@ -552,12 +553,25 @@ impl FolderSizeServiceV1 {
             ..Self::default()
         }
     }
-    /// Drops generation-bound publications for a manual refresh while keeping
-    /// a complete modified-date record eligible for the correction contract:
-    /// an unchanged folder may be rebound to the new generation without I/O.
-    /// A watcher change invalidates every cached requested root that is an
-    /// ancestor of the changed path. Descendant cache roots are also removed
-    /// for directory rename/removal events where their old identity vanished.
+    /// A directory's own mtime does not track edits/deletions deeper in its
+    /// subtree. Manual refresh must retire both ancestors and descendants,
+    /// including persistent records that have not been loaded in this session.
+    pub(crate) fn invalidate_tree(&mut self, directory: &Path) -> Result<(), String> {
+        let root = directory
+            .canonicalize()
+            .map_err(|error| error.to_string())?;
+        let affected = |path: &Path| path.starts_with(&root) || root.starts_with(path);
+        self.snapshots
+            .retain(|key, _| !affected(&key.canonical_root));
+        self.modified_snapshots.retain(|path, _| !affected(path));
+        self.aggregate_snapshot_roots.retain(|path| !affected(path));
+        self.lru.retain(|key| !affected(&key.canonical_root));
+        self.invalidated_trees
+            .retain(|path| !path.starts_with(&root));
+        self.invalidated_trees.insert(root);
+        Ok(())
+    }
+
     /// Aggregate-only path used by the Details Folder Size column. A valid MFT
     /// service index supplies a constant-time total and never materializes the
     /// Size Map tree or probes every descendant with filesystem metadata APIs.
@@ -605,7 +619,11 @@ impl FolderSizeServiceV1 {
             self.emit_validation_counters();
             return Ok(reused);
         }
-        if let Some(mut reused) = read_persistent_snapshot(&canonical_root, modified_stamp)
+        if !self
+            .invalidated_trees
+            .iter()
+            .any(|root| canonical_root.starts_with(root) || root.starts_with(&canonical_root))
+            && let Some(mut reused) = read_persistent_snapshot(&canonical_root, modified_stamp)
             && snapshot_has_complete_tree(&reused)
             && self.cached_snapshot_backend_is_current(&canonical_root, &reused)
         {
@@ -1279,6 +1297,75 @@ mod tests {
                 .unwrap()
                 .as_nanos()
         ))
+    }
+
+    #[test]
+    fn manual_refresh_recounts_deep_deletions_even_when_root_mtime_is_unchanged() {
+        let fixture = tempfile::tempdir().unwrap();
+        let unrelated = tempfile::tempdir().unwrap();
+        let saved = fixture.path().join("Saved");
+        let leaf = saved.join("nested").join("deep");
+        fs::create_dir_all(&leaf).unwrap();
+        fs::write(leaf.join("keep.bin"), vec![0_u8; 8192]).unwrap();
+        fs::write(leaf.join("delete.bin"), vec![0_u8; 32768]).unwrap();
+        fs::write(unrelated.path().join("other.bin"), vec![0_u8; 17]).unwrap();
+        let mut service = FolderSizeServiceV1::with_capacity(64);
+        let before = service
+            .snapshot_or_scan_recursive(&saved, 1, || false)
+            .unwrap();
+        assert_eq!(before.aggregate.recursive_bytes, 40960);
+        service
+            .snapshot_or_scan_recursive(fixture.path(), 1, || false)
+            .unwrap();
+        service
+            .snapshot_or_scan_recursive(&leaf, 1, || false)
+            .unwrap();
+        service
+            .snapshot_or_scan_recursive(unrelated.path(), 1, || false)
+            .unwrap();
+        let stamp = folder_modified_stamp(&saved.canonicalize().unwrap()).unwrap();
+        fs::remove_file(leaf.join("delete.bin")).unwrap();
+        assert_eq!(
+            folder_modified_stamp(&saved.canonicalize().unwrap()).unwrap(),
+            stamp
+        );
+        // This is the stale-cache path F5 must explicitly invalidate.
+        assert_eq!(
+            service
+                .snapshot_or_scan_recursive(&saved, 2, || false)
+                .unwrap()
+                .aggregate
+                .recursive_bytes,
+            40960
+        );
+        service.invalidate_tree(&saved).unwrap();
+        assert!(
+            !service
+                .modified_snapshots
+                .contains_key(&fixture.path().canonicalize().unwrap())
+        );
+        assert!(
+            !service
+                .modified_snapshots
+                .contains_key(&leaf.canonicalize().unwrap())
+        );
+        assert!(
+            service
+                .modified_snapshots
+                .contains_key(&unrelated.path().canonicalize().unwrap())
+        );
+        let after = service.snapshot_or_scan(&saved, 3, || false).unwrap();
+        assert_eq!(after.aggregate.recursive_bytes, 8192);
+        assert_eq!(after.aggregate.file_count, 1);
+        // The tree path must not resurrect the earlier persistent record.
+        assert_eq!(
+            service
+                .snapshot_or_scan(&saved, 4, || false)
+                .unwrap()
+                .aggregate
+                .recursive_bytes,
+            8192
+        );
     }
 
     #[test]

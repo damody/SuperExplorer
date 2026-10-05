@@ -1303,6 +1303,7 @@ const MFT_RETRY_BACKOFF: Duration = Duration::from_millis(200);
 #[derive(Default)]
 struct PendingFolderSizeWorkV1 {
     requests: Option<Vec<explorer_ui::folder_size_column::FolderSizeRequestV1>>,
+    invalidated_directories: Vec<PathBuf>,
     in_flight: HashMap<FolderSizeWorkIdentityV1, explorer_model::RequestId>,
     cancelled: HashSet<explorer_model::RequestId>,
     /// Visible folder the UI submitted most recently. Claimed batches prefer
@@ -1365,6 +1366,8 @@ fn mft_error_is_retryable(error: &str) -> bool {
         || error.contains("deadline exceeded")
         || error.contains("partial aggregate")
         || error.contains("mft query cancelled")
+        || error.contains("generation changed during query")
+        || error.contains("snapshot invalidated during query")
 }
 
 fn take_folder_size_batch(
@@ -1637,7 +1640,7 @@ impl ApplicationVisualColumnRuntimeV1 {
             .name("p0-folder-size-batch".to_owned())
             .spawn(move || {
                 loop {
-                    let batch = {
+                    let (batch, invalidated_directories) = {
                         let (lock, ready) = &*worker_pending;
                         let mut state = lock
                             .lock()
@@ -1647,10 +1650,10 @@ impl ApplicationVisualColumnRuntimeV1 {
                                 return;
                             }
                             let now = Instant::now();
-                            if state.requests.is_some()
+                            if !state.invalidated_directories.is_empty() || (state.requests.is_some()
                                 && state
                                     .retry_not_before
-                                    .is_none_or(|not_before| not_before <= now)
+                                    .is_none_or(|not_before| not_before <= now))
                             {
                                 state.retry_not_before = None;
                                 break;
@@ -1669,8 +1672,21 @@ impl ApplicationVisualColumnRuntimeV1 {
                                 .wait(state)
                                 .unwrap_or_else(std::sync::PoisonError::into_inner);
                         }
-                        take_folder_size_batch(&mut state, 256)
+                        (
+                            take_folder_size_batch(&mut state, 256),
+                            std::mem::take(&mut state.invalidated_directories),
+                        )
                     };
+                    if !invalidated_directories.is_empty() {
+                        let mut service = worker_snapshot_service
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner);
+                        for directory in invalidated_directories {
+                            if let Err(error) = service.invalidate_tree(&directory) {
+                                tracing::warn!(%error, path = %directory.display(), "folder refresh cache invalidation failed");
+                            }
+                        }
+                    }
                     if batch.is_empty() {
                         continue;
                     }
@@ -1895,7 +1911,21 @@ impl explorer_ui::folder_size_column::VisualColumnRuntimePortV1
         ready.notify_one();
     }
 
-    fn invalidate_directory_cache(&self, _directory: &Path) {}
+    fn invalidate_directory_cache(&self, directory: &Path) {
+        let (lock, ready) = &*self.pending;
+        let mut state = lock
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if !state.stopped
+            && !state
+                .invalidated_directories
+                .iter()
+                .any(|path| path == directory)
+        {
+            state.invalidated_directories.push(directory.to_path_buf());
+            ready.notify_one();
+        }
+    }
 
     fn drain_folder_size_results(
         &self,
@@ -1939,11 +1969,10 @@ impl Drop for ApplicationVisualColumnRuntimeV1 {
 }
 
 struct ApplicationCodeLinesRuntimeV1 {
+    worker: Mutex<Option<std::thread::JoinHandle<()>>>,
     pending: Arc<(Mutex<PendingCodeLinesWorkV1>, Condvar)>,
     request_epoch: Arc<AtomicU64>,
     results: Mutex<mpsc::Receiver<explorer_ui::code_lines_column::CodeLinesResultV1>>,
-    cached_results: Mutex<Vec<explorer_ui::code_lines_column::CodeLinesResultV1>>,
-    cache: Arc<Mutex<HostExtensionColumnCacheV1<CodeLinesCachedValueV1>>>,
     renderer: AsyncCellRendererV1,
     mode: BatchDetailsColumnModeV1,
     option_package_id: String,
@@ -2061,6 +2090,7 @@ enum BatchDetailsColumnModeV1 {
 #[derive(Default)]
 struct PendingCodeLinesWorkV1 {
     requests: Option<Vec<explorer_ui::code_lines_column::CodeLinesRequestV1>>,
+    invalidated_directories: Vec<PathBuf>,
     /// The generation currently being processed or queued. Incremental
     /// requests for this same visible folder append instead of cancelling
     /// earlier files that have not reached the provider yet.
@@ -2107,7 +2137,7 @@ impl ApplicationCodeLinesRuntimeV1 {
         let worker_epoch = request_epoch.clone();
         let (result_tx, result_rx) =
             mpsc::sync_channel::<explorer_ui::code_lines_column::CodeLinesResultV1>(1_024);
-        std::thread::Builder::new()
+        let worker = std::thread::Builder::new()
             .name("rust-tokei-code-lines".to_owned())
             .spawn(move || {
                 let Ok(config) = explorer_extension_host::ExtensionResultBufferConfigV1::try_new(
@@ -2127,12 +2157,15 @@ impl ApplicationCodeLinesRuntimeV1 {
                 };
                 let runtime = explorer_extension_host::ExtensionJobRuntimeV1::new(config);
                 loop {
-                    let requests = {
+                    let (requests, invalidated_directories, epoch) = {
                         let (lock, ready) = &*worker_pending;
                         let mut state = lock
                             .lock()
                             .unwrap_or_else(std::sync::PoisonError::into_inner);
-                        while state.requests.is_none() && !state.stopped {
+                        while state.requests.is_none()
+                            && state.invalidated_directories.is_empty()
+                            && !state.stopped
+                        {
                             state = ready
                                 .wait(state)
                                 .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -2140,9 +2173,35 @@ impl ApplicationCodeLinesRuntimeV1 {
                         if state.stopped {
                             return;
                         }
-                        state.requests.take().unwrap_or_default()
+                        (
+                            state.requests.take().unwrap_or_default(),
+                            std::mem::take(&mut state.invalidated_directories),
+                            worker_epoch.load(Ordering::Acquire),
+                        )
                     };
-                    let epoch = worker_epoch.load(Ordering::Acquire);
+                    // Metadata, persistent reads and cache-window pruning can
+                    // all block on disk. Keep them off the GPUI thread, and
+                    // release the request queue before acquiring the cache.
+                    if !invalidated_directories.is_empty()
+                        && let Ok(mut cache) = worker_cache.lock()
+                    {
+                        for directory in invalidated_directories {
+                            cache.invalidate_directory(&directory);
+                        }
+                    }
+                    if worker_epoch.load(Ordering::Acquire) != epoch || requests.is_empty() {
+                        continue;
+                    }
+                    let (hits, requests) =
+                        partition_batch_details_cache_hits(&worker_cache, mode, requests);
+                    for hit in hits {
+                        if worker_epoch.load(Ordering::Acquire) != epoch {
+                            break;
+                        }
+                        if !publish_code_lines_result(&result_tx, hit) {
+                            return;
+                        }
+                    }
                     let mut prepared = Vec::new();
                     let mut prepared_bytes = 0_usize;
                     for request in requests {
@@ -2254,11 +2313,10 @@ impl ApplicationCodeLinesRuntimeV1 {
             })
             .context("failed to start Rust tokei Code lines worker")?;
         Ok(Arc::new(Self {
+            worker: Mutex::new(Some(worker)),
             pending,
             request_epoch,
             results: Mutex::new(result_rx),
-            cached_results: Mutex::new(Vec::new()),
-            cache,
             renderer: AsyncCellRendererV1::start(
                 renderer,
                 match mode {
@@ -3034,6 +3092,43 @@ fn parse_code_lines_value(
 }
 
 impl explorer_ui::code_lines_column::CodeLinesRuntimePortV1 for ApplicationCodeLinesRuntimeV1 {
+    fn visible_entries_only(&self) -> bool {
+        self.mode == BatchDetailsColumnModeV1::LockOwner
+    }
+
+    fn shutdown(&self) {
+        self.request_epoch.fetch_add(1, Ordering::AcqRel);
+        {
+            let (lock, ready) = &*self.pending;
+            let mut state = lock
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            state.stopped = true;
+            state.active = None;
+            state.requests = None;
+            ready.notify_one();
+        }
+        let worker = self
+            .worker
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take();
+        if let Some(worker) = worker {
+            // Publication uses a bounded channel. Drain it during shutdown so
+            // a callback can finish even after the UI stops consuming results.
+            while !worker.is_finished() {
+                let _ = self
+                    .results
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .recv_timeout(Duration::from_millis(10));
+            }
+            if worker.join().is_err() {
+                tracing::error!("Details column worker panicked during shutdown");
+            }
+        }
+    }
+
     fn config(&self) -> explorer_ui::code_lines_column::CodeLinesColumnConfigV1 {
         let mut config = explorer_ui::code_lines_column::CodeLinesColumnConfigV1::default();
         config.option_package_id.clone_from(&self.option_package_id);
@@ -3054,11 +3149,7 @@ impl explorer_ui::code_lines_column::CodeLinesRuntimePortV1 for ApplicationCodeL
         &self,
         requests: Vec<explorer_ui::code_lines_column::CodeLinesRequestV1>,
     ) {
-        let (hits, misses) = partition_batch_details_cache_hits(&self.cache, self.mode, requests);
-        if let Ok(mut cached_results) = self.cached_results.lock() {
-            cached_results.extend(hits);
-        }
-        let Some(first) = misses.first() else {
+        let Some(first) = requests.first() else {
             return;
         };
         let active = (first.context.tab_id, first.context.generation);
@@ -3066,13 +3157,16 @@ impl explorer_ui::code_lines_column::CodeLinesRuntimePortV1 for ApplicationCodeL
         let mut state = lock
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if state.stopped {
+            return;
+        }
         if state.active != Some(active) {
             self.request_epoch.fetch_add(1, Ordering::AcqRel);
             state.active = Some(active);
-            state.requests = Some(misses);
+            state.requests = Some(requests);
         } else {
             let queued = state.requests.get_or_insert_with(Vec::new);
-            for request in misses {
+            for request in requests {
                 if request.context.tab_id == active.0
                     && request.context.generation == active.1
                     && !queued.iter().any(|queued_request| {
@@ -3101,20 +3195,25 @@ impl explorer_ui::code_lines_column::CodeLinesRuntimePortV1 for ApplicationCodeL
     }
 
     fn invalidate_directory_cache(&self, directory: &Path) {
-        if let Ok(mut cache) = self.cache.lock() {
-            cache.invalidate_directory(directory);
+        let (lock, ready) = &*self.pending;
+        let mut state = lock
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if !state.stopped
+            && !state
+                .invalidated_directories
+                .iter()
+                .any(|path| path == directory)
+        {
+            state.invalidated_directories.push(directory.to_path_buf());
+            ready.notify_one();
         }
     }
 
     fn drain_code_lines_results(&self) -> Vec<explorer_ui::code_lines_column::CodeLinesResultV1> {
-        let mut ready = self
-            .cached_results
+        self.results
             .lock()
-            .map_or_else(|_| Vec::new(), |mut results| std::mem::take(&mut *results));
-        if let Ok(results) = self.results.lock() {
-            ready.extend(results.try_iter());
-        }
-        ready
+            .map_or_else(|_| Vec::new(), |results| results.try_iter().collect())
     }
 
     fn drain_render_results(&self) -> bool {
@@ -4087,6 +4186,7 @@ impl FolderOptionsWindowControllerV1 {
 }
 
 struct ShutdownResources {
+    context_menu_broker: Option<explorer_extension_broker::BrokerClient>,
     diagnostics: DiagnosticsSession,
     extension_host: Option<explorer_extension_host::ExtensionHost>,
     loaded_extension_summary: Option<String>,
@@ -4367,6 +4467,7 @@ impl ApplicationLifecycle {
             });
         Ok(Self {
             resources: Arc::new(Mutex::new(ShutdownResources {
+                context_menu_broker: None,
                 diagnostics,
                 extension_host: Some(extension_host),
                 loaded_extension_summary,
@@ -4465,12 +4566,16 @@ impl ApplicationLifecycle {
             crate::remote_service::configured_network_navigation_places(),
         );
         crate::remote_service::start_adb_navigation_refresh();
-        let shell_service: Arc<dyn explorer_model::ExplorerService> =
-            Arc::new(crate::brokered_service::BrokeredExplorerService::new(
-                Arc::clone(&shell_sta),
-                broker_client,
-                self.take_virtual_folder_runtime()?,
-            ));
+        let brokered_service = Arc::new(crate::brokered_service::BrokeredExplorerService::new(
+            Arc::clone(&shell_sta),
+            broker_client,
+            self.take_virtual_folder_runtime()?,
+        ));
+        self.resources
+            .lock()
+            .map_err(|_| anyhow::anyhow!("application lifecycle mutex was poisoned"))?
+            .context_menu_broker = Some(brokered_service.context_menu_broker());
+        let shell_service: Arc<dyn explorer_model::ExplorerService> = brokered_service;
         let remote_runtime = crate::remote_service::configured_remote_runtime();
         let sftp_login_runtime = Arc::clone(&remote_runtime);
         let shell_service: Arc<dyn explorer_model::ExplorerService> =
@@ -4550,8 +4655,8 @@ impl ApplicationLifecycle {
             .and_then(|value| value.parse::<u64>().ok())
             .map(Duration::from_millis);
         let visual_fixture = VisualFixtureConfig::from_environment()?;
-        let show_splash =
-            crate::branding::should_show_splash(visual_fixture.is_some(), auto_close.is_some());
+        let show_splash = std::env::var_os("SUPEREXPLORER_BACKGROUND").is_none()
+            && crate::branding::should_show_splash(visual_fixture.is_some(), auto_close.is_some());
         let initial_location = if this_pc {
             Some(crate::explorer_import::this_pc_entry())
         } else {
@@ -6753,6 +6858,9 @@ impl ShutdownResources {
         self.shutdown = true;
 
         let mut failures = Vec::new();
+        for runtime in &self.code_lines_runtimes {
+            runtime.shutdown();
+        }
         let _ = self
             .diagnostics
             .record_event("shutdown_stage_started", &[("stage", "extension_host")]);
@@ -6777,6 +6885,9 @@ impl ShutdownResources {
             .diagnostics
             .record_event("shutdown_stage_started", &[("stage", "broker")]);
         if let Some(broker) = self.broker.take() {
+            broker.shutdown();
+        }
+        if let Some(broker) = self.context_menu_broker.take() {
             broker.shutdown();
         }
         let _ = self
@@ -7446,6 +7557,86 @@ mod tests {
         ]);
         assert_eq!(status, LockOwnerQueryStatusV1::CANCELLED);
         assert!(owners.is_empty());
+    }
+
+    #[test]
+    fn code_lines_ui_queue_stays_responsive_while_cache_worker_is_blocked() {
+        use explorer_ui::code_lines_column::CodeLinesRuntimePortV1 as _;
+
+        let cache = Arc::new(Mutex::new(HostExtensionColumnCacheV1::<
+            CodeLinesCachedValueV1,
+        >::default()));
+        let cache_guard = cache.lock().unwrap();
+        let pending = Arc::new((
+            Mutex::new(super::PendingCodeLinesWorkV1::default()),
+            std::sync::Condvar::new(),
+        ));
+        let worker_pending = Arc::clone(&pending);
+        let worker_cache = Arc::clone(&cache);
+        let (blocked_tx, blocked_rx) = std::sync::mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            let requests = {
+                let (lock, ready) = &*worker_pending;
+                let mut state = lock.lock().unwrap();
+                while state.requests.is_none() {
+                    state = ready.wait(state).unwrap();
+                }
+                state.requests.take().unwrap()
+            };
+            blocked_tx.send(()).unwrap();
+            partition_code_lines_cache_hits(&worker_cache, requests)
+        });
+        let (result_tx, result_rx) = std::sync::mpsc::sync_channel(1);
+        let (render_tx, _render_rx) = std::sync::mpsc::sync_channel(1);
+        let (_plan_tx, plan_rx) = std::sync::mpsc::channel();
+        let runtime = Arc::new(super::ApplicationCodeLinesRuntimeV1 {
+            worker: Mutex::new(None),
+            pending,
+            request_epoch: Arc::new(AtomicU64::new(0)),
+            results: Mutex::new(result_rx),
+            renderer: super::AsyncCellRendererV1 {
+                requests: render_tx,
+                results: Mutex::new(plan_rx),
+                pending: Mutex::new(HashSet::new()),
+                cache: Mutex::new(HashMap::new()),
+            },
+            mode: BatchDetailsColumnModeV1::CodeLines,
+            option_package_id: "test".to_owned(),
+            folder_admission: Default::default(),
+        });
+        let context = RequestContext::new(TabId::new(), Generation::new(1));
+        let request = explorer_ui::code_lines_column::CodeLinesRequestV1 {
+            context: context.clone(),
+            item_id: ShellItemId::from_provider_bytes(b"queued-code".to_vec()).unwrap(),
+            path: std::env::temp_dir()
+                .join(format!("superexplorer-queued-code-{}", std::process::id()))
+                .join("README.md"),
+        };
+        runtime.submit_code_lines_requests(vec![request.clone()]);
+        blocked_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        let ui_runtime = Arc::clone(&runtime);
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        let ui = std::thread::spawn(move || {
+            ui_runtime.submit_code_lines_requests(vec![request.clone()]);
+            ui_runtime.invalidate_directory_cache(request.path.parent().unwrap());
+            ui_runtime.invalidate_directory_cache(request.path.parent().unwrap());
+            assert!(ui_runtime.drain_code_lines_results().is_empty());
+            ui_runtime.cancel_code_lines_context(&request.context);
+            done_tx.send(()).unwrap();
+        });
+        let responsive = done_rx.recv_timeout(Duration::from_secs(1)).is_ok();
+        // Always unblock and join both threads, including the failing case.
+        drop(cache_guard);
+        ui.join().unwrap();
+        worker.join().unwrap();
+        drop(result_tx);
+        assert!(
+            responsive,
+            "UI submission/cancellation must not wait for filesystem cache work"
+        );
+        let state = runtime.pending.0.lock().unwrap();
+        assert!(state.requests.is_none());
+        assert_eq!(state.invalidated_directories.len(), 1);
     }
 
     #[test]
