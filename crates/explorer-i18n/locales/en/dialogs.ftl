@@ -1,5 +1,8 @@
 # SuperExplorer dialogs: Folder Options, About, bookmarks, properties, lock owner, plugins.
 
+dialog-transfer-conflict-title = The destination already exists
+dialog-transfer-conflict-body = Overwrite files with the same names in this destination? Cancel stops this transfer. For folders, other destination files are kept.
+dialog-transfer-overwrite = Overwrite
 dialogs-folder-options = Folder Options
 dialog-about = About SuperExplorer
 dialog-version = Version

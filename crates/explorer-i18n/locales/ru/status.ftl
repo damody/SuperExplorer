@@ -307,3 +307,4 @@ status-bookmark-undone = Bookmark change undone.
 status-bookmark-redone = Bookmark change redone.
 status-bookmark-nothing-to-undo = Nothing to undo.
 status-bookmark-nothing-to-redo = Nothing to redo.
+status-rename-f2-hint = F2: Выбрать всё / имя файла без расширения

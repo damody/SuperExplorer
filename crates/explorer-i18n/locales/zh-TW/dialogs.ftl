@@ -1,5 +1,8 @@
 # SuperExplorer dialogs: Folder Options, About, bookmarks, properties, lock owner, plugins.
 
+dialog-transfer-conflict-title = 目標已存在
+dialog-transfer-conflict-body = 要覆蓋目標中同名的檔案嗎？選擇取消會停止這次傳輸。若為資料夾，目標中其他檔案會保留。
+dialog-transfer-overwrite = 覆蓋
 dialogs-folder-options = 資料夾選項
 dialog-about = 關於 SuperExplorer
 dialog-version = 版本

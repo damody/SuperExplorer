@@ -285,3 +285,4 @@ status-bookmark-undone = Bookmark change undone.
 status-bookmark-redone = Bookmark change redone.
 status-bookmark-nothing-to-undo = Nothing to undo.
 status-bookmark-nothing-to-redo = Nothing to redo.
+status-rename-f2-hint = F2: 전체 선택 / 파일 이름만 선택(확장자 제외) 전환

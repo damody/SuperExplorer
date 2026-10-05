@@ -260,3 +260,15 @@ status-bookmark-undone = Bookmark change undone.
 status-bookmark-redone = Bookmark change redone.
 status-bookmark-nothing-to-undo = Nothing to undo.
 status-bookmark-nothing-to-redo = Nothing to redo.
+status-rename-f2-hint = F2：切换全选／只选文件名（不含扩展名）
+
+status-paste-started = 开始复制文件
+status-paste-failed = 粘贴失败
+status-paste-partial = 部分文件粘贴失败，完整原因请查看 console。
+status-paste-cancelled = 已取消粘贴文件
+status-paste-read-only = 无法粘贴：此目录不允许写入。
+status-paste-no-destination = 无法粘贴：没有可用的目标目录。
+status-paste-empty = 无法粘贴：剪贴板为空。
+status-paste-unsupported = 无法粘贴：剪贴板没有支持的文件格式。
+status-paste-modal = 无法粘贴：请先关闭当前对话窗口。
+status-paste-focus = 无法在此粘贴文件：请先点击目标目录的文件列表。

@@ -171,3 +171,15 @@ status-lua-bookmark-need-folder = Lua 書籤需要檔案系統資料夾。
 status-lua-bookmark-completed = Lua 書籤已完成。
 status-lua-bookmark-timed-out = Lua 書籤已逾時。
 status-lua-bookmark-failed = Lua 書籤失敗：{ $error }
+status-rename-f2-hint = F2：切換全選／只選檔名（不含副檔名）
+
+status-paste-started = 開始複製檔案
+status-paste-failed = 貼上失敗
+status-paste-partial = 部分檔案貼上失敗，完整原因請查看 console。
+status-paste-cancelled = 已取消貼上檔案
+status-paste-read-only = 無法貼上：此目錄不允許寫入。
+status-paste-no-destination = 無法貼上：沒有可用的目標目錄。
+status-paste-empty = 無法貼上：剪貼簿是空的。
+status-paste-unsupported = 無法貼上：剪貼簿沒有支援的檔案格式。
+status-paste-modal = 無法貼上：請先關閉目前的對話視窗。
+status-paste-focus = 無法在此貼上檔案：請先點選目標目錄的檔案列表。

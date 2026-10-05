@@ -203,3 +203,15 @@ status-lua-bookmark-need-folder = Lua bookmarks require a filesystem folder.
 status-lua-bookmark-completed = Lua bookmark completed.
 status-lua-bookmark-timed-out = Lua bookmark timed out.
 status-lua-bookmark-failed = Lua bookmark failed: { $error }
+status-rename-f2-hint = F2: Toggle select all / filename only (without extension)
+
+status-paste-started = Starting file copy
+status-paste-failed = Paste failed
+status-paste-partial = Some files could not be pasted.
+status-paste-cancelled = File paste cancelled
+status-paste-read-only = Cannot paste: this location is not writable.
+status-paste-no-destination = Cannot paste: no destination folder is available.
+status-paste-empty = Cannot paste: the clipboard is empty.
+status-paste-unsupported = Cannot paste: the clipboard does not contain supported files.
+status-paste-modal = Cannot paste: close the active dialog first.
+status-paste-focus = Cannot paste files here: focus the destination file list first.
