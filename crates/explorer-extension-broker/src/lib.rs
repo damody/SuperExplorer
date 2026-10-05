@@ -311,6 +311,12 @@ fn decode_context_menu_terminal(
 }
 
 impl BrokerClient {
+    /// A separate supervisor lane prevents interactive sessions from waiting
+    /// behind thumbnail work while retaining the same executable and policy.
+    pub fn independent_lane(&self) -> Self {
+        Self::new(self.inner.executable.clone(), self.inner.policy)
+    }
+
     pub fn new(executable: impl Into<PathBuf>, policy: BrokerPolicy) -> Self {
         Self {
             inner: Arc::new(BrokerClientInner {
@@ -1304,6 +1310,27 @@ impl QuarantineRegistry {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn interactive_lane_is_available_while_background_lane_is_busy() {
+        let background = BrokerClient::new("missing-broker.exe", BrokerPolicy::default());
+        let interactive = background.independent_lane();
+        let _busy = background.inner.runtime.lock().unwrap();
+        let mut runtime = interactive
+            .inner
+            .runtime
+            .try_lock()
+            .expect("independent request lane");
+        runtime.next_request_id = 9;
+        assert_eq!(interactive.inner.executable, background.inner.executable);
+        assert_eq!(interactive.inner.policy, background.inner.policy);
+        drop(runtime);
+        interactive.shutdown();
+        assert_eq!(
+            background.inner.active_worker_pid.load(Ordering::Acquire),
+            0
+        );
+    }
 
     #[test]
     fn virtual_location_descriptor_round_trips_without_container_path() {

@@ -425,7 +425,7 @@ fn search_mft_index(
     let volume_root = PathBuf::from(format!("{}:\\", letter));
     let mut batch = Vec::new();
     let mut matched = 0usize;
-    for (ordinal, entry) in index.entries.values().enumerate() {
+    for (ordinal, entry) in index.entries().values().enumerate() {
         if context.cancellation.is_cancelled() {
             return SearchOutcome::Cancelled(explorer_search::SearchMetrics::default());
         }

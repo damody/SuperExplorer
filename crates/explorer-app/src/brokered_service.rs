@@ -99,6 +99,7 @@ pub struct BrokeredExplorerService {
     archive_browser: crate::archive_service::ArchiveBrowser,
     shell: Arc<explorer_shell_win::ShellStaHandle>,
     broker: explorer_extension_broker::BrokerClient,
+    context_broker: explorer_extension_broker::BrokerClient,
     sender: SyncSender<ExplorerEvent>,
     receiver: Mutex<Receiver<ExplorerEvent>>,
     in_flight: Arc<AtomicUsize>,
@@ -525,6 +526,9 @@ fn execute_adb_context_action(
 }
 
 impl BrokeredExplorerService {
+    pub(crate) fn context_menu_broker(&self) -> explorer_extension_broker::BrokerClient {
+        self.context_broker.clone()
+    }
     pub fn new(
         shell: Arc<explorer_shell_win::ShellStaHandle>,
         broker: explorer_extension_broker::BrokerClient,
@@ -538,13 +542,14 @@ impl BrokeredExplorerService {
         let active_context_menus = Arc::new(Mutex::new(Vec::with_capacity(2)));
         let context_active = Arc::clone(&active_context_menus);
         let context_events = sender.clone();
-        let context_broker = broker.clone();
+        let context_broker = broker.independent_lane();
+        let context_worker_broker = context_broker.clone();
         std::thread::spawn(move || {
             while let Ok((context, request)) = context_menu_receiver.recv() {
                 let mut outcome = if context.cancellation.is_cancelled() {
                     explorer_model::ContextMenuOutcome::Cancelled
                 } else {
-                    context_broker
+                    context_worker_broker
                         .show_context_menu(&request, &context.cancellation)
                         .unwrap_or_else(|error| {
                             if context.cancellation.is_cancelled() {
@@ -672,6 +677,7 @@ impl BrokeredExplorerService {
             ),
             shell,
             broker,
+            context_broker,
             sender,
             receiver: Mutex::new(receiver),
             in_flight: Arc::new(AtomicUsize::new(0)),
@@ -2359,7 +2365,7 @@ impl ExplorerService for BrokeredExplorerService {
                 if let Some((context, is_current)) = cancelled_context_menu {
                     context.cancellation.cancel();
                     if is_current {
-                        self.broker.cancel_active_worker();
+                        self.context_broker.cancel_active_worker();
                     }
                     Ok(())
                 } else if let Some((context, _)) = cancelled_preview {

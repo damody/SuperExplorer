@@ -1736,6 +1736,7 @@ fn process_command(
             }
         },
         ExplorerCommand::ShowContextMenu { request, .. } => {
+            tracing::info!("Context menu received by Shell STA");
             if request.requested_verb.as_deref().is_some_and(|verb| {
                 verb.eq_ignore_ascii_case("properties")
                     || verb.eq_ignore_ascii_case("Windows.Share")

@@ -701,6 +701,7 @@ pub(crate) fn show(request: &ContextMenuRequest) -> Result<ContextMenuOutcome, E
     let app_owner = validated_owner_window(request.owner_window);
     let owner = OwnerWindow::create_owned(&raw mut owner_state, app_owner)?;
     let menu = resolve_menu(&request.target, owner.hwnd())?;
+    let resolve_elapsed = started.elapsed();
     owner_state.menu3 = menu.cast::<IContextMenu3>().ok();
     let _ = state.transition(ContextMenuSessionState::Querying);
     let popup = OwnedMenu::create()?;
@@ -715,6 +716,14 @@ pub(crate) fn show(request: &ContextMenuRequest) -> Result<ContextMenuOutcome, E
         matches!(request.target, ShellContextMenuTarget::Items { .. }),
         profile,
     )?;
+    tracing::info!(
+        resolve_ms = resolve_elapsed.as_millis(),
+        query_ms = started
+            .elapsed()
+            .saturating_sub(resolve_elapsed)
+            .as_millis(),
+        "Context menu Shell preparation completed"
+    );
     let apk_devices = local_apk_devices(&request.target);
     let item_menu = matches!(request.target, ShellContextMenuTarget::Items { .. });
     let shell_command_count = u32::try_from(command_count).unwrap_or(COMMAND_LAST - COMMAND_FIRST);
@@ -2506,6 +2515,41 @@ mod tests {
         reason = "windows-rs implement macro generates the controlled COM fixture glue"
     )]
 
+    #[test]
+    #[ignore = "read-only timing probe for a user-specified local file"]
+    fn local_file_menu_preparation_timing() {
+        let path = PathBuf::from(std::env::var_os("EXPLORER_MENU_PROBE_PATH").expect("probe path"));
+        let parent = path.parent().expect("parent");
+        unsafe { OleInitialize(None) }.expect("OLE initialize");
+        let _apartment = OleApartment;
+        let mut owner_state = MenuOwnerState { menu3: None };
+        let owner = OwnerWindow::create(&raw mut owner_state).expect("owner");
+        let target = ShellContextMenuTarget::Items {
+            parent: LocationDescriptor::file_system(parent),
+            items: vec![ItemDescriptor {
+                id: ShellItemId::from_provider_bytes([1]).unwrap(),
+                location: LocationDescriptor::file_system(&path),
+            }],
+        };
+        let started = Instant::now();
+        let menu = resolve_menu(&target, owner.hwnd()).expect("resolve");
+        let resolved = started.elapsed();
+        owner_state.menu3 = menu.cast::<IContextMenu3>().ok();
+        let popup = OwnedMenu::create().expect("popup");
+        query_menu(
+            &menu,
+            popup.get(),
+            true,
+            ContextMenuInvocationProfile::Explorer,
+        )
+        .expect("query");
+        eprintln!(
+            "resolve_ms={} query_ms={}",
+            resolved.as_millis(),
+            started.elapsed().saturating_sub(resolved).as_millis()
+        );
+        owner_state.menu3 = None;
+    }
     use std::{
         ffi::c_void,
         sync::{
@@ -3276,7 +3320,9 @@ mod tests {
         unsafe { OleInitialize(None) }.expect("OLE initialize");
         {
             let fixture = explorer_test_support::OwnedTempFixture::new().expect("fixture");
-            let original_entries = std::fs::read_dir(fixture.root()).expect("fixture entries").count();
+            let original_entries = std::fs::read_dir(fixture.root())
+                .expect("fixture entries")
+                .count();
             let target = ShellContextMenuTarget::Background {
                 parent: LocationDescriptor::file_system(fixture.root()),
             };
@@ -3312,7 +3358,8 @@ mod tests {
             assert!(
                 std::fs::read_dir(fixture.root())
                     .expect("fixture entries")
-                    .count() == original_entries,
+                    .count()
+                    == original_entries,
                 "delegation must not also invoke Shell creation"
             );
             owner_state.menu3 = None;

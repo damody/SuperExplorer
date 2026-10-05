@@ -35,7 +35,7 @@ use windows::{
                 GetWindowThreadProcessId, LWA_ALPHA, MENU_ITEM_STATE, MENUITEMINFOW, MFS_CHECKED,
                 MFS_DISABLED, MFS_GRAYED, MFT_OWNERDRAW, MFT_SEPARATOR, MIIM_BITMAP, MIIM_FTYPE,
                 MIIM_ID, MIIM_STATE, MIIM_STRING, MIIM_SUBMENU, MSG, NONCLIENTMETRICSW,
-                RegisterClassW, SPI_GETNONCLIENTMETRICS, SW_SHOW, SendMessageW,
+                RegisterClassW, SPI_GETNONCLIENTMETRICS, SW_SHOW, SW_SHOWNOACTIVATE, SendMessageW,
                 SetForegroundWindow, SetLayeredWindowAttributes, SetMenuItemInfoW,
                 SetWindowLongPtrW, ShowWindow, TranslateMessage, WM_ACTIVATEAPP, WM_CANCELMODE,
                 WM_CHAR, WM_DESTROY, WM_ERASEBKGND, WM_GETDLGCODE, WM_INITMENUPOPUP, WM_KEYDOWN,
@@ -383,7 +383,9 @@ fn present_level(
     let _ = unsafe { SetForegroundWindow(hwnd) };
     unsafe {
         for shadow in &state.shadows {
-            let _ = ShowWindow(*shadow, SW_SHOW);
+            // Shadows must never activate: seven SW_SHOW calls repeatedly
+            // synchronize focus with the app and stall large-directory menus.
+            let _ = ShowWindow(*shadow, SW_SHOWNOACTIVATE);
         }
         let _ = ShowWindow(hwnd, SW_SHOW);
         let _ = SetFocus(Some(hwnd));
@@ -462,6 +464,10 @@ fn present_level(
             }
         }
     }
+    // DestroyWindow can synchronously send WM_ACTIVATEAPP(false), which dismisses
+    // the popup. Preserve the already completed selection before teardown.
+    let command = state.result.max(0);
+    let replacement_point = state.replacement_point;
     let destroyed = unsafe {
         let _ = ReleaseCapture();
         DestroyWindow(hwnd).is_ok()
@@ -476,8 +482,8 @@ fn present_level(
         return Err(PopupUnsupportedReason::CleanupFailed);
     }
     Ok(PopupPresentation {
-        command: state.result.max(0),
-        replacement_point: state.replacement_point,
+        command,
+        replacement_point,
     })
 }
 
