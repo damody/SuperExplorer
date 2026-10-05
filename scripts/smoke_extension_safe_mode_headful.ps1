@@ -40,7 +40,7 @@ function Write-RecoveredMarker([string]$Namespace, [string]$PackageId, [string]$
 function Find-SafeModeDialog {
     Find-UitestElement -Root $context.Root -Description 'Safe Mode confirmation dialog' -Predicate {
         param($element)
-        $element.Current.Name -like 'Safe Mode confirmation required; Suspect package: safe.mode.*' -and
+        $element.Current.Name -like '擴充功能已暫時停用：*' -and
             $element.Current.BoundingRectangle.Width -gt 0 -and
             $element.Current.BoundingRectangle.Height -gt 0
     }
@@ -50,18 +50,29 @@ function Find-SafeModeConfirmButton {
     Find-UitestElement -Root $context.Root -Description 'Safe Mode UIA confirmation button' -Predicate {
         param($element)
         $element.Current.ControlType -eq [Windows.Automation.ControlType]::Button -and
-            $element.Current.Name -eq 'Confirm and re-enable' -and
+            $element.Current.Name -eq '允許下次啟動重新載入' -and
             $element.Current.BoundingRectangle.Width -gt 0
     }
 }
 
+function Show-TechnicalDetails {
+    foreach ($element in $context.Root.FindAll([Windows.Automation.TreeScope]::Descendants, [Windows.Automation.Condition]::TrueCondition)) {
+        if ($element.Current.Name -eq '顯示技術詳細資料' -and $element.Current.ControlType -eq [Windows.Automation.ControlType]::Button) {
+            Invoke-UitestClick -Element $element
+            Start-Sleep -Milliseconds 150
+            return
+        }
+    }
+}
+
 function Get-VisibleSafeModePackage {
+    Show-TechnicalDetails
     foreach ($element in $context.Root.FindAll(
         [Windows.Automation.TreeScope]::Descendants,
         [Windows.Automation.Condition]::TrueCondition)) {
         if ($element.Current.BoundingRectangle.Width -gt 0 -and
-            $element.Current.Name -like 'Safe Mode confirmation required; Suspect package: safe.mode.*') {
-            return $element.Current.Name.Substring('Safe Mode confirmation required; Suspect package: '.Length)
+            $element.Current.Name -like '套件代碼： safe.mode.*') {
+            return $element.Current.Name.Substring('套件代碼： '.Length)
         }
     }
     throw 'Safe Mode dialog did not expose its suspect package identity through UIA'
@@ -70,11 +81,12 @@ function Get-VisibleSafeModePackage {
 function Wait-SafeModePackage([string]$ExpectedPackage) {
     $deadline = [DateTime]::UtcNow.AddSeconds(8)
     do {
+        Show-TechnicalDetails
         foreach ($element in $context.Root.FindAll(
             [Windows.Automation.TreeScope]::Descendants,
             [Windows.Automation.Condition]::TrueCondition)) {
             if ($element.Current.BoundingRectangle.Width -gt 0 -and
-                $element.Current.Name -eq "Safe Mode confirmation required; Suspect package: $ExpectedPackage") {
+                $element.Current.Name -eq "套件代碼： $ExpectedPackage") {
                 return
             }
         }
@@ -99,7 +111,7 @@ function Wait-DialogHidden {
         foreach ($element in $context.Root.FindAll(
             [Windows.Automation.TreeScope]::Descendants,
             [Windows.Automation.Condition]::TrueCondition)) {
-            if ($element.Current.Name -like 'Safe Mode confirmation required; Suspect package: safe.mode.*' -and
+            if ($element.Current.Name -like '擴充功能已暫時停用：*' -and
                 $element.Current.BoundingRectangle.Width -gt 0) {
                 $visible = $true
                 break
@@ -140,6 +152,8 @@ try {
         -AdditionalEnvironment @{ EXPLORER_UITEST_EXTENSION_STATE_ROOT = $stateRoot }
 
     Wait-PathState -Path $probePath -Exists $true
+    [void][RustExplorerUitest.Native]::SetWindowPos($context.Hwnd, [IntPtr](-1), 20, 20, 1440, 1100, 0x0040)
+    [void][RustExplorerUitest.Native]::SetForegroundWindow($context.Hwnd)
     $probe = Get-Content -LiteralPath $probePath -Raw -Encoding UTF8 | ConvertFrom-Json
     if ($probe.schema_version -ne 1 -or -not $probe.recovered_callback_denied) {
         throw 'startup probe proves native callbacks were not denied before confirmation'
