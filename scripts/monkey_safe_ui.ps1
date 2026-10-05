@@ -43,61 +43,61 @@ using System;
 using System.Runtime.InteropServices;
 namespace MonkeySafeUi {
     public static class Native {
-        [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr hwnd);
         [DllImport("user32.dll")] public static extern bool SetWindowPos(IntPtr hwnd, IntPtr insertAfter, int x, int y, int cx, int cy, uint flags);
-        [DllImport("user32.dll")] public static extern void keybd_event(byte key, byte scan, uint flags, UIntPtr extra);
         [DllImport("user32.dll")] public static extern bool PostMessage(IntPtr hwnd, uint msg, IntPtr wParam, IntPtr lParam);
         [DllImport("user32.dll")] public static extern bool IsHungAppWindow(IntPtr hwnd);
         [DllImport("user32.dll")] public static extern bool IsWindow(IntPtr hwnd);
-        [DllImport("user32.dll")] public static extern bool SetCursorPos(int x, int y);
-        [DllImport("user32.dll")] public static extern void mouse_event(uint flags, uint dx, uint dy, uint data, UIntPtr extra);
+
+        public static void KeyToWindow(IntPtr hwnd, byte key) {
+            // Posted only to the app window. Does not move the cursor or change the real keyboard state.
+            IntPtr down = new IntPtr(1);
+            IntPtr up = new IntPtr(unchecked((int)(1 | (1 << 30) | (1u << 31))));
+            PostMessage(hwnd, 0x0408, new IntPtr(key), down);
+            PostMessage(hwnd, 0x0101, new IntPtr(key), up);
+        }
     }
 }
 '@
 }
 
-function Send-Key([byte]$Key, [byte[]]$Modifiers = @()) {
-    foreach ($modifier in $Modifiers) {
-        [MonkeySafeUi.Native]::keybd_event($modifier, 0, 0, [UIntPtr]::Zero)
-    }
-    [MonkeySafeUi.Native]::keybd_event($Key, 0, 0, [UIntPtr]::Zero)
-    [MonkeySafeUi.Native]::keybd_event($Key, 0, 2, [UIntPtr]::Zero)
-    for ($index = $Modifiers.Count - 1; $index -ge 0; $index--) {
-        [MonkeySafeUi.Native]::keybd_event($Modifiers[$index], 0, 2, [UIntPtr]::Zero)
-    }
+function Send-WindowKey([IntPtr]$Hwnd, [byte]$Key) {
+    if ($Hwnd -eq [IntPtr]::Zero) { return }
+    # Never Delete (0x2E), F2 (0x71), or letters. Those can rename, type, or remove files.
+    if ($Key -eq 0x2E -or $Key -eq 0x71) { return }
+    [MonkeySafeUi.Native]::KeyToWindow($Hwnd, $Key)
 }
 
 function Test-BlockedName([string]$Name) {
     if ([string]::IsNullOrEmpty($Name)) { return $false }
-    return $Name -match '(?i)delete|\u522a\u9664|recycle|\u56de\u6536|empty recycle|\u6e05\u7a7a|\u6c38\u4e45\u522a|shift\+del|format|\u683c\u5f0f\u5316|rename|\u91cd\u65b0\u547d\u540d|\u6539\u540d|^close$|close tab|\u95dc\u9589|\u5173\u95ed|minimize|maximize|\u6700\u5c0f\u5316|\u6700\u5927\u5316|paste|\u8cbc\u4e0a|file explorer|\u6a94\u6848\u7e3d\u7ba1|\u6587\u4ef6\u8d44\u6e90\u7ba1\u7406\u5668'
+    return $Name -match '(?i)delete|\u522a\u9664|\u5220\u9664|recycle|\u56de\u6536|empty recycle|\u6e05\u7a7a|\u6c38\u4e45\u522a|shift\+del|format|\u683c\u5f0f\u5316|rename|\u91cd\u65b0\u547d\u540d|\u91cd\u547d\u540d|\u6539\u540d|^close$|close tab|\u95dc\u9589|\u5173\u95ed|minimize|maximize|\u6700\u5c0f\u5316|\u6700\u5927\u5316|paste|\u8cbc\u4e0a|\u7c98\u8d34|cut|\u526a\u4e0b|\u526a\u5207|\u79fb\u9664|remove|\u78ba\u5b9a|\u786e\u5b9a|\byes\b|\bok\b|file explorer|\u6a94\u6848\u7e3d\u7ba1|\u6587\u4ef6\u8d44\u6e90\u7ba1\u7406\u5668|command-delete|command-paste|command-rename|command-cut|navigation-up'
+}
+
+function Get-ElementLabel([Windows.Automation.AutomationElement]$Element) {
+    $name = ''
+    $autoId = ''
+    try { $name = [string]$Element.Current.Name } catch { return $null }
+    try { $autoId = [string]$Element.Current.AutomationId } catch { $autoId = '' }
+    return [pscustomobject]@{ Name = $name; AutomationId = $autoId }
 }
 
 function Invoke-SafeElement([Windows.Automation.AutomationElement]$Element) {
     if ($null -eq $Element) { return 'skip-null' }
-    $name = ''
-    try { $name = [string]$Element.Current.Name } catch { return 'skip-stale' }
-    if (Test-BlockedName $name) { return "blocked:$name" }
+    $label = Get-ElementLabel $Element
+    if ($null -eq $label) { return 'skip-stale' }
+    if ((Test-BlockedName $label.Name) -or (Test-BlockedName $label.AutomationId)) {
+        return "blocked:$($label.Name)"
+    }
+    # InvokePattern only. Never move the cursor or synthesize a mouse click.
     $invoke = $null
     if ($Element.TryGetCurrentPattern([Windows.Automation.InvokePattern]::Pattern, [ref]$invoke)) {
         try {
             ([Windows.Automation.InvokePattern]$invoke).Invoke()
-            return "invoke:$name"
+            return "invoke:$($label.Name)"
         } catch {
-            return "invoke-failed:$name"
+            return "invoke-failed:$($label.Name)"
         }
     }
-    try {
-        $bounds = $Element.Current.BoundingRectangle
-        if ($bounds.Width -lt 4 -or $bounds.Height -lt 4) { return "skip-tiny:$name" }
-        $x = [int]($bounds.X + $bounds.Width / 2)
-        $y = [int]($bounds.Y + $bounds.Height / 2)
-        [void][MonkeySafeUi.Native]::SetCursorPos($x, $y)
-        [MonkeySafeUi.Native]::mouse_event(0x0002, 0, 0, 0, [UIntPtr]::Zero)
-        [MonkeySafeUi.Native]::mouse_event(0x0004, 0, 0, 0, [UIntPtr]::Zero)
-        return "click:$name"
-    } catch {
-        return "click-failed:$name"
-    }
+    return "skip-no-invoke:$($label.Name)"
 }
 
 function Get-Clickable([Windows.Automation.AutomationElement]$Root) {
@@ -118,7 +118,9 @@ function Get-Clickable([Windows.Automation.AutomationElement]$Root) {
             foreach ($element in $elements) {
                 try {
                     if (-not $element.Current.IsEnabled) { continue }
-                    if (Test-BlockedName $element.Current.Name) { continue }
+                    $label = Get-ElementLabel $element
+                    if ($null -eq $label) { continue }
+                    if ((Test-BlockedName $label.Name) -or (Test-BlockedName $label.AutomationId)) { continue }
                     $found.Add($element)
                     if ($found.Count -ge 80) { return $found }
                 } catch { }
@@ -150,34 +152,19 @@ $findings = New-Object System.Collections.Generic.List[object]
 $hung = $false
 $earlyExit = $null
 
+# Unmodified navigation only. No Enter, Space, Delete, or shortcuts that confirm or remove files.
 $safeKeys = @(
-    @{ name = 'Tab'; key = [byte]0x09; mods = @() },
-    @{ name = 'Shift+Tab'; key = [byte]0x09; mods = @([byte]0x10) },
-    @{ name = 'Left'; key = [byte]0x25; mods = @() },
-    @{ name = 'Up'; key = [byte]0x26; mods = @() },
-    @{ name = 'Right'; key = [byte]0x27; mods = @() },
-    @{ name = 'Down'; key = [byte]0x28; mods = @() },
-    @{ name = 'F5'; key = [byte]0x74; mods = @() },
-    @{ name = 'Alt+Left'; key = [byte]0x25; mods = @([byte]0x12) },
-    @{ name = 'Alt+Right'; key = [byte]0x27; mods = @([byte]0x12) },
-    @{ name = 'Alt+Up'; key = [byte]0x26; mods = @([byte]0x12) },
-    @{ name = 'Ctrl+T'; key = [byte]0x54; mods = @([byte]0x11) },
-    @{ name = 'Ctrl+Tab'; key = [byte]0x09; mods = @([byte]0x11) },
-    @{ name = 'Ctrl+1'; key = [byte]0x31; mods = @([byte]0x11) },
-    @{ name = 'Ctrl+2'; key = [byte]0x32; mods = @([byte]0x11) },
-    @{ name = 'Ctrl+3'; key = [byte]0x33; mods = @([byte]0x11) },
-    @{ name = 'Ctrl+4'; key = [byte]0x34; mods = @([byte]0x11) },
-    @{ name = 'Ctrl+L'; key = [byte]0x4C; mods = @([byte]0x11) },
-    @{ name = 'Ctrl+E'; key = [byte]0x45; mods = @([byte]0x11) },
-    @{ name = 'Ctrl+A'; key = [byte]0x41; mods = @([byte]0x11) },
-    @{ name = 'Ctrl+C'; key = [byte]0x43; mods = @([byte]0x11) },
-    @{ name = 'Esc'; key = [byte]0x1B; mods = @() },
-    @{ name = 'Enter'; key = [byte]0x0D; mods = @() },
-    @{ name = 'Space'; key = [byte]0x20; mods = @() },
-    @{ name = 'Home'; key = [byte]0x24; mods = @() },
-    @{ name = 'End'; key = [byte]0x23; mods = @() },
-    @{ name = 'PageDown'; key = [byte]0x22; mods = @() },
-    @{ name = 'PageUp'; key = [byte]0x21; mods = @() }
+    @{ name = 'Tab'; key = [byte]0x09 },
+    @{ name = 'Left'; key = [byte]0x25 },
+    @{ name = 'Up'; key = [byte]0x26 },
+    @{ name = 'Right'; key = [byte]0x27 },
+    @{ name = 'Down'; key = [byte]0x28 },
+    @{ name = 'F5'; key = [byte]0x74 },
+    @{ name = 'Esc'; key = [byte]0x1B },
+    @{ name = 'Home'; key = [byte]0x24 },
+    @{ name = 'End'; key = [byte]0x23 },
+    @{ name = 'PageDown'; key = [byte]0x22 },
+    @{ name = 'PageUp'; key = [byte]0x21 }
 )
 
 $start = [Diagnostics.ProcessStartInfo]::new()
@@ -188,6 +175,8 @@ $start.Environment['EXPLORER_INITIAL_PATH'] = $fixtureRoot
 $start.Environment['EXPLORER_LOG_DIR'] = $OutputDirectory
 $start.Environment['LOCALAPPDATA'] = (Join-Path $OutputDirectory 'localappdata')
 $start.Environment['SUPEREXPLORER_LOCALE'] = 'zh-TW'
+$start.Environment['RUST_BACKTRACE'] = '1'
+$start.Environment['SUPEREXPLORER_BACKGROUND'] = '1'
 $process = [Diagnostics.Process]::Start($start)
 try {
     $deadline = [DateTime]::UtcNow.AddSeconds(25)
@@ -198,9 +187,9 @@ try {
         if ($hwnd -eq [IntPtr]::Zero) { Start-Sleep -Milliseconds 80 }
     } while ($hwnd -eq [IntPtr]::Zero -and [DateTime]::UtcNow -lt $deadline)
     if ($hwnd -eq [IntPtr]::Zero) { throw 'application window did not appear' }
-    [void][MonkeySafeUi.Native]::SetWindowPos($hwnd, [IntPtr]::Zero, 60, 40, 1400, 900, 0x0040)
+    # HWND_BOTTOM + SWP_NOACTIVATE: keep the window behind others and do not take focus.
+    [void][MonkeySafeUi.Native]::SetWindowPos($hwnd, [IntPtr]1, 60, 40, 1400, 900, 0x0010)
     Start-Sleep -Milliseconds 400
-    [void][MonkeySafeUi.Native]::SetForegroundWindow($hwnd)
     $root = [Windows.Automation.AutomationElement]::FromHandle($hwnd)
     $endAt = [DateTime]::UtcNow.AddSeconds($DurationSeconds)
     $step = 0
@@ -228,12 +217,7 @@ try {
             $label = ''
             if ($kind -lt 6) {
                 $choice = $safeKeys[$rng.Next(0, $safeKeys.Count)]
-                [void][MonkeySafeUi.Native]::SetForegroundWindow($hwnd)
-                Send-Key $choice.key $choice.mods
-                if ($choice.extra -eq 'esc') {
-                    Start-Sleep -Milliseconds 80
-                    Send-Key 0x1B @()
-                }
+                Send-WindowKey $hwnd $choice.key
                 $label = $choice.name
             } else {
                 $clickable = Get-Clickable $root
@@ -241,14 +225,14 @@ try {
                     $pick = $clickable[$rng.Next(0, $clickable.Count)]
                     $label = Invoke-SafeElement $pick
                 } else {
-                    Send-Key 0x1B @()
+                    Send-WindowKey $hwnd 0x1B
                     $label = 'Esc-empty-tree'
                 }
             }
             $actions.Add([ordered]@{ step = $step; at = [DateTime]::UtcNow.ToString('o'); action = $label })
         } catch {
             $findings.Add([ordered]@{ kind = 'uia-error'; step = $step; detail = "$_" })
-            Send-Key 0x1B @()
+            Send-WindowKey $hwnd 0x1B
         }
         Start-Sleep -Milliseconds (80 + $rng.Next(0, 140))
         try {
@@ -263,7 +247,7 @@ try {
                 if ($dialogName -match '(?i)error|\u932f\u8aa4|exception|\u5931\u6557|failed') {
                     $findings.Add([ordered]@{ kind = 'error-dialog'; step = $step; detail = $dialogName })
                 }
-                Send-Key 0x1B @()
+                Send-WindowKey $hwnd 0x1B
             }
         } catch { }
     }

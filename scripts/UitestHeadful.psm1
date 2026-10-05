@@ -155,9 +155,11 @@ function Get-UitestFileItems {
         [Windows.Automation.AutomationElement]::ControlTypeProperty,
         [Windows.Automation.ControlType]::ListItem)
     @($Root.FindAll([Windows.Automation.TreeScope]::Descendants, $condition) | Where-Object {
-        $bounds = $_.Current.BoundingRectangle
-        $bounds.Width -gt 0 -and $bounds.Height -gt 0 -and
-            $bounds.Left -gt ($window.Left + 330) -and $bounds.Top -gt ($window.Top + 175)
+        try {
+            $bounds = $_.Current.BoundingRectangle
+            $bounds.Width -gt 0 -and $bounds.Height -gt 0 -and
+                $bounds.Left -gt ($window.Left + 330) -and $bounds.Top -gt ($window.Top + 175)
+        } catch { $false } # Listings replace UIA rows while their batches are arriving.
     })
 }
 

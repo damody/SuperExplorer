@@ -1,6 +1,7 @@
 param(
     [ValidateSet('debug','release')][string]$Profile = 'debug',
     [Parameter(Mandatory)][string]$OutputDirectory,
+    [string]$Executable = '',
     [switch]$SkipBuild
 )
 
@@ -8,6 +9,9 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 Import-Module (Join-Path $PSScriptRoot 'UitestHeadful.psm1') -Force
 Initialize-UitestHeadful
+# UI Automation and popup geometry use physical pixels. Keep every Win32
+# rectangle and injected pointer in that same coordinate space at high DPI.
+$originalDpiContext = [RustExplorerUitest.Native]::SetThreadDpiAwarenessContext([IntPtr](-4))
 if (-not ('RustExplorerUitest.ReplacementMenuNative' -as [type])) {
     Add-Type -TypeDefinition @'
 using System;
@@ -86,6 +90,7 @@ function Invoke-PhysicalClickPoint([int]$X, [int]$Y, [switch]$Right) {
         [RustExplorerUitest.Native]::mouse_event(0x0010, 0, 0, 0, [UIntPtr]::Zero)
     } else {
         [RustExplorerUitest.Native]::mouse_event(0x0002, 0, 0, 0, [UIntPtr]::Zero)
+        Start-Sleep -Milliseconds 60
         [RustExplorerUitest.Native]::mouse_event(0x0004, 0, 0, 0, [UIntPtr]::Zero)
     }
     Start-Sleep -Milliseconds 250
@@ -239,7 +244,9 @@ function Invoke-PopupCopy($Session) {
                 }
                 [void][RustExplorerUitest.Native]::SetCursorPos([int](($rect.Left + $rect.Right) / 2), [int](($rect.Top + $rect.Bottom) / 2))
             }
+            Start-Sleep -Milliseconds 150
             [RustExplorerUitest.Native]::mouse_event(0x0002, 0, 0, 0, [UIntPtr]::Zero)
+            Start-Sleep -Milliseconds 60
             [RustExplorerUitest.Native]::mouse_event(0x0004, 0, 0, 0, [UIntPtr]::Zero)
             return
         }
@@ -274,7 +281,7 @@ function Wait-ClipboardNames([string[]]$ExpectedNames, [int]$TimeoutSeconds = 10
 }
 
 try {
-    $context = Start-UitestExplorer -InitialPath $fixture -OutputDirectory $output -Profile $Profile -SkipBuild:$SkipBuild
+    $context = Start-UitestExplorer -InitialPath $fixture -OutputDirectory $output -Profile $Profile -Executable $Executable -SkipBuild:$SkipBuild -AdditionalEnvironment @{ EXPLORER_AUTO_CLOSE_MS = '180000' }
     # Keep physical replacement gestures bound to this isolated process even when the developer
     # has another SuperExplorer window open on the same desktop.
     [void][RustExplorerUitest.Native]::SetWindowPos($context.Hwnd, [IntPtr](-1), 0, 0, 0, 0, 0x0003)
@@ -401,8 +408,9 @@ try {
         throw "replacement thread growth exceeded bound: baseline=$baselineThreads actual=$($context.Process.Threads.Count)"
     }
     $treeIds = Get-UitestProcessTreeIds
-    if (@(Get-Process | Where-Object { $treeIds.Contains([int]$_.Id) -and $_.ProcessName -eq 'explorer-extension-broker' }).Count -gt 1) {
-        throw 'replacement flow left more than one broker in the launched process tree'
+    $brokerCount = @(Get-Process | Where-Object { $treeIds.Contains([int]$_.Id) -and $_.ProcessName -eq 'explorer-extension-broker' }).Count
+    if ($brokerCount -gt 2) {
+        throw 'replacement flow exceeded the two bounded broker lanes'
     }
     $sessions | ConvertTo-Json -Depth 5 | Set-Content -Encoding utf8 -LiteralPath (Join-Path $output 'popup-sessions.json')
     if (-not (Test-Path -LiteralPath (Join-Path $fixture 'Alpha.txt') -PathType Leaf) -or
@@ -421,7 +429,8 @@ try {
         multi_selection_preserved = $true
         popup_input_not_replayed = $true
         outside_left_dismissal = $true
-        one_broker = $true
+        maximum_brokers = 2
+        actual_brokers = $brokerCount
         resources_bounded = $true
         responsive_each_cycle = $true
         maximum_responsiveness_probe_ms = ($responsivenessMilliseconds | Measure-Object -Maximum).Maximum
@@ -429,6 +438,9 @@ try {
     } | ConvertTo-Json | Set-Content -Encoding utf8 -LiteralPath (Join-Path $output 'report.json')
 } finally {
     if ($null -ne $context) { Stop-UitestExplorer -Context $context }
+    if ($originalDpiContext -ne [IntPtr]::Zero) {
+        [void][RustExplorerUitest.Native]::SetThreadDpiAwarenessContext($originalDpiContext)
+    }
 }
 
 Write-Output "Context-menu replacement smoke passed: $OutputDirectory"

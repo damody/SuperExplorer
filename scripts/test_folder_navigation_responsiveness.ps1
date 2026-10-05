@@ -16,6 +16,8 @@ $context = Start-UitestExplorer -InitialPath $ParentPath -OutputDirectory $Outpu
     -Executable $Executable -SkipBuild -AdditionalEnvironment @{ EXPLORER_AUTO_CLOSE_MS = '45000' }
 $results = @()
 try {
+    # Bind physical gestures to this probe when another app owns foreground focus.
+    [void][RustExplorerUitest.Native]::SetWindowPos($context.Hwnd, [IntPtr](-1), 0, 0, 0, 0, 0x0003)
     foreach ($cycle in 1..3) {
         $row = Find-UitestFileItem -Root $context.Root -Name $ChildName
         $timer = [Diagnostics.Stopwatch]::StartNew()
