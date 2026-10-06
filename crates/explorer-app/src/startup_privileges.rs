@@ -66,7 +66,9 @@ fn is_elevated(token: HANDLE) -> Result<bool> {
 }
 
 /// Return true once a replacement has been started; the elevated caller must exit.
-/// Fail closed if no ordinary desktop token is available, preventing relaunch loops.
+/// Match an ordinary desktop when available. An already elevated desktop has
+/// no ordinary shell token to borrow; keep its current privilege level without
+/// relaunching or changing the machine's security configuration.
 pub(super) fn relaunch_if_elevated() -> Result<bool> {
     // SAFETY: GetCurrentProcess returns a borrowed pseudo-handle; it is not closed.
     let current = open_token(unsafe { GetCurrentProcess() }, false)?;
@@ -88,8 +90,18 @@ pub(super) fn relaunch_if_elevated() -> Result<bool> {
         unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, shell_pid) }
             .context("open desktop shell process")?,
     );
+    let shell_token = open_token(shell_process.0, false)?;
+    if !should_relaunch(true, is_elevated(shell_token.0)?) {
+        explorer_common::record_process_error_message(
+            explorer_common::ErrorSeverity::Warning,
+            "application",
+            "startup_privileges",
+            "Desktop shell is elevated; continuing with the current desktop privileges instead of failing startup",
+            Some(file!()),
+        );
+        return Ok(false);
+    }
     let shell_token = open_token(shell_process.0, true)?;
-    ensure!(!is_elevated(shell_token.0)?, "desktop shell is elevated");
 
     let mut primary = HANDLE::default();
     // SAFETY: shell_token permits duplication; primary is writable output.
@@ -143,9 +155,25 @@ pub(super) fn relaunch_if_elevated() -> Result<bool> {
     Ok(true)
 }
 
+fn should_relaunch(current_elevated: bool, desktop_elevated: bool) -> bool {
+    current_elevated && !desktop_elevated
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn elevated_desktop_continues_without_a_relaunch_loop() {
+        assert!(!should_relaunch(true, true));
+        assert!(!should_relaunch(false, true));
+    }
+
+    #[test]
+    fn elevated_setup_uses_an_ordinary_desktop_when_available() {
+        assert!(should_relaunch(true, false));
+        assert!(!should_relaunch(false, false));
+    }
 
     #[test]
     fn ordinary_startup_does_not_launch_a_replacement() {
