@@ -4932,7 +4932,10 @@ impl ApplicationLifecycle {
                         gpui::WindowHandle::<ExplorerRoot>::new(window.window_handle().window_id());
                     let transfer_before_owner_close =
                         Rc::clone(&transfer_window_controller_for_window);
-                    window.on_window_should_close(cx, move |_, cx| {
+                    window.on_window_should_close(cx, move |window, cx| {
+                        if let Some(Some(root)) = window.root::<ExplorerRoot>() {
+                            root.update(cx, |root, cx| root.persist_before_window_close(window, cx));
+                        }
                         let tool = {
                             let mut controller = transfer_before_owner_close.borrow_mut();
                             let tool = controller.window;
@@ -7178,20 +7181,20 @@ mod tests {
     #[test]
     fn closed_location_keys_treat_drive_roots_and_trailing_slashes_as_the_same_place() {
         assert_eq!(
-            super::closed_location_key(&explorer_model::LocationDescriptor::file_system(r"C:\")),
-            super::closed_location_key(&explorer_model::LocationDescriptor::file_system("c:/"))
+            super::closed_location_key(&LocationDescriptor::file_system(r"C:\")),
+            super::closed_location_key(&LocationDescriptor::file_system("c:/"))
         );
         assert_eq!(
-            super::closed_location_key(&explorer_model::LocationDescriptor::file_system(
+            super::closed_location_key(&LocationDescriptor::file_system(
                 r"D:\AI_Pic\output\"
             )),
-            super::closed_location_key(&explorer_model::LocationDescriptor::file_system(
+            super::closed_location_key(&LocationDescriptor::file_system(
                 r"D:\AI_Pic\output"
             ))
         );
         assert_ne!(
-            super::closed_location_key(&explorer_model::LocationDescriptor::file_system(r"C:\")),
-            super::closed_location_key(&explorer_model::LocationDescriptor::file_system(
+            super::closed_location_key(&LocationDescriptor::file_system(r"C:\")),
+            super::closed_location_key(&LocationDescriptor::file_system(
                 r"C:\portable"
             ))
         );

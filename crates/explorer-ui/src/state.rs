@@ -1120,6 +1120,7 @@ pub struct AppViewState {
     app_menu_history_query: String,
     open_bookmark_manager_on_history: bool,
     closed_windows: Vec<ClosedWindowRecord>,
+    recently_closed: crate::recently_closed::RecentlyClosed,
     collapsed_closed_windows: HashSet<u64>,
     more_theme_submenu_open: bool,
     transfer_panel_open: bool,
@@ -1725,6 +1726,7 @@ impl AppViewState {
             app_menu_history_query: String::new(),
             open_bookmark_manager_on_history: false,
             closed_windows: Vec::new(),
+            recently_closed: Default::default(),
             collapsed_closed_windows: HashSet::new(),
             more_theme_submenu_open: false,
             transfer_panel_open: false,
@@ -3982,10 +3984,38 @@ impl AppViewState {
     }
 
     pub fn set_closed_windows(&mut self, windows: Vec<ClosedWindowRecord>) {
+        self.recently_closed
+            .sync_windows(windows.iter().map(|window| window.id));
         self.closed_windows = windows;
     }
 
+    pub(crate) fn can_reopen_closed(&self) -> bool {
+        self.recently_closed.peek().is_some()
+    }
+
+    pub(crate) fn most_recent_closed_window(&self) -> Option<u64> {
+        match self.recently_closed.peek() {
+            Some(crate::recently_closed::ClosedItem::Window(id)) => Some(*id),
+            _ => None,
+        }
+    }
+
+    pub(crate) fn reopen_closed_tab(&mut self) -> Option<TabId> {
+        let closed = self.recently_closed.pop_tab()?;
+        self.tab_focus
+            .insert(self.tabs.active_tab_id(), self.focus.current());
+        let id = self
+            .tabs
+            .reopen_tab(closed.history, closed.settings, closed.index)?;
+        self.navigation_trees.entry(id).or_default();
+        self.details_filters.entry(id).or_default();
+        self.tab_focus.insert(id, FocusSurface::TabStrip);
+        self.activate_tab(id);
+        Some(id)
+    }
+
     pub(crate) fn remove_closed_window(&mut self, id: u64) {
+        self.recently_closed.remove_window(id);
         self.closed_windows.retain(|window| window.id != id);
         self.collapsed_closed_windows.remove(&id);
     }
@@ -9326,6 +9356,17 @@ impl AppViewState {
     }
 
     pub(crate) fn close_tab(&mut self, id: TabId) -> TabCloseOutcome {
+        let closed = self
+            .tabs
+            .tabs()
+            .iter()
+            .enumerate()
+            .find(|(_, tab)| tab.id == id)
+            .map(|(index, tab)| crate::recently_closed::ClosedTab {
+                index,
+                history: tab.history.clone(),
+                settings: tab.view.settings.clone(),
+            });
         self.cancel_permanent_delete_confirmation();
         self.cancel_lock_recovery();
         if id == self.tabs.active_tab_id() {
@@ -9354,6 +9395,9 @@ impl AppViewState {
             self.pending_column_cancels.extend(cancel);
         }
         if outcome == TabCloseOutcome::Closed {
+            if let Some(closed) = closed {
+                self.recently_closed.push_tab(closed);
+            }
             self.tab_focus.remove(&id);
             self.navigation_focus.remove(&id);
             self.details_filters.remove(&id);
@@ -13799,6 +13843,46 @@ mod tests {
             100.0,
         ));
         assert!(!state.details_column_drag_active());
+    }
+
+    #[test]
+    fn reopen_closed_tabs_is_lifo_and_restores_original_tab_position() {
+        let mut state = AppViewState::default();
+        let first = state.tabs().active_tab_id();
+        let second = state.new_tab();
+        let third = state.new_tab();
+        assert_eq!(
+            state.close_tab(second),
+            explorer_model::TabCloseOutcome::Closed
+        );
+        assert_eq!(
+            state.close_tab(third),
+            explorer_model::TabCloseOutcome::Closed
+        );
+        let restored_third = state.reopen_closed_tab().unwrap();
+        assert_ne!(third, restored_third);
+        let restored_second = state.reopen_closed_tab().unwrap();
+        assert_ne!(second, restored_second);
+        assert_eq!(
+            state
+                .tabs()
+                .tabs()
+                .iter()
+                .map(|tab| tab.id)
+                .collect::<Vec<_>>(),
+            vec![first, restored_second, restored_third]
+        );
+        assert_eq!(state.tabs().active_tab_id(), restored_second);
+        assert!(matches!(
+            state.tabs().active_tab().directory,
+            explorer_model::DirectoryState::Idle
+        ));
+        assert!(state.reopen_closed_tab().is_none());
+        assert_eq!(
+            state.close_tab(explorer_model::TabId::new()),
+            explorer_model::TabCloseOutcome::NotFound
+        );
+        assert!(!state.can_reopen_closed());
     }
 
     #[test]

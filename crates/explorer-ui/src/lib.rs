@@ -51,6 +51,7 @@ pub mod performance;
 mod pointer_capture;
 pub use pointer_capture::{PointerCaptureFactory, PointerCaptureSession};
 pub mod qos;
+mod recently_closed;
 pub mod remote_properties_window;
 pub mod remote_symlink_window;
 pub mod state;
@@ -326,6 +327,7 @@ fn action_can_reveal_idle_restored_tab(action: &ExplorerAction) -> bool {
     matches!(
         action,
         ExplorerAction::ActivateTab { .. }
+            | ExplorerAction::ReopenClosed
             | ExplorerAction::NextTab
             | ExplorerAction::PreviousTab
             | ExplorerAction::CloseActiveTab
@@ -1819,6 +1821,7 @@ fn is_durable_action(action: &ExplorerAction) -> bool {
     matches!(
         action,
         ExplorerAction::NewTab
+            | ExplorerAction::ReopenClosed
             | ExplorerAction::CloseActiveTab
             | ExplorerAction::CloseTab { .. }
             | ExplorerAction::ReorderTab { .. }
@@ -1909,6 +1912,7 @@ fn should_cancel_inline_rename(action: &ExplorerAction) -> bool {
     matches!(
         action,
         ExplorerAction::NewTab
+            | ExplorerAction::ReopenClosed
             | ExplorerAction::CloseActiveTab
             | ExplorerAction::ActivateTab { .. }
             | ExplorerAction::CloseTab { .. }
@@ -3326,6 +3330,7 @@ impl ExplorerRoot {
         if matches!(
             action,
             ExplorerAction::NewTab
+                | ExplorerAction::ReopenClosed
                 | ExplorerAction::CloseActiveTab
                 | ExplorerAction::CloseTab { .. }
                 | ExplorerAction::ActivateTab { .. }
@@ -4807,6 +4812,13 @@ impl ExplorerRoot {
         self.notify_durable_state();
     }
 
+    /// Records the final window snapshot, making closed-window order independent
+    /// of which window most recently navigated or changed a setting.
+    pub fn persist_before_window_close(&mut self, window: &Window, cx: &App) {
+        self.capture_durable_window_placement(window, cx);
+        self.notify_durable_state();
+    }
+
     pub fn attach_extension_settings_observer(&mut self, observer: ExtensionSettingsObserver) {
         self.extension_settings_observer = Some(observer);
     }
@@ -4908,6 +4920,19 @@ impl ExplorerRoot {
             return;
         };
         self.state.set_closed_windows(list());
+    }
+
+    fn restore_saved_window(&mut self, id: u64, tab_index: Option<u16>) -> bool {
+        if self
+            .restore_closed_window
+            .as_ref()
+            .is_some_and(|restore| restore(id, tab_index))
+        {
+            self.state.remove_closed_window(id);
+            true
+        } else {
+            false
+        }
     }
 
     pub fn publish_live_window(&self) {
@@ -7644,6 +7669,24 @@ impl ExplorerRoot {
         cx: &mut Context<Self>,
     ) {
         self.sync_active_file_scroll();
+        if matches!(
+            action,
+            ExplorerAction::CloseActiveTab
+                | ExplorerAction::CloseTab { .. }
+                | ExplorerAction::ReopenClosed
+        ) {
+            // Observe closures from sibling processes before recording a local
+            // tab close, keeping the combined undo order consistent.
+            self.refresh_closed_windows();
+        }
+        if action == ExplorerAction::ReopenClosed
+            && let Some(id) = self.state.most_recent_closed_window()
+        {
+            if self.restore_saved_window(id, None) {
+                cx.notify();
+            }
+            return;
+        }
         if let ExplorerAction::UpdatePreviewHostBoundary {
             parent_window,
             left_physical,
@@ -7753,10 +7796,7 @@ impl ExplorerRoot {
             self.refresh_closed_windows();
         }
         if let ExplorerAction::RestoreClosedWindow { id, tab_index } = action {
-            if let Some(restore) = self.restore_closed_window.clone() {
-                let _ = restore(id, tab_index);
-            }
-            self.state.remove_closed_window(id);
+            self.restore_saved_window(id, tab_index);
             cx.notify();
         }
         if action == ExplorerAction::HandoffToFileExplorer {
@@ -7886,6 +7926,7 @@ impl ExplorerRoot {
         if matches!(
             action,
             ExplorerAction::NewTab
+                | ExplorerAction::ReopenClosed
                 | ExplorerAction::CloseActiveTab
                 | ExplorerAction::CloseTab { .. }
                 | ExplorerAction::ActivateTab { .. }
@@ -7973,6 +8014,7 @@ impl ExplorerRoot {
         }
         let implicit_scrollbar_terminal = match &action {
             ExplorerAction::NewTab
+            | ExplorerAction::ReopenClosed
             | ExplorerAction::CloseActiveTab
             | ExplorerAction::ActivateTab { .. }
             | ExplorerAction::CloseTab { .. }
@@ -8010,6 +8052,7 @@ impl ExplorerRoot {
         if matches!(
             action,
             ExplorerAction::NewTab
+                | ExplorerAction::ReopenClosed
                 | ExplorerAction::CloseActiveTab
                 | ExplorerAction::CloseTab { .. }
                 | ExplorerAction::ActivateTab { .. }
@@ -8880,6 +8923,7 @@ impl ExplorerRoot {
         if matches!(
             &action,
             ExplorerAction::NewTab
+                | ExplorerAction::ReopenClosed
                 | ExplorerAction::CloseActiveTab
                 | ExplorerAction::ActivateTab { .. }
                 | ExplorerAction::CloseTab { .. }
@@ -9474,6 +9518,7 @@ impl ExplorerRoot {
                 | ExplorerAction::MoveColumnCursor { .. }
                 | ExplorerAction::ClearSelection
                 | ExplorerAction::NewTab
+                | ExplorerAction::ReopenClosed
                 | ExplorerAction::CloseActiveTab
                 | ExplorerAction::ActivateTab { .. }
                 | ExplorerAction::CloseTab { .. }
@@ -9908,6 +9953,7 @@ impl ExplorerRoot {
         synchronize_theme(&mut self.tokens, &self.state);
         self.synchronize_native_focus(window, cx);
         if self.state.close_requested() {
+            self.persist_before_window_close(window, cx);
             window.remove_window();
         }
         if !matches!(action, ExplorerAction::UpdatePreviewHostBoundary { .. }) {
@@ -11031,6 +11077,19 @@ impl Render for ExplorerRoot {
         reason = "the root registers the complete, auditable keyboard action scope in one place"
     )]
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // Navigation commits asynchronously. Return focus before the address editor
+        // is unmounted, otherwise global shortcuts target a detached input node.
+        if !matches!(
+            self.state.tabs().active_tab().view.address.mode,
+            explorer_model::AddressBarMode::Editing
+                | explorer_model::AddressBarMode::NavigationError
+        ) && self
+            .address_input
+            .as_ref()
+            .is_some_and(|input| input.read(cx).focus_handle(cx).is_focused(window))
+        {
+            self.synchronize_native_focus(window, cx);
+        }
         self.shell_icons.release_unused_atlas_images(window);
         self.sync_active_file_scroll();
         self.sync_windows_appearance(window);
@@ -11355,6 +11414,16 @@ impl Render for ExplorerRoot {
             .on_action(
                 cx.listener(|this, _: &actions::NewExplorerTab, window, cx| {
                     this.handle_action(ExplorerAction::NewTab, ActionSource::Keyboard, window, cx);
+                }),
+            )
+            .on_action(
+                cx.listener(|this, _: &actions::ReopenClosedExplorer, window, cx| {
+                    this.handle_action(
+                        ExplorerAction::ReopenClosed,
+                        ActionSource::Keyboard,
+                        window,
+                        cx,
+                    );
                 }),
             )
             .on_action(
@@ -16118,12 +16187,36 @@ mod tests {
     }
 
     #[test]
+    fn reopen_closed_window_failure_is_retryable_and_success_is_consumed_once() {
+        let mut root = ExplorerRoot::default();
+        root.attach_closed_window_bridge(
+            1,
+            Arc::new(|_, _| false),
+            Arc::new(|| {
+                vec![crate::state::ClosedWindowRecord {
+                    id: 2,
+                    title: "closed".into(),
+                    tabs: Vec::new(),
+                }]
+            }),
+        );
+        assert_eq!(root.state.most_recent_closed_window(), Some(2));
+        assert!(!root.restore_saved_window(2, None));
+        assert_eq!(root.state.most_recent_closed_window(), Some(2));
+        root.restore_closed_window = Some(Arc::new(|id, index| id == 2 && index.is_none()));
+        assert!(root.restore_saved_window(2, None));
+        root.refresh_closed_windows();
+        assert_eq!(root.state.most_recent_closed_window(), None);
+    }
+
+    #[test]
     fn only_active_tab_changes_probe_for_an_idle_restored_directory() {
         let tab_id = explorer_model::TabId::new();
         for action in [
             ExplorerAction::ActivateTab { tab_id },
             ExplorerAction::NextTab,
             ExplorerAction::PreviousTab,
+            ExplorerAction::ReopenClosed,
             ExplorerAction::CloseActiveTab,
             ExplorerAction::CloseTab { tab_id },
         ] {

@@ -320,6 +320,21 @@ impl ExplorerWindowState {
         id
     }
 
+    /// Restores committed history and presentation with a fresh request identity.
+    pub fn reopen_tab(
+        &mut self,
+        history: crate::NavigationHistory,
+        settings: crate::ViewSettings,
+        index: usize,
+    ) -> Option<TabId> {
+        let tab = TabState::from_restored(TabId::new(), history, settings)?;
+        let id = tab.id;
+        self.tabs.insert(index.min(self.tabs.len()), tab);
+        self.active_tab_id = id;
+        debug_assert!(self.validate().is_ok());
+        Some(id)
+    }
+
     /// Activates an existing tab without cancelling work in background tabs.
     pub fn activate(&mut self, id: TabId) -> bool {
         if self.tabs.iter().any(|tab| tab.id == id) {
@@ -439,6 +454,52 @@ mod tests {
             LocationDescriptor::file_system(format!(r"C:\fixture\{name}")),
             name,
         )
+    }
+
+    #[test]
+    fn reopen_tab_restores_history_order_and_settings_with_fresh_identity() {
+        let mut window = ExplorerWindowState::new(initial("first"));
+        let closed_id = window.new_tab();
+        let history = crate::NavigationHistory::from_resolved_parts(
+            vec![initial("back")],
+            initial("closed"),
+            vec![initial("forward")],
+        );
+        let mut settings = crate::ViewSettings::default();
+        settings.mode = crate::ViewMode::Details;
+        assert_eq!(window.close(closed_id), TabCloseOutcome::Closed);
+        let id = window.reopen_tab(history, settings.clone(), 1).unwrap();
+        assert_ne!(id, closed_id);
+        assert_eq!(window.tabs()[1].id, id);
+        assert_eq!(window.active_tab_id(), id);
+        assert_eq!(
+            window.active_tab().history.current().unwrap().display_title,
+            "closed"
+        );
+        assert_eq!(
+            window
+                .active_tab()
+                .history
+                .back_destination()
+                .unwrap()
+                .display_title,
+            "back"
+        );
+        assert_eq!(
+            window
+                .active_tab()
+                .history
+                .forward_destination()
+                .unwrap()
+                .display_title,
+            "forward"
+        );
+        assert_eq!(window.active_tab().view.settings, settings);
+        assert!(matches!(
+            window.active_tab().directory,
+            crate::DirectoryState::Idle
+        ));
+        window.validate().unwrap();
     }
 
     fn row(id: u8, name: &str) -> FileEntry {

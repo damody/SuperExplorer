@@ -26,6 +26,7 @@ gpui::actions!(
         CancelScrollbarDrag,
         NewExplorerTab,
         CloseExplorerTab,
+        ReopenClosedExplorer,
         NextExplorerTab,
         PreviousExplorerTab,
         ToggleExplorerTheme,
@@ -64,6 +65,7 @@ pub fn gpui_key_bindings() -> Vec<gpui::KeyBinding> {
         gpui::KeyBinding::new("escape", CancelScrollbarDrag, None),
         gpui::KeyBinding::new("ctrl-t", NewExplorerTab, None),
         gpui::KeyBinding::new("ctrl-w", CloseExplorerTab, None),
+        gpui::KeyBinding::new("ctrl-shift-t", ReopenClosedExplorer, None),
         gpui::KeyBinding::new("ctrl-tab", NextExplorerTab, None),
         gpui::KeyBinding::new("ctrl-shift-tab", PreviousExplorerTab, None),
         gpui::KeyBinding::new("ctrl-shift-d", ToggleExplorerTheme, None),
@@ -251,6 +253,7 @@ pub enum ExplorerAction {
     CancelFocusedInput,
     RestorePreviousFocus,
     NewTab,
+    ReopenClosed,
     CloseActiveTab,
     ActivateTab {
         tab_id: explorer_model::TabId,
@@ -890,6 +893,7 @@ impl ExplorerAction {
             Self::CancelFocusedInput => "CancelFocusedInput",
             Self::RestorePreviousFocus => "RestorePreviousFocus",
             Self::NewTab => "NewTab",
+            Self::ReopenClosed => "ReopenClosed",
             Self::CloseActiveTab => "CloseActiveTab",
             Self::ActivateTab { .. } => "ActivateTab",
             Self::CloseTab { .. } => "CloseTab",
@@ -1203,7 +1207,7 @@ pub struct KeyBinding {
     pub action: ExplorerAction,
 }
 
-pub const DEFAULT_BINDINGS: [KeyBinding; 20] = [
+pub const DEFAULT_BINDINGS: [KeyBinding; 21] = [
     binding(
         BindingScope::Window,
         KeyCode::Left,
@@ -1299,6 +1303,14 @@ pub const DEFAULT_BINDINGS: [KeyBinding; 20] = [
         false,
         false,
         ExplorerAction::NewTab,
+    ),
+    binding(
+        BindingScope::Window,
+        KeyCode::T,
+        true,
+        true,
+        false,
+        ExplorerAction::ReopenClosed,
     ),
     binding(
         BindingScope::Window,
@@ -1741,6 +1753,9 @@ fn action_available(state: &AppViewState, action: &ExplorerAction) -> bool {
         ),
         ExplorerAction::RestorePreviousFocus => state.previous_focus().is_some(),
         ExplorerAction::NewTab => availability.is_enabled(CommandKind::NewTab),
+        ExplorerAction::ReopenClosed => {
+            availability.is_enabled(CommandKind::NewTab) && state.can_reopen_closed()
+        }
         ExplorerAction::CloseActiveTab => availability.is_enabled(CommandKind::CloseTab),
         ExplorerAction::CloseTab { tab_id } => {
             availability.is_enabled(CommandKind::CloseTab)
@@ -2296,6 +2311,10 @@ fn apply_action(state: &mut AppViewState, action: ExplorerAction) -> FocusSurfac
         }
         ExplorerAction::NewTab => {
             let _ = state.new_tab();
+            FocusSurface::TabStrip
+        }
+        ExplorerAction::ReopenClosed => {
+            let _ = state.reopen_closed_tab();
             FocusSurface::TabStrip
         }
         ExplorerAction::CloseActiveTab => {
@@ -4016,8 +4035,40 @@ mod tests {
     }
 
     #[test]
+    fn reopen_closed_shortcut_routes_ctrl_shift_t_without_replacing_ctrl_t() {
+        let bindings = super::gpui_key_bindings();
+        assert!(
+            bindings
+                .iter()
+                .any(|binding| binding.keystrokes()[0].key() == "t"
+                    && binding.keystrokes()[0].modifiers().control
+                    && binding.keystrokes()[0].modifiers().shift
+                    && binding.action().name() == "explorer::ReopenClosedExplorer")
+        );
+        assert!(
+            DEFAULT_BINDINGS
+                .iter()
+                .any(|binding| binding.chord.key == super::KeyCode::T
+                    && binding.chord.control
+                    && binding.chord.shift
+                    && binding.action == ExplorerAction::ReopenClosed)
+        );
+        let mut state = AppViewState::default();
+        let id = state.new_tab();
+        state.close_tab(id);
+        let trace = dispatch_action(
+            &mut state,
+            ExplorerAction::ReopenClosed,
+            ActionSource::Keyboard,
+        );
+        assert_eq!(trace.outcome, ActionOutcome::Handled);
+        assert_eq!(state.tabs().tabs().len(), 2);
+        assert_ne!(state.tabs().active_tab_id(), id);
+    }
+
+    #[test]
     fn gpui_registration_has_one_binding_per_window_chord() {
-        assert_eq!(super::gpui_key_bindings().len(), 27);
+        assert_eq!(super::gpui_key_bindings().len(), 32);
         assert!(!super::gpui_text_input_bindings().is_empty());
     }
 
