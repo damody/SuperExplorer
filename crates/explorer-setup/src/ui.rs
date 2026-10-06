@@ -870,8 +870,11 @@ fn launch_if_checked() {
         if let Some(wizard) = slot.borrow().as_ref() {
             let checked = unsafe { SendMessageW(wizard.launch, BM_GETCHECK, None, None).0 } != 0;
             if checked {
-                let exe = wizard.install_dir.join("SuperExplorer.exe");
-                let _ = std::process::Command::new(exe).spawn();
+                if let Err(error) = crate::launch_after_install(&wizard.install_dir) {
+                    crate::message_box("SuperExplorer 啟動失敗", &format!(
+                        "安裝已完成，但無法開啟 SuperExplorer。\n\n{error:#}\n\n請執行安裝目錄中的 Collect-StartupDiagnostics.cmd 收集記錄。"
+                    ));
+                }
             }
         }
     });

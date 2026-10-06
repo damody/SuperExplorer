@@ -522,6 +522,8 @@ local function main()
             { superexplorer_inputs.WORKER_EXE, "explorer-extension-worker.exe" },
             { superexplorer_inputs.QUIESCE_EXE, "superexplorer-quiesce.exe" },
             { superexplorer_inputs.EVERYTHING_DLL, "Everything64.dll" },
+            { path(root, "scripts", "Collect-StartupDiagnostics.ps1"), "Collect-StartupDiagnostics.ps1" },
+            { path(root, "scripts", "Collect-StartupDiagnostics.cmd"), "Collect-StartupDiagnostics.cmd" },
         }
         for _, item in ipairs(staged) do
             fs.copy_if_different(item[1], path(payload, item[2]))

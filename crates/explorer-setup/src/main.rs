@@ -28,6 +28,46 @@ const PRODUCT_UNINSTALL_KEY: &str =
     r"Software\Microsoft\Windows\CurrentVersion\Uninstall\SuperExplorer";
 const SERVICE_NAME: &str = "SuperExplorerMft";
 
+/// Keep setup's launch attempt and inherited console output even if the UI
+/// exits before its own diagnostics can start. The app handles de-elevation.
+fn launch_after_install(install_dir: &Path) -> Result<()> {
+    let log_path = install_dir.join("startup-launch.log");
+    let mut log = fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&log_path)
+        .with_context(|| format!("create startup log {}", log_path.display()))?;
+    let exe = install_dir.join("SuperExplorer.exe");
+    writeln!(
+        log,
+        "\nLaunch time={:?} executable={}",
+        std::time::SystemTime::now(),
+        exe.display()
+    )?;
+    let result = Command::new(&exe)
+        .current_dir(install_dir)
+        .stdout(Stdio::from(log.try_clone()?))
+        .stderr(Stdio::from(log.try_clone()?))
+        .spawn();
+    match result {
+        Ok(child) => {
+            writeln!(
+                log,
+                "Launched PID={}; startup success is not yet confirmed",
+                child.id()
+            )?;
+        }
+        Err(error) => {
+            writeln!(log, "Launch failed: {error}")?;
+            log.flush()?;
+            return Err(error)
+                .with_context(|| format!("launch {}; log: {}", exe.display(), log_path.display()));
+        }
+    }
+    log.flush()?;
+    Ok(())
+}
+
 fn main() {
     match run() {
         Ok(()) => {}
@@ -669,6 +709,16 @@ fn delete_reg_key(key: &str) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn missing_installed_app_returns_error_and_leaves_launch_log() {
+        let install_dir = tempfile::tempdir().unwrap();
+        let error = launch_after_install(install_dir.path()).unwrap_err();
+        let log = fs::read_to_string(install_dir.path().join("startup-launch.log")).unwrap();
+        assert!(log.contains("Launch failed:"));
+        assert!(log.contains("SuperExplorer.exe"));
+        assert!(format!("{error:#}").contains("startup-launch.log"));
+    }
 
     #[test]
     fn packs_and_extracts_payload_without_service() {

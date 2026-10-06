@@ -27,6 +27,7 @@ use explorer_model::WorkspaceModel;
 use explorer_shell_win::ShellPlatform;
 use explorer_ui::ExplorerUiState;
 
+mod startup_failure;
 mod startup_privileges;
 
 #[link(name = "kernel32")]
@@ -45,9 +46,7 @@ fn main() {
         Ok(true) => return,
         Ok(false) => {}
         Err(error) => {
-            explorer_common::write_stderr_lossy(&format!(
-                "SuperExplorer could not start with ordinary user privileges: {error:#}"
-            ));
+            startup_failure::report("切換為一般使用者啟動", &format!("{error:#}"), None);
             std::process::exit(1);
         }
     }
@@ -67,10 +66,8 @@ fn main() {
         match initialize_diagnostics(DiagnosticsConfig::from_environment(build.package_version)) {
             Ok(diagnostics) => diagnostics,
             Err(error) => {
-                explorer_common::write_stderr_lossy(&format!(
-                    "Explorer diagnostics initialization failed: {error}"
-                ));
-                return;
+                startup_failure::report("初始化診斷記錄", &error.to_string(), None);
+                std::process::exit(1);
             }
         };
     if diagnostics_console {
@@ -98,6 +95,12 @@ fn main() {
                 Some(file!()),
             );
             tracing::error!(%error, "Explorer stopped after a controlled application failure");
+            startup_failure::report(
+                "啟動或執行程式",
+                &format!("{error:#}"),
+                diagnostics.error_log_path().as_deref(),
+            );
+            std::process::exit(1);
         }
         Err(payload) => {
             explorer_common::log_isolated_panic(
@@ -106,6 +109,17 @@ fn main() {
                 payload.as_ref(),
                 Some(file!()),
             );
+            let reason = payload
+                .downcast_ref::<String>()
+                .map(String::as_str)
+                .or_else(|| payload.downcast_ref::<&str>().copied())
+                .unwrap_or("程式發生未預期的錯誤，請查看診斷記錄。");
+            startup_failure::report(
+                "啟動或執行程式",
+                reason,
+                diagnostics.error_log_path().as_deref(),
+            );
+            std::process::exit(1);
         }
     }
 }
