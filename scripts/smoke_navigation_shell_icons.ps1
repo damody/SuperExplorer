@@ -15,6 +15,21 @@ $context = $null
 
 function Get-ThisPcLabel { -join ([char[]]@(0x672C, 0x6A5F)) }
 
+function Click-TestRow([Windows.Automation.AutomationElement]$Element) {
+    $bounds = $Element.Current.BoundingRectangle
+    $point = [RustExplorerUitest.Native+POINT]::new()
+    $point.X = [int]($bounds.Left + $bounds.Width / 2)
+    $point.Y = [int]($bounds.Top + $bounds.Height / 2)
+    $previous = [RustExplorerUitest.Native]::SetThreadDpiAwarenessContext([IntPtr]::new(-4))
+    try { [void][RustExplorerUitest.Native]::ScreenToClient($context.Hwnd, [ref]$point) }
+    finally { [void][RustExplorerUitest.Native]::SetThreadDpiAwarenessContext($previous) }
+    $position = [IntPtr]::new(($point.Y -shl 16) -bor ($point.X -band 0xffff))
+    [void][RustExplorerUitest.Native]::PostMessage($context.Hwnd, 0x200, [IntPtr]::Zero, $position)
+    [void][RustExplorerUitest.Native]::PostMessage($context.Hwnd, 0x201, [IntPtr]::new(1), $position)
+    [void][RustExplorerUitest.Native]::PostMessage($context.Hwnd, 0x202, [IntPtr]::Zero, $position)
+    Start-Sleep -Milliseconds 250
+}
+
 function Find-NavigationRow([string]$Description, [scriptblock]$NamePredicate) {
     $window = $context.Root.Current.BoundingRectangle
     Find-UitestElement -Root $context.Root -Description $Description -Predicate {
@@ -24,7 +39,7 @@ function Find-NavigationRow([string]$Description, [scriptblock]$NamePredicate) {
             $bounds.Width -gt 0 -and $bounds.Height -gt 0 -and
             $bounds.Left -lt ($window.Left + 420) -and
             $bounds.Top -gt ($window.Top + 150) -and $bounds.Bottom -lt $window.Bottom -and
-            (& $NamePredicate $element.Current.Name)
+            (& $NamePredicate ($element.Current.Name -replace '[\u2066-\u2069]', ''))
     }
 }
 
@@ -52,7 +67,7 @@ function Get-IconMetrics(
     $bitmap = [Drawing.Bitmap]::FromFile($Screenshot)
     try {
         $left = [Math]::Max(0, [int][Math]::Round($chevronBounds.Right - $window.Left))
-        $right = [Math]::Min($bitmap.Width - 1, $left + 25)
+        $right = [Math]::Min($bitmap.Width - 1, $left + [int]($chevronBounds.Width * 1.25))
         $top = [Math]::Max(0, [int][Math]::Round($rowBounds.Top - $window.Top + 4))
         $bottom = [Math]::Min($bitmap.Height - 1, [int][Math]::Round($rowBounds.Bottom - $window.Top - 4))
         $colors = [Collections.Generic.HashSet[int]]::new()
@@ -82,7 +97,16 @@ function Get-IconMetrics(
 
 try {
     $context = Start-UitestExplorer -InitialPath $fixture -OutputDirectory $output -Profile $Profile -SkipBuild:$SkipBuild
-    Start-Sleep -Milliseconds 900
+    Start-Sleep -Seconds 2
+    $context.Process.Refresh()
+    $context.Hwnd = $context.Process.MainWindowHandle
+    $context.Root = [Windows.Automation.AutomationElement]::FromHandle($context.Hwnd)
+
+    # Bring the complete drive section into view at high display scaling.
+    $window = $context.Root.Current.BoundingRectangle
+    $position = [IntPtr]::new(([int]($window.Top + $window.Height / 2) -shl 16) -bor ([int]($window.Left + 100) -band 0xffff))
+    [void][RustExplorerUitest.Native]::PostMessage($context.Hwnd, 0x20a, [IntPtr]::new(-720 -shl 16), $position)
+    Start-Sleep -Milliseconds 800
 
     $driveRows = @{}
     foreach ($letter in @('C','D','E')) {
@@ -101,7 +125,7 @@ try {
     }
 
     $thisPc = Find-NavigationRow 'This PC navigation row' { param($name) $name -eq (Get-ThisPcLabel) }
-    Invoke-UitestClick -Element $thisPc
+    Click-TestRow $thisPc
     Start-Sleep -Milliseconds 1200
 
     $afterPath = Join-Path $output 'navigation-icons-after-this-pc.png'
@@ -113,7 +137,7 @@ try {
     }
 
     $driveC = Find-NavigationRow 'C drive to select' { param($name) $name -match '\(C:\)$' }
-    Invoke-UitestClick -Element $driveC
+    Click-TestRow $driveC
     Start-Sleep -Milliseconds 1400
     $selectedDrivePath = Join-Path $output 'navigation-icons-after-selecting-c.png'
     Save-UitestScreenshot -Root $context.Root -Path $selectedDrivePath
@@ -124,7 +148,7 @@ try {
     }
 
     $driveD = Find-NavigationRow 'D drive for folder expansion' { param($name) $name -match '\(D:\)$' }
-    Invoke-UitestClick -Element (Find-RowChevron $driveD)
+    Click-TestRow (Find-RowChevron $driveD)
     $testFolder = Find-NavigationRow 'expanded generic folder' { param($name) $name -eq '$RECYCLE.BIN' }
     $foldersPath = Join-Path $output 'navigation-generic-folder-icons.png'
     Save-UitestScreenshot -Root $context.Root -Path $foldersPath

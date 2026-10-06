@@ -13049,14 +13049,7 @@ fn navigation_item_row(
                 .flex_none()
                 .child(img(texture).size_full())
                 .into_any_element(),
-            (
-                true,
-                None,
-                Some(
-                    crate::navigation_pane::NavigationIcon::Drive
-                    | crate::navigation_pane::NavigationIcon::Folder,
-                ),
-            ) => div()
+            (true, None, Some(crate::navigation_pane::NavigationIcon::Folder)) => div()
                 .w(px(tokens.layout.navigation_icon_size.value()))
                 .h(px(tokens.layout.navigation_icon_size.value()))
                 .flex_none()
@@ -21066,13 +21059,13 @@ mod tests {
     }
 
     #[test]
-    fn navigation_drive_and_folder_missing_shell_pixels_reserve_an_empty_slot() {
+    fn navigation_drive_missing_shell_pixels_uses_a_visible_fallback() {
         let source = include_str!("chrome.rs");
         let production = source
             .split("#[cfg(test)]")
             .next()
             .expect("production source precedes tests");
-        assert!(production.contains("NavigationIcon::Drive\n                    | crate::navigation_pane::NavigationIcon::Folder"));
+        assert!(!production.contains("NavigationIcon::Drive\n                    | crate::navigation_pane::NavigationIcon::Folder"));
         assert!(production.contains("generic_folder_texture.cloned()"));
         assert!(!production.contains("(true, None, Some(icon)) if matches!(icon"));
     }

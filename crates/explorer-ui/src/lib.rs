@@ -732,15 +732,25 @@ impl VisibleItemIconCache {
             .entry(key.location.clone())
             .or_default();
         let latest_overlay = self.latest_overlay.entry(key.location.clone()).or_default();
-        if key.association_generation < *latest || key.overlay_generation < *latest_overlay {
+        let navigation_key = key.item_id.is_none()
+            && key.association_generation == 0
+            && key.overlay_generation == 0;
+        if !navigation_key
+            && (key.association_generation < *latest || key.overlay_generation < *latest_overlay)
+        {
             self.stale_rejections = self.stale_rejections.saturating_add(1);
             return false;
         }
-        if key.association_generation > *latest || key.overlay_generation > *latest_overlay {
+        if !navigation_key
+            && (key.association_generation > *latest || key.overlay_generation > *latest_overlay)
+        {
             *latest = key.association_generation;
             *latest_overlay = key.overlay_generation;
             self.entries.retain(|candidate, _| {
-                candidate.location != key.location
+                (candidate.item_id.is_none()
+                    && candidate.association_generation == 0
+                    && candidate.overlay_generation == 0)
+                    || candidate.location != key.location
                     || candidate.association_generation >= key.association_generation
                         && candidate.overlay_generation >= key.overlay_generation
             });
@@ -6838,6 +6848,27 @@ impl ExplorerRoot {
         .into_iter()
         .filter_map(|item| item.icon_location)
         .collect::<Vec<_>>();
+        let missing_locations = static_locations
+            .iter()
+            .filter(|location| {
+                self.shell_icons
+                    .peek_compatible_navigation_icon(location, theme, self.shell_icon_dpi)
+                    .is_none()
+                    && !self
+                        .negative_icon_keys
+                        .contains(&navigation_pane::shell_icon_key(
+                            location,
+                            theme,
+                            self.shell_icon_dpi,
+                        ))
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        if !missing_locations.is_empty() {
+            let tab = self.state.tabs().active_tab();
+            let context = explorer_model::RequestContext::new(tab.id, tab.generation);
+            self.submit_location_icon_loads(&context, missing_locations.iter());
+        }
         let mut snapshot = FileIconSnapshot {
             textures: static_locations
                 .iter()
@@ -11321,6 +11352,15 @@ impl Render for ExplorerRoot {
                 key
             })
             .collect();
+        // Small sidebar and breadcrumb visuals remain needed while large file
+        // icons and thumbnails churn through the shared bounded cache.
+        self.shell_icons.protected_keys.extend(
+            self.shell_icons
+                .entries
+                .keys()
+                .filter(|key| key.item_id.is_none())
+                .cloned(),
+        );
         if !icon_entries.is_empty() {
             let tab = self.state.tabs().active_tab();
             let context = explorer_model::RequestContext::new(tab.id, tab.generation);
@@ -14954,7 +14994,8 @@ mod tests {
         >::new()));
         assert!(cache.insert(&exact, Arc::clone(&texture)));
         assert!(cache.insert(&newer, Arc::clone(&texture)));
-        assert!(!cache.entries.contains_key(&exact));
+        assert!(cache.entries.contains_key(&exact));
+        cache.entries.remove(&exact);
 
         let (resolved_key, resolved_texture) = cache
             .get_compatible_navigation_icon(&location, explorer_model::ShellIconTheme::Light, 96)
@@ -16968,6 +17009,76 @@ mod tests {
                 "each visible tab location is requested and deduplicated"
             );
         }
+    }
+
+    #[test]
+    fn navigation_drive_icons_survive_file_visual_epochs_and_can_reload() {
+        let location = explorer_model::LocationDescriptor::file_system(r"C:\");
+        let navigation = crate::navigation_pane::shell_icon_key(
+            &location,
+            explorer_model::ShellIconTheme::Light,
+            96,
+        );
+        let mut file = navigation.clone();
+        file.item_id = explorer_model::ShellItemId::from_provider_bytes([201]);
+        file.association_generation = 7;
+        file.overlay_generation = 9;
+        file.size_bucket = 256;
+        let texture = Arc::new(gpui::RenderImage::new(smallvec::SmallVec::<
+            [image::Frame; 1],
+        >::new()));
+        let mut cache = VisibleItemIconCache::default();
+        assert!(cache.insert(&navigation, texture.clone()));
+        assert!(cache.insert(&file, texture.clone()));
+        assert!(cache.entries.contains_key(&navigation));
+        cache.entries.remove(&navigation);
+        assert!(cache.insert(&navigation, texture));
+        let mut stale_file = file;
+        stale_file.overlay_generation = 8;
+        assert!(!cache.insert(
+            &stale_file,
+            Arc::new(gpui::RenderImage::new(smallvec::SmallVec::<
+                [image::Frame; 1],
+            >::new()))
+        ));
+    }
+
+    #[test]
+    fn navigation_drive_cache_misses_are_reloaded_once_and_failures_do_not_spin() {
+        let service = Arc::new(RecordingService::default());
+        let mut root = ExplorerRoot {
+            service: Some(service.clone()),
+            ..ExplorerRoot::default()
+        };
+        let drive = crate::navigation_pane::shell_icon_key(
+            &explorer_model::LocationDescriptor::file_system(r"C:\"),
+            explorer_model::ShellIconTheme::Light,
+            96,
+        );
+        root.navigation_icon_snapshot(&[]);
+        root.navigation_icon_snapshot(&[]);
+        let count = |service: &RecordingService| {
+            service
+                .0
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|command| {
+                    matches!(command,
+            explorer_model::ExplorerCommand::LoadShellIcon { key, .. } if key == &drive)
+                })
+                .count()
+        };
+        assert_eq!(count(&service), 1);
+        root.pending_icon_keys.remove(&drive);
+        root.pending_icon_contexts.remove(&drive);
+        root.navigation_icon_snapshot(&[]);
+        assert_eq!(count(&service), 2);
+        root.pending_icon_keys.remove(&drive);
+        root.pending_icon_contexts.remove(&drive);
+        root.remember_negative_icon(drive.clone());
+        root.navigation_icon_snapshot(&[]);
+        assert_eq!(count(&service), 2);
     }
 
     #[test]
