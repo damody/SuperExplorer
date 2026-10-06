@@ -399,24 +399,26 @@ fn run_worker(
             explorer_extension_protocol::OperationClass::Thumbnail => Duration::from_secs(8),
             _ => Duration::from_secs(3),
         };
+    let Some(stdout) = worker.output.take() else {
+        return terminal_with_feature(nonce, request.request_id, worker_pid, "worker-disconnect");
+    };
+    // Drain while the worker runs: thumbnail pixels exceed the pipe buffer and
+    // a worker blocked in write_all cannot exit for the old wait-before-read path.
+    let (sender, responses) = mpsc::sync_channel(1);
+    std::thread::spawn(move || {
+        let mut bytes = Vec::new();
+        let result = stdout
+            .take((MAXIMUM_FRAME + 1) as u64)
+            .read_to_end(&mut bytes)
+            .map(|_| bytes);
+        let _ = sender.send(result);
+    });
+    let mut received = None;
     loop {
-        match worker.child.try_wait() {
-            Ok(Some(status)) if status.success() => {
-                let Some(output) = worker.output.take() else {
-                    return terminal_with_feature(
-                        nonce,
-                        request.request_id,
-                        worker_pid,
-                        "worker-disconnect",
-                    );
-                };
-                let mut bytes = Vec::new();
-                if output
-                    .take((MAXIMUM_FRAME + 1) as u64)
-                    .read_to_end(&mut bytes)
-                    .is_err()
-                    || bytes.len() > MAXIMUM_FRAME
-                {
+        if received.is_none() {
+            match responses.try_recv() {
+                Ok(Ok(bytes)) if bytes.len() <= MAXIMUM_FRAME => received = Some(bytes),
+                Ok(Ok(_)) => {
                     return terminal_with_feature(
                         nonce,
                         request.request_id,
@@ -424,6 +426,51 @@ fn run_worker(
                         "worker-oversized",
                     );
                 }
+                Ok(Err(_)) | Err(mpsc::TryRecvError::Disconnected) => {
+                    return terminal_with_feature(
+                        nonce,
+                        request.request_id,
+                        worker_pid,
+                        "worker-disconnect",
+                    );
+                }
+                Err(mpsc::TryRecvError::Empty) => {}
+            }
+        }
+        match worker.child.try_wait() {
+            Ok(Some(status)) if status.success() => {
+                let bytes = match received.take() {
+                    Some(bytes) => bytes,
+                    None => match responses
+                        .recv_timeout(deadline.saturating_duration_since(Instant::now()))
+                    {
+                        Ok(Ok(bytes)) if bytes.len() <= MAXIMUM_FRAME => bytes,
+                        Ok(Ok(_)) => {
+                            return terminal_with_feature(
+                                nonce,
+                                request.request_id,
+                                worker_pid,
+                                "worker-oversized",
+                            );
+                        }
+                        Err(mpsc::RecvTimeoutError::Timeout) => {
+                            return terminal_with_feature(
+                                nonce,
+                                request.request_id,
+                                worker_pid,
+                                "timeout",
+                            );
+                        }
+                        _ => {
+                            return terminal_with_feature(
+                                nonce,
+                                request.request_id,
+                                worker_pid,
+                                "worker-disconnect",
+                            );
+                        }
+                    },
+                };
                 return Frame::new(
                     MessageKind::Terminal,
                     worker_pid,
@@ -630,6 +677,69 @@ mod tests {
     use std::{process::Command, time::Duration};
 
     use super::WorkerJob;
+
+    fn worker_with_output(length: usize) -> super::PreparedWorker {
+        let mut command = Command::new("powershell.exe");
+        command
+            .args([
+                "-NoProfile",
+                "-Command",
+                &format!(
+                    "[Console]::OpenStandardOutput().Write([byte[]]::new({length}),0,{length})"
+                ),
+            ])
+            .stdin(super::Stdio::piped())
+            .stdout(super::Stdio::piped())
+            .stderr(super::Stdio::null());
+        explorer_common::configure_background_command(&mut command);
+        let mut child = command.spawn().unwrap();
+        let job = WorkerJob::create().unwrap();
+        job.assign(&child).unwrap();
+        super::PreparedWorker {
+            input: child.stdin.take(),
+            output: child.stdout.take(),
+            child,
+            _job: job,
+        }
+    }
+
+    fn run_output_worker(length: usize) -> super::Frame {
+        let nonce = super::SessionNonce([1; 16]);
+        let request = super::Frame::new(
+            super::MessageKind::Start,
+            0,
+            nonce,
+            super::BrokerRequestId(1),
+            super::StartPayload {
+                operation: explorer_extension_protocol::OperationClass::Thumbnail,
+                flags: 0,
+                descriptor: Vec::new(),
+            }
+            .encode()
+            .unwrap(),
+        );
+        super::run_worker(
+            &request,
+            nonce,
+            &mut Vec::new(),
+            Some(worker_with_output(length)),
+        )
+    }
+
+    #[test]
+    fn thumbnail_worker_output_larger_than_pipe_capacity_is_drained_before_exit() {
+        let started = std::time::Instant::now();
+        let response = run_output_worker(1024 * 1024);
+        assert_eq!(response.payload.len(), 1024 * 1024);
+        assert!(response.payload.iter().all(|byte| *byte == 0));
+        assert!(started.elapsed() < Duration::from_secs(8));
+    }
+
+    #[test]
+    fn thumbnail_worker_output_remains_bounded() {
+        let response = run_output_worker(super::MAXIMUM_FRAME + 1);
+        assert_eq!(response.payload, b"worker-oversized");
+    }
 
     #[test]
     fn worker_job_allows_user_invoked_shell_command_child_to_break_away() {
