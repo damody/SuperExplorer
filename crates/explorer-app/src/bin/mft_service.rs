@@ -93,7 +93,25 @@ fn persisted_write_guard() -> Result<std::sync::MutexGuard<'static, ()>, String>
 struct ProtectedFocusImageV1 {
     path: PathBuf,
     file_identity: u128,
-    service_creation_100ns: u64,
+}
+
+impl ProtectedFocusImageV1 {
+    fn authorize(
+        &self,
+        client: &mft_focus::FocusClientIdentityV1,
+        active_session: u32,
+    ) -> Result<u64, &'static str> {
+        // A service restart must accept an already-running installed client.
+        // Its creation time identifies the process; it is not an install epoch.
+        // The caller has already compared the actual token SIDs with EqualSid.
+        mft_focus::authorize_focus_client(
+            client,
+            active_session,
+            &[1],
+            &self.path,
+            self.file_identity,
+        )
+    }
 }
 
 struct QueryActivityGuardV1<'a>(&'a AtomicUsize);
@@ -187,11 +205,6 @@ fn process_creation_100ns(process: HANDLE) -> Result<u64, String> {
     Ok(creation)
 }
 
-#[expect(
-    unsafe_code,
-    reason = "binding focus authorization to this service requires a raw Win32 process handle"
-)]
-// SAFETY: OpenProcess receives this live process ID; its validated result is immediately owned by WinHandle.
 fn initialize_protected_focus_image() -> Result<(), String> {
     let path = std::env::current_exe()
         .map_err(|error| error.to_string())?
@@ -200,14 +213,9 @@ fn initialize_protected_focus_image() -> Result<(), String> {
         .join("SuperExplorer.exe");
     let path = std::fs::canonicalize(path).map_err(|error| error.to_string())?;
     let file_identity = u128::from(mft_size_map::file_reference_number(&path)?);
-    let service =
-        unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, std::process::id()) }
-            .map_err(|error| error.to_string())?;
-    let service = WinHandle(service);
     let protected = ProtectedFocusImageV1 {
         path,
         file_identity,
-        service_creation_100ns: process_creation_100ns(service.0)?,
     };
     PROTECTED_FOCUS_IMAGE
         .set(protected)
@@ -294,9 +302,6 @@ fn authorize_focus_pipe(pipe: isize) -> Result<(u64, isize), String> {
     let protected = PROTECTED_FOCUS_IMAGE
         .get()
         .ok_or_else(|| "protected focus image is unavailable".to_owned())?;
-    if creation < protected.service_creation_100ns {
-        return Err("focus process predates the protected service image epoch".to_owned());
-    }
     if !mft_focus::same_protected_image_path(&image, &protected.path) {
         return Err("focus process is not the installed SuperExplorer image".to_owned());
     }
@@ -309,13 +314,7 @@ fn authorize_focus_pipe(pipe: isize) -> Result<(u64, isize), String> {
         image_path: image,
         image_file_identity: u128::from(image_identity),
     };
-    let owner = mft_focus::authorize_focus_client(
-        &client,
-        active_session,
-        &[1],
-        &protected.path,
-        protected.file_identity,
-    )?;
+    let owner = protected.authorize(&client, active_session)?;
     let raw = process.0.0 as isize;
     std::mem::forget(process);
     Ok((owner, raw))
@@ -3899,7 +3898,9 @@ fn watch_volume_memory(
         }
         if let Ok(mut live) = live_volumes.lock()
             && let Some(runtime) = live.get_mut(&letter)
-            && runtime.advance_exact_observed_cursor(read_next_usn).is_err()
+            && runtime
+                .advance_exact_observed_cursor(read_next_usn)
+                .is_err()
         {
             runtime.mark_inexact();
             startup_store = StartupStoreV1::FreshRebuildRequired;
@@ -4282,6 +4283,40 @@ fn write_status_with_high_water(
 mod tests {
     use super::*;
     use std::{collections::BTreeMap, fs, path::Path};
+
+    #[test]
+    fn focus_authorization_survives_service_restart_with_existing_client() {
+        let path = PathBuf::from(r"C:\Program Files\SuperExplorer\SuperExplorer.exe");
+        let client = mft_focus::FocusClientIdentityV1 {
+            process_id: 42,
+            process_creation_100ns: 99,
+            session_id: 3,
+            user_sid: vec![1],
+            image_path: path.clone(),
+            image_file_identity: 77,
+        };
+        let before_restart = ProtectedFocusImageV1 {
+            path: path.clone(),
+            file_identity: 77,
+        };
+        let after_restart = ProtectedFocusImageV1 {
+            path,
+            file_identity: 77,
+        };
+        let owner = before_restart.authorize(&client, 3).unwrap();
+        assert_eq!(after_restart.authorize(&client, 3), Ok(owner));
+        assert!(after_restart.authorize(&client, 4).is_err());
+
+        let mut replaced = client.clone();
+        replaced.image_file_identity = 78;
+        assert!(after_restart.authorize(&replaced, 3).is_err());
+        replaced = client.clone();
+        replaced.image_path = PathBuf::from(r"C:\Temp\SuperExplorer.exe");
+        assert!(after_restart.authorize(&replaced, 3).is_err());
+        replaced = client;
+        replaced.process_creation_100ns = 0;
+        assert!(after_restart.authorize(&replaced, 3).is_err());
+    }
 
     #[test]
     fn query_journal_watermark_requires_pre_query_deletions_but_not_a_quiet_volume() {
