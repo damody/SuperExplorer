@@ -45,6 +45,54 @@ use windows::{
 static ACTIVE_NATIVE_DRAGS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 static LAST_NATIVE_DRAG_EFFECT: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
 
+fn executable_drop_command(
+    executable: &std::path::Path,
+    paths: &[std::path::PathBuf],
+) -> Result<std::process::Command, ExplorerError> {
+    if !explorer_model::is_executable_drop_target(
+        &LocationDescriptor::file_system(executable),
+        false,
+    ) || !executable.is_absolute()
+        || !executable.is_file()
+        || paths.is_empty()
+        || paths.iter().any(|path| !path.is_absolute())
+    {
+        return Err(ExplorerError::new(
+            ExplorerErrorKind::Input,
+            "launch dropped files",
+            false,
+            "無法將檔案傳給這個程式。",
+            "expected an existing absolute executable path and nonempty absolute file paths",
+        ));
+    }
+    let mut command = std::process::Command::new(executable);
+    // Command quotes each OsStr for Windows. Never concatenate paths into a
+    // shell command, so spaces, Unicode, and shell metacharacters stay literal.
+    command.args(paths);
+    if let Some(parent) = executable.parent() {
+        command.current_dir(parent);
+    }
+    Ok(command)
+}
+
+pub(crate) fn launch_dropped_files(
+    executable: &std::path::Path,
+    paths: &[std::path::PathBuf],
+) -> Result<(), ExplorerError> {
+    executable_drop_command(executable, paths)?
+        .spawn()
+        .map(|_| ())
+        .map_err(|error| {
+            ExplorerError::new(
+                ExplorerErrorKind::Availability,
+                "launch dropped files",
+                true,
+                "無法啟動接收拖放檔案的程式。",
+                error.to_string(),
+            )
+        })
+}
+
 struct ActiveDragGuard;
 impl Drop for ActiveDragGuard {
     fn drop(&mut self) {
@@ -489,6 +537,62 @@ mod tests {
     };
 
     use super::*;
+
+    #[test]
+    fn executable_drop_passes_literal_paths_to_real_process() {
+        let fixture = tempfile::tempdir().unwrap();
+        let directory = fixture.path().join("程式 with spaces");
+        fs::create_dir(&directory).unwrap();
+        let source = directory.join("argument_probe.rs");
+        fs::write(&source, r#"fn main() {
+            let args: Vec<_> = std::env::args_os().skip(1).collect();
+            std::fs::write(&args[0], format!("{:?}\n{:?}", args, std::env::current_dir().unwrap())).unwrap();
+        }"#).unwrap();
+        let executable = directory.join("viewer.EXE");
+        let compiled = Command::new("rustc")
+            .arg(&source)
+            .arg("-o")
+            .arg(&executable)
+            .output()
+            .unwrap();
+        assert!(
+            compiled.status.success(),
+            "{}",
+            String::from_utf8_lossy(&compiled.stderr)
+        );
+        let output = directory.join("received.txt");
+        let paths = vec![
+            output.clone(),
+            directory.join("中文 & one file.txt"),
+            directory.join("two;$(literal).txt"),
+        ];
+        for path in &paths[1..] {
+            fs::write(path, b"unchanged").unwrap();
+        }
+        launch_dropped_files(&executable, &paths).unwrap();
+        let args: Vec<_> = paths
+            .iter()
+            .map(|path| path.as_os_str().to_owned())
+            .collect();
+        let expected = format!("{:?}\n{:?}", args, directory);
+        let deadline = TestInstant::now() + TestDuration::from_secs(5);
+        loop {
+            if fs::read_to_string(&output).ok().as_deref() == Some(&expected) {
+                break;
+            }
+            assert!(
+                TestInstant::now() < deadline,
+                "child did not receive exact paths and working directory"
+            );
+            std::thread::sleep(TestDuration::from_millis(20));
+        }
+        for path in &paths[1..] {
+            assert_eq!(fs::read(path).unwrap(), b"unchanged");
+        }
+        assert!(launch_dropped_files(&executable, &[]).is_err());
+        assert!(launch_dropped_files(&executable, &["relative.txt".into()]).is_err());
+        assert!(launch_dropped_files(&directory, &paths).is_err());
+    }
 
     #[test]
     fn left_drag_preferred_effect_tracks_explorer_ctrl_shift_semantics() {

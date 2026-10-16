@@ -1665,6 +1665,10 @@ fn process_command(
             }),
             request => {
                 let result = match request {
+                    DataTransferRequest::LaunchExecutable { executable, paths } => {
+                        crate::drag_drop::launch_dropped_files(executable, paths)
+                            .map(|()| OperationTerminal::Finished)
+                    }
                     DataTransferRequest::Copy { items } => runtime
                         .clipboard
                         .copy_or_cut(items.clone(), ClipboardMode::Copy)
