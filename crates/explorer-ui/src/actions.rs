@@ -283,6 +283,7 @@ pub enum ExplorerAction {
         new_tab: bool,
     },
     OpenFocused,
+    OpenFileLocation,
     SelectItem {
         row_index: usize,
     },
@@ -851,6 +852,17 @@ pub enum ExplorerAction {
         pointer_x: f32,
     },
     EndColumnHorizontalScroll,
+    BeginColumnVerticalScroll {
+        column_index: usize,
+        track_top: f32,
+        track_height: f32,
+        grab_offset: f32,
+        minimum_thumb: f32,
+    },
+    UpdateColumnVerticalScroll {
+        pointer_y: f32,
+    },
+    EndColumnVerticalScroll,
 }
 
 impl ExplorerAction {
@@ -904,6 +916,7 @@ impl ExplorerAction {
             Self::OpenItem { .. } => "OpenItem",
             Self::OpenExtensionViewItem { .. } => "OpenExtensionViewItem",
             Self::OpenFocused => "OpenFocused",
+            Self::OpenFileLocation => "OpenFileLocation",
             Self::SelectItem { .. } => "SelectItem",
             Self::SelectAdditionalItem { .. } => "SelectAdditionalItem",
             Self::SelectRange { .. } => "SelectRange",
@@ -1162,6 +1175,9 @@ impl ExplorerAction {
             Self::BeginColumnHorizontalScroll { .. } => "BeginColumnHorizontalScroll",
             Self::UpdateColumnHorizontalScroll { .. } => "UpdateColumnHorizontalScroll",
             Self::EndColumnHorizontalScroll => "EndColumnHorizontalScroll",
+            Self::BeginColumnVerticalScroll { .. } => "BeginColumnVerticalScroll",
+            Self::UpdateColumnVerticalScroll { .. } => "UpdateColumnVerticalScroll",
+            Self::EndColumnVerticalScroll => "EndColumnVerticalScroll",
         }
     }
 }
@@ -1482,6 +1498,8 @@ fn is_high_frequency_pointer_action(action: &ExplorerAction) -> bool {
             | ExplorerAction::EndSidePaneResize
             | ExplorerAction::UpdateColumnPreviewResize { .. }
             | ExplorerAction::EndColumnPreviewResize
+            | ExplorerAction::UpdateColumnVerticalScroll { .. }
+            | ExplorerAction::EndColumnVerticalScroll
             | ExplorerAction::UpdateColumnHorizontalScroll { .. }
             | ExplorerAction::EndColumnHorizontalScroll
             | ExplorerAction::UpdateColumnWidthResize { .. }
@@ -1785,6 +1803,7 @@ fn action_available(state: &AppViewState, action: &ExplorerAction) -> bool {
             state.row_namespace_command_enabled(*row_index, explorer_model::NamespaceCommand::Open)
         }
         ExplorerAction::OpenExtensionViewItem { .. } => true,
+        ExplorerAction::OpenFileLocation => state.can_open_focused_file_location(),
         ExplorerAction::OpenFocused => state.focused_row_index().is_some_and(|row_index| {
             state.row_namespace_command_enabled(row_index, explorer_model::NamespaceCommand::Open)
         }),
@@ -2138,6 +2157,9 @@ fn action_available(state: &AppViewState, action: &ExplorerAction) -> bool {
         | ExplorerAction::BeginColumnPreviewResize { .. }
         | ExplorerAction::UpdateColumnPreviewResize { .. }
         | ExplorerAction::EndColumnPreviewResize
+        | ExplorerAction::BeginColumnVerticalScroll { .. }
+        | ExplorerAction::UpdateColumnVerticalScroll { .. }
+        | ExplorerAction::EndColumnVerticalScroll
         | ExplorerAction::BeginColumnHorizontalScroll { .. }
         | ExplorerAction::UpdateColumnHorizontalScroll { .. }
         | ExplorerAction::EndColumnHorizontalScroll => true,
@@ -2356,6 +2378,7 @@ fn apply_action(state: &mut AppViewState, action: ExplorerAction) -> FocusSurfac
         ExplorerAction::OpenItem { .. }
         | ExplorerAction::OpenExtensionViewItem { .. }
         | ExplorerAction::OpenFocused
+        | ExplorerAction::OpenFileLocation
         | ExplorerAction::CreateFolder
         | ExplorerAction::CreateRemoteSymlink
         | ExplorerAction::CreateRemoteSymlinkToFolder { .. }
@@ -3252,6 +3275,9 @@ fn apply_action(state: &mut AppViewState, action: ExplorerAction) -> FocusSurfac
         | ExplorerAction::BeginColumnPreviewResize { .. }
         | ExplorerAction::UpdateColumnPreviewResize { .. }
         | ExplorerAction::EndColumnPreviewResize
+        | ExplorerAction::BeginColumnVerticalScroll { .. }
+        | ExplorerAction::UpdateColumnVerticalScroll { .. }
+        | ExplorerAction::EndColumnVerticalScroll
         | ExplorerAction::BeginColumnHorizontalScroll { .. }
         | ExplorerAction::UpdateColumnHorizontalScroll { .. }
         | ExplorerAction::EndColumnHorizontalScroll => FocusSurface::FileView,

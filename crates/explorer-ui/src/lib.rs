@@ -33,6 +33,7 @@ pub mod file_view;
 mod fluent_assets;
 pub mod folder_options_window;
 pub mod folder_size_column;
+mod menu_input;
 mod preview_content;
 pub mod size_map_view;
 pub mod transfer_center_window;
@@ -458,6 +459,9 @@ fn action_for_host_context_command(
 ) -> ExplorerAction {
     match command {
         explorer_model::ContextMenuHostCommand::Open => ExplorerAction::OpenFocused,
+        explorer_model::ContextMenuHostCommand::OpenFileLocation => {
+            ExplorerAction::OpenFileLocation
+        }
         explorer_model::ContextMenuHostCommand::Cut => ExplorerAction::CutSelected,
         explorer_model::ContextMenuHostCommand::Copy => ExplorerAction::CopySelected,
         explorer_model::ContextMenuHostCommand::Paste => ExplorerAction::Paste,
@@ -491,6 +495,7 @@ fn remote_context_menu_command_dismisses(action: &ExplorerAction) -> bool {
             | ExplorerAction::ShowRemoteBackgroundProperties
             | ExplorerAction::Paste
             | ExplorerAction::OpenFocused
+            | ExplorerAction::OpenFileLocation
             | ExplorerAction::OpenItem { .. }
             | ExplorerAction::DownloadSelectedToDownloads
             | ExplorerAction::CutSelected
@@ -732,9 +737,8 @@ impl VisibleItemIconCache {
             .entry(key.location.clone())
             .or_default();
         let latest_overlay = self.latest_overlay.entry(key.location.clone()).or_default();
-        let navigation_key = key.item_id.is_none()
-            && key.association_generation == 0
-            && key.overlay_generation == 0;
+        let navigation_key =
+            key.item_id.is_none() && key.association_generation == 0 && key.overlay_generation == 0;
         if !navigation_key
             && (key.association_generation < *latest || key.overlay_generation < *latest_overlay)
         {
@@ -1158,14 +1162,16 @@ fn base_icon_request_location(
         explorer_model::BaseIconClass::Extension(extension) => {
             format!(r"C:\__super_explorer_base__.{extension}")
         }
-        explorer_model::BaseIconClass::ExtensionlessFile
-        | explorer_model::BaseIconClass::Identity(_) => return None,
+        explorer_model::BaseIconClass::ExtensionlessFile => {
+            r"C:\__super_explorer_base__.".to_owned()
+        }
+        explorer_model::BaseIconClass::Identity(_) => return None,
     };
     Some(explorer_model::LocationDescriptor::file_system(path))
 }
 
 fn uses_shared_base_icon(class: &explorer_model::BaseIconClass) -> bool {
-    matches!(class, explorer_model::BaseIconClass::Folder)
+    !matches!(class, explorer_model::BaseIconClass::Identity(_))
 }
 
 fn advance_item_overlay_epoch(
@@ -1380,9 +1386,12 @@ impl Default for UiTokens {
 
 /// Minimal render root used by the M0 executable checkpoint.
 pub struct ExplorerRoot {
+    icon_retries: HashMap<explorer_model::ShellIconKey, (u8, Option<Instant>)>,
+    menu_input_guard: Option<menu_input::MenuInputGuard>,
     tokens: UiTokens,
     state: AppViewState,
     service: Option<Arc<dyn ExplorerService>>,
+    service_pump_last_activity: Instant,
     pending_foreground_events: VecDeque<explorer_model::ExplorerEvent>,
     pending_enrichment_events: VecDeque<explorer_model::ExplorerEvent>,
     pending_extension_file_operations: VecDeque<explorer_model::FileOperationRequest>,
@@ -1827,6 +1836,18 @@ fn extension_ui_pump_due(pump: Option<&mut Box<dyn ExtensionUiPumpPortV1>>, now:
     pump.is_some_and(|pump| pump.poll_due(now))
 }
 
+fn service_pump_interval(last_activity: Instant, now: Instant, queued_events: usize) -> Duration {
+    if queued_events > 0
+        || now.saturating_duration_since(last_activity) < Duration::from_millis(500)
+    {
+        Duration::from_millis(16)
+    } else {
+        // Watcher events and extension completions remain bounded by 100 ms while idle.
+        // Commands, interactions and delivered results restore the frame-rate drain.
+        Duration::from_millis(100)
+    }
+}
+
 fn is_durable_action(action: &ExplorerAction) -> bool {
     matches!(
         action,
@@ -1881,6 +1902,8 @@ fn is_passive_pointer_action(action: &ExplorerAction) -> bool {
             | ExplorerAction::EndSidePaneResize
             | ExplorerAction::UpdateColumnPreviewResize { .. }
             | ExplorerAction::EndColumnPreviewResize
+            | ExplorerAction::UpdateColumnVerticalScroll { .. }
+            | ExplorerAction::EndColumnVerticalScroll
             | ExplorerAction::UpdateColumnHorizontalScroll { .. }
             | ExplorerAction::EndColumnHorizontalScroll
             | ExplorerAction::UpdateColumnWidthResize { .. }
@@ -1991,6 +2014,7 @@ fn drag_command_label(command: &explorer_model::ExplorerCommand) -> &'static str
         explorer_model::ExplorerCommand::DataTransfer { request, .. } => match request {
             explorer_model::DataTransferRequest::BeginDrag { .. } => "begin_drag",
             explorer_model::DataTransferRequest::DropExternal { .. } => "drop_external",
+            explorer_model::DataTransferRequest::LaunchExecutable { .. } => "launch_executable",
             explorer_model::DataTransferRequest::Copy { .. } => "copy",
             explorer_model::DataTransferRequest::Cut { .. } => "cut",
             explorer_model::DataTransferRequest::Paste { .. } => "paste",
@@ -2089,6 +2113,51 @@ fn file_view_item_command_action(
 }
 
 impl ExplorerRoot {
+    fn record_icon_failure(
+        &mut self,
+        key: &explorer_model::ShellIconKey,
+        reason: explorer_model::ShellIconFallbackReason,
+        now: Instant,
+    ) {
+        self.pending_icon_keys.remove(key);
+        self.pending_icon_contexts.remove(key);
+        self.pending_visible_bases.remove(key);
+        let base = self.pending_base_icons.remove(key);
+        if reason == explorer_model::ShellIconFallbackReason::ShellUnavailable {
+            // A busy/cancelled Shell worker is not evidence that the item has no icon.
+            // Keep retrying only through the current viewport, with bounded backoff.
+            if self.icon_retries.len() >= 2048 && !self.icon_retries.contains_key(key) {
+                self.icon_retries.clear();
+            }
+            let retry = self.icon_retries.entry(key.clone()).or_insert((0, None));
+            retry.0 = retry.0.saturating_add(1).min(7);
+            retry.1 = Some(now + Duration::from_millis((500_u64 << (retry.0 - 1)).min(30_000)));
+        } else {
+            self.icon_retries.remove(key);
+            if let Some(base) = base {
+                self.failed_base_icons.insert(base);
+            }
+            self.remember_negative_icon(key.clone());
+        }
+    }
+
+    fn wake_icon_retries(&mut self, now: Instant) -> bool {
+        let mut due = false;
+        for (_, deadline) in self.icon_retries.values_mut() {
+            if deadline.is_some_and(|deadline| deadline <= now) {
+                *deadline = None;
+                due = true;
+            }
+        }
+        due
+    }
+
+    fn icon_retry_waiting(&self, key: &explorer_model::ShellIconKey) -> bool {
+        self.icon_retries
+            .get(key)
+            .is_some_and(|(_, deadline)| deadline.is_some())
+    }
+
     fn remember_negative_icon(&mut self, key: explorer_model::ShellIconKey) {
         if self.negative_icon_keys.insert(key.clone()) {
             self.negative_icon_order.push_back(key);
@@ -2142,11 +2211,29 @@ impl ExplorerRoot {
         true
     }
 
+    fn prepare_menu_input(&mut self, owner: u64) {
+        // A replacement menu retains the original input method, never the
+        // temporary English layout from the previous menu.
+        if self.menu_input_guard.is_none() {
+            self.menu_input_guard = Some(menu_input::prepare(owner));
+        }
+    }
+
+    fn restore_menu_input_if_closed(&mut self) {
+        if !self.state.context_menu_pending()
+            && self.state.remote_context_menu().is_none()
+            && self.state.navigation_fallback_context_menu().is_none()
+        {
+            self.menu_input_guard.take();
+        }
+    }
+
     pub fn new(tokens: UiTokens) -> Self {
         Self {
             tokens,
             state: AppViewState::default(),
             service: None,
+            service_pump_last_activity: Instant::now(),
             pending_foreground_events: VecDeque::new(),
             pending_enrichment_events: VecDeque::new(),
             pending_extension_file_operations: VecDeque::new(),
@@ -2202,6 +2289,8 @@ impl ExplorerRoot {
             bookmark_editor_anchor: None,
             pointer_capture_factory: None,
             pointer_capture: None,
+            menu_input_guard: None,
+            icon_retries: HashMap::new(),
             durable_state_observer: None,
             extension_settings_observer: None,
             durable_window_placement: default_durable_window_placement(),
@@ -2480,6 +2569,9 @@ impl ExplorerRoot {
         login.active_request = None;
         login.active_remote = None;
         let retry = login.pending_retry.take();
+        if let Err(error) = &result {
+            self.state.fail_address_submission(error.clone());
+        }
         if matches!(result, Ok(true))
             && let Some(retry) = retry
         {
@@ -3568,9 +3660,13 @@ impl ExplorerRoot {
                     .map(|entry| entry.id.clone()),
             );
         }
+        let deleting_items = self.state.deleting_items();
         let visuals = self.folder_size_visuals.as_ref();
         let requests = entries
             .iter()
+            .filter(|entry| {
+                !state::deletion_contains_item(&deleting_items, &entry.id, &entry.location)
+            })
             .filter(|entry| {
                 entry.is_container
                     && (require_directory_facts
@@ -3807,6 +3903,7 @@ impl ExplorerRoot {
         let directory_runtime_available = self.visual_column_runtime.is_some();
         let directory_facts_demand =
             DirectoryFactsDemandV1::from_settings(&self.state.view_settings());
+        let deleting_items = self.state.deleting_items();
         for index in 0..self.code_lines_runtimes.len() {
             let runtime = Arc::clone(&self.code_lines_runtimes[index]);
             let config = runtime.config();
@@ -3821,6 +3918,9 @@ impl ExplorerRoot {
                 &entries
             };
             for entry in requested_entries {
+                if state::deletion_contains_item(&deleting_items, &entry.id, &entry.location) {
+                    continue;
+                }
                 let explorer_model::LocationDescriptor::FileSystem(path) = &entry.location else {
                     continue;
                 };
@@ -4564,6 +4664,7 @@ impl ExplorerRoot {
                 drag_threshold,
             ),
             service: Some(service),
+            service_pump_last_activity: Instant::now(),
             pending_foreground_events: VecDeque::new(),
             pending_enrichment_events: VecDeque::new(),
             pending_extension_file_operations: VecDeque::new(),
@@ -4619,6 +4720,8 @@ impl ExplorerRoot {
             bookmark_editor_anchor: None,
             pointer_capture_factory: None,
             pointer_capture: None,
+            menu_input_guard: None,
+            icon_retries: HashMap::new(),
             durable_state_observer: None,
             extension_settings_observer: None,
             durable_window_placement: default_durable_window_placement(),
@@ -4690,6 +4793,7 @@ impl ExplorerRoot {
             tokens,
             state: AppViewState::with_restored_window_and_drag_threshold(restored, drag_threshold),
             service: Some(service),
+            service_pump_last_activity: Instant::now(),
             pending_foreground_events: VecDeque::new(),
             pending_enrichment_events: VecDeque::new(),
             pending_extension_file_operations: VecDeque::new(),
@@ -4745,6 +4849,8 @@ impl ExplorerRoot {
             bookmark_editor_anchor: None,
             pointer_capture_factory: None,
             pointer_capture: None,
+            menu_input_guard: None,
+            icon_retries: HashMap::new(),
             durable_state_observer: None,
             extension_settings_observer: None,
             durable_window_placement: default_durable_window_placement(),
@@ -5098,10 +5204,9 @@ impl ExplorerRoot {
         };
         cx.spawn(async move |this, cx| {
             let mut last_namespace_refresh = Instant::now();
+            let mut pump_interval = Duration::from_millis(16);
             loop {
-                cx.background_executor()
-                    .timer(Duration::from_millis(16))
-                    .await;
+                cx.background_executor().timer(pump_interval).await;
                 if this
                     .update(cx, |this, cx| {
                         // Each pump owns side effects. Evaluate all of them;
@@ -5137,6 +5242,7 @@ impl ExplorerRoot {
                             || paste_notice_changed
                             || apk_notice_changed
                         {
+                            this.service_pump_last_activity = Instant::now();
                             cx.notify();
                         }
                     })
@@ -5288,24 +5394,13 @@ impl ExplorerRoot {
                                 this.pending_icon_keys.remove(&payload.key);
                                 this.pending_icon_contexts.remove(&payload.key);
                             }
-                            if let explorer_model::ExplorerEvent::ShellIconFailed { key, .. } =
-                                &event
+                            if let explorer_model::ExplorerEvent::ShellIconFailed {
+                                key,
+                                reason,
+                                ..
+                            } = &event
                             {
-                                this.pending_icon_keys.remove(key);
-                                this.pending_icon_contexts.remove(key);
-                                if let Some(base_key) = this.pending_base_icons.remove(key) {
-                                    this.failed_base_icons.insert(base_key);
-                                }
-                                this.pending_visible_bases.remove(key);
-                                if key.item_id.is_some()
-                                    || this
-                                        .state
-                                        .bookmark_shell_locations()
-                                        .iter()
-                                        .any(|location| location == &key.location)
-                                {
-                                    this.remember_negative_icon(key.clone());
-                                }
+                                this.record_icon_failure(key, *reason, Instant::now());
                             }
                             if let explorer_model::ExplorerEvent::ThumbnailFinished {
                                 key,
@@ -5450,6 +5545,7 @@ impl ExplorerRoot {
                                 explorer_model::ExplorerEvent::OperationFinished { .. }
                             );
                             let outcome = this.state.apply_service_event(event);
+                            this.restore_menu_input_if_closed();
                             if let Some(row_index) = this.state.take_leave_selection_reveal() {
                                 this.pending_file_row_reveal = Some(row_index);
                             }
@@ -5594,7 +5690,12 @@ impl ExplorerRoot {
                         if deferred == 0 && this.enrichment_retry_needed {
                             this.recover_discarded_enrichment();
                         }
-                        if integrated > 0 {
+                        let retry_icons = this.wake_icon_retries(Instant::now());
+                        if retry_icons {
+                            this.submit_navigation_icon_loads();
+                        }
+                        if retry_icons || integrated > 0 {
+                            this.service_pump_last_activity = Instant::now();
                             cx.notify();
                         }
                     })
@@ -5635,7 +5736,7 @@ impl ExplorerRoot {
                         }
                     }
                 }
-                let _ = this.update(cx, |this, cx| {
+                let next_interval = this.update(cx, |this, cx| {
                     let has_external_cue = matches!(
                         this.state.drag_session().state(),
                         explorer_model::DragSessionState::Dragging {
@@ -5647,7 +5748,16 @@ impl ExplorerRoot {
                         this.state.clear_external_drag();
                         cx.notify();
                     }
+                    service_pump_interval(
+                        this.service_pump_last_activity,
+                        Instant::now(),
+                        this.pending_service_event_count(),
+                    )
                 });
+                match next_interval {
+                    Ok(interval) => pump_interval = interval,
+                    Err(_) => break,
+                }
                 if disconnected {
                     break;
                 }
@@ -5793,6 +5903,7 @@ impl ExplorerRoot {
         payload: &explorer_model::ShellIconPayload,
         texture: Arc<RenderImage>,
     ) {
+        self.icon_retries.remove(&payload.key);
         self.shell_icons.track_atlas_image(&texture);
         if let Some(base_key) = self.pending_base_icons.remove(&payload.key) {
             self.base_icons
@@ -5845,6 +5956,8 @@ impl ExplorerRoot {
         .collect::<HashSet<_>>();
         for key in keys {
             if self.shell_icons.entries.contains_key(&key)
+                || self.icon_retry_waiting(&key)
+                || self.negative_icon_keys.contains(&key)
                 || !self.pending_icon_keys.insert(key.clone())
             {
                 continue;
@@ -6095,10 +6208,14 @@ impl ExplorerRoot {
             request_key.location = base_location;
             request_key.association_generation = association_epoch;
             request_key.overlay_generation = 0;
+            if self.icon_retry_waiting(&request_key) {
+                continue;
+            }
             if self.submit_command(explorer_model::ExplorerCommand::LoadShellIcon {
                 context: directory_context.clone(),
                 key: request_key.clone(),
             }) {
+                self.pending_icon_keys.insert(request_key.clone());
                 self.pending_icon_contexts
                     .insert(request_key.clone(), directory_context.clone());
                 self.pending_base_icons.insert(request_key, base_key);
@@ -6128,6 +6245,17 @@ impl ExplorerRoot {
                 association_epoch,
             );
             let shared_base = uses_shared_base_icon(&base_key.class);
+            // Ordinary type icons are final, not a placeholder that needs one Shell
+            // extraction per row. Keep individual artwork and overlay refinements
+            // only where the item can actually have them.
+            let individual = self.state.tortoise_git_available()
+                || !shared_base
+                || entry.metadata.filesystem_attributes & (0x1 | 0x4 | 0x400) != 0
+                || self.item_overlay_epochs.contains_key(&entry.id)
+                || self.icon_epochs.overlay() > 0;
+            if shared_base && !individual && !self.failed_base_icons.contains(&base_key) {
+                continue;
+            }
             if shared_base
                 && !self.base_icons.entries.contains_key(&base_key)
                 && !self.failed_base_icons.contains(&base_key)
@@ -6148,6 +6276,9 @@ impl ExplorerRoot {
                 .unwrap_or_else(|| self.icon_epochs.overlay());
             if self.negative_icon_keys.contains(&key) {
                 self.shell_icons.record_negative_hit();
+                continue;
+            }
+            if self.icon_retry_waiting(&key) {
                 continue;
             }
             keys.push((
@@ -6812,6 +6943,9 @@ impl ExplorerRoot {
             .map(|location| navigation_pane::shell_icon_key(location, theme, self.shell_icon_dpi))
             .collect::<HashSet<_>>();
         for key in keys {
+            if self.icon_retry_waiting(&key) || self.negative_icon_keys.contains(&key) {
+                continue;
+            }
             if self.shell_icons.entries.contains_key(&key)
                 || !self.pending_icon_keys.insert(key.clone())
             {
@@ -7102,6 +7236,7 @@ impl ExplorerRoot {
     }
 
     fn submit_command(&mut self, mut command: explorer_model::ExplorerCommand) -> bool {
+        self.service_pump_last_activity = Instant::now();
         if self.state.view_settings().mode == explorer_model::ViewMode::Columns {
             match &mut command {
                 explorer_model::ExplorerCommand::Navigate { context, .. }
@@ -7341,6 +7476,7 @@ impl ExplorerRoot {
                         outcome: explorer_model::ContextMenuOutcome::Failed { error: error() },
                     },
                 );
+                self.restore_menu_input_if_closed();
                 if let Some(next) = self.state.take_pending_context_menu_command() {
                     self.submit_command(next);
                 }
@@ -7699,6 +7835,7 @@ impl ExplorerRoot {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.service_pump_last_activity = Instant::now();
         self.sync_active_file_scroll();
         if matches!(
             action,
@@ -7766,6 +7903,7 @@ impl ExplorerRoot {
         }
         if action == ExplorerAction::CloseNavigationFallbackContextMenu {
             self.state.close_navigation_fallback_context_menu();
+            self.restore_menu_input_if_closed();
             cx.notify();
             return;
         }
@@ -7799,6 +7937,7 @@ impl ExplorerRoot {
             self.state.close_remote_context_menu();
             cx.notify();
         }
+        self.restore_menu_input_if_closed();
         if let ExplorerAction::OpenNavigationInNewTab { location } = action {
             self.handle_action(ExplorerAction::NewTab, source, window, cx);
             self.handle_action(
@@ -8060,6 +8199,7 @@ impl ExplorerRoot {
             self.terminate_details_column_resize();
             self.state.end_column_preview_resize();
             self.state.end_column_horizontal_scroll();
+            self.state.end_column_vertical_scroll();
             self.state.end_column_width_resize();
             if self.state.end_marquee() {
                 self.pointer_capture.take();
@@ -9082,6 +9222,7 @@ impl ExplorerRoot {
                 let (owner_window, menu_x, menu_y) =
                     chrome::context_menu_coordinates(gpui::point(px(x), px(y)), window);
                 self.pointer_capture.take();
+                self.prepare_menu_input(owner_window);
                 if let Some(command) = self.state.begin_context_menu_request(
                     item_id,
                     owner_window,
@@ -9317,6 +9458,7 @@ impl ExplorerRoot {
             }
             ExplorerAction::Up => self.state.begin_up_navigation(),
             ExplorerAction::Refresh => {
+                self.icon_retries.clear();
                 if let Some(directory) = self
                     .state
                     .active_location_for_extension_command()
@@ -9480,6 +9622,37 @@ impl ExplorerRoot {
                 self.state.end_column_preview_resize();
                 None
             }
+            ExplorerAction::BeginColumnVerticalScroll {
+                column_index,
+                track_top,
+                track_height,
+                grab_offset,
+                minimum_thumb,
+            } => {
+                if self.state.begin_column_vertical_scroll(
+                    *column_index,
+                    *track_top,
+                    *track_height,
+                    *grab_offset,
+                    *minimum_thumb,
+                ) {
+                    self.pointer_capture.take();
+                    self.pointer_capture = self.acquire_pointer_capture(window);
+                }
+                None
+            }
+            ExplorerAction::UpdateColumnVerticalScroll { pointer_y } => {
+                self.state.update_column_vertical_scroll(*pointer_y);
+                if !self.state.column_vertical_scroll_active() {
+                    self.pointer_capture.take();
+                }
+                None
+            }
+            ExplorerAction::EndColumnVerticalScroll => {
+                self.state.end_column_vertical_scroll();
+                self.pointer_capture.take();
+                None
+            }
             ExplorerAction::BeginColumnHorizontalScroll {
                 track_left,
                 track_width,
@@ -9500,6 +9673,7 @@ impl ExplorerRoot {
             }
             ExplorerAction::EndColumnHorizontalScroll => {
                 self.state.end_column_horizontal_scroll();
+                self.state.end_column_vertical_scroll();
                 None
             }
             ExplorerAction::BeginColumnWidthResize {
@@ -9605,6 +9779,12 @@ impl ExplorerRoot {
                 self.submit_command(command);
             }
         }
+        if action == ExplorerAction::OpenFileLocation {
+            self.reset_search_input(String::new(), cx);
+            if let Some(command) = self.state.begin_open_focused_file_location() {
+                self.submit_command(command);
+            }
+        }
         if action == ExplorerAction::OpenFocused
             && let Some(row_index) = self.state.focused_row_index()
         {
@@ -9675,10 +9855,8 @@ impl ExplorerRoot {
                 self.execute_file_operation(request);
             }
         }
-        if action == ExplorerAction::RequestPermanentDelete
-            && let Some(request) = self.state.permanent_delete_selected_request()
-        {
-            self.execute_file_operation(request);
+        if action == ExplorerAction::RequestPermanentDelete {
+            let _ = self.state.begin_permanent_delete_confirmation();
         }
         if action == ExplorerAction::CreateShortcutSelected
             && let Some(request) = self.state.create_shortcut_selected_request()
@@ -9910,6 +10088,11 @@ impl ExplorerRoot {
                     &format!("result=ignored {detail}"),
                 );
             }
+        }
+        if let ExplorerAction::ShowContextMenu { owner_window, .. }
+        | ExplorerAction::ShowNavigationContextMenu { owner_window, .. } = &action
+        {
+            self.prepare_menu_input(*owner_window);
         }
         if let ExplorerAction::ShowContextMenu {
             item_id,
@@ -11108,6 +11291,7 @@ impl Render for ExplorerRoot {
         reason = "the root registers the complete, auditable keyboard action scope in one place"
     )]
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.restore_menu_input_if_closed();
         // Navigation commits asynchronously. Return focus before the address editor
         // is unmounted, otherwise global shortcuts target a detached input node.
         if !matches!(
@@ -12252,6 +12436,32 @@ mod tests {
 
     use crate::state::AppViewState;
 
+    #[test]
+    fn service_pump_slows_only_after_idle_and_immediately_drains_backlogs() {
+        let started = Instant::now();
+        assert_eq!(
+            super::service_pump_interval(started, started, 0),
+            Duration::from_millis(16)
+        );
+        assert_eq!(
+            super::service_pump_interval(started, started + Duration::from_millis(499), 0),
+            Duration::from_millis(16)
+        );
+        let idle = started + Duration::from_millis(500);
+        assert_eq!(
+            super::service_pump_interval(started, idle, 0),
+            Duration::from_millis(100)
+        );
+        assert_eq!(
+            super::service_pump_interval(started, idle, 1),
+            Duration::from_millis(16)
+        );
+        assert_eq!(
+            super::service_pump_interval(idle, idle, 0),
+            Duration::from_millis(16)
+        );
+    }
+
     use super::{
         BaseIconCache, DirectoryFactsDemandV1, ENRICHMENT_SERVICE_EVENT_CAPACITY, ExplorerRoot,
         ExtensionUiPumpPortV1, SafeModeOfferV1, UiTokens, VisibleItemIconCache, VisualFixtureState,
@@ -12387,6 +12597,42 @@ mod tests {
         if state.details_column_visible(column.clone()) {
             state.toggle_details_column(column);
         }
+    }
+
+    #[test]
+    fn deleting_items_skip_property_queries_and_resume_after_cancellation() {
+        let directory_runtime = Arc::new(RecordingDirectoryFactsRuntimeV1::default());
+        let code_runtime = Arc::new(RecordingCodeLinesRuntimeV1::default());
+        let mut root = ExplorerRoot::default();
+        seed_active_visual_tab(&mut root.state, "Deleting", true, false);
+        root.attach_directory_facts_runtime(directory_runtime.clone());
+        root.attach_code_lines_runtime(code_runtime.clone());
+        if !root.state.details_column_visible(explorer_model::ColumnId::FileCount) {
+            root.state.toggle_details_column(explorer_model::ColumnId::FileCount);
+        }
+        let entries = root.state.tabs().active_tab().visible_snapshot().unwrap().shared_entries();
+        let command = root.state.begin_file_operation(explorer_model::FileOperationRequest {
+            kind: explorer_model::FileOperationKind::PermanentDelete {
+                items: entries.iter().map(|entry| explorer_model::ItemDescriptor {
+                    id: entry.id.clone(), location: entry.location.clone(),
+                }).collect(),
+                confirmed: true,
+            },
+            flags: explorer_model::FileOperationFlags::default(),
+        });
+        root.submit_folder_size_requests();
+        root.submit_code_lines_requests(&entries);
+        assert!(directory_runtime.requests.lock().unwrap().is_empty());
+        assert!(code_runtime.requests.lock().unwrap().is_empty());
+
+        root.state.apply_service_event(explorer_model::ExplorerEvent::OperationFinished {
+            context: command.context().unwrap().clone(),
+            outcome: explorer_model::OperationTerminal::Cancelled,
+        });
+        root.submit_folder_size_requests();
+        root.submit_code_lines_requests(&entries);
+        assert!(!directory_runtime.requests.lock().unwrap().is_empty());
+        assert!(!code_runtime.requests.lock().unwrap().is_empty());
     }
 
     #[test]
@@ -13747,22 +13993,215 @@ mod tests {
     }
 
     #[test]
-    fn file_extensions_use_real_visible_items_instead_of_blocking_fake_base_paths() {
-        assert!(!super::uses_shared_base_icon(
-            &explorer_model::BaseIconClass::Extension("mp4".to_owned())
-        ));
-        assert!(!super::uses_shared_base_icon(
-            &explorer_model::BaseIconClass::Extension("jpg".to_owned())
-        ));
-        assert!(!super::uses_shared_base_icon(
-            &explorer_model::BaseIconClass::ExtensionlessFile
-        ));
-        assert_eq!(
-            super::base_icon_request_location(&explorer_model::BaseIconClass::ExtensionlessFile),
-            None
+    fn content_icons_recover_from_transient_shell_failure_without_navigation() {
+        for dpi in [96, 144, 192] {
+            for name in [
+                "Automation.sln",
+                "Automation.slnx",
+                "launch.cmd",
+                "HANDOFF.md",
+                "start.bat",
+                "LICENSE",
+            ] {
+                let entry = explorer_model::FileEntry {
+                    id: explorer_model::ShellItemId::from_provider_bytes(name.as_bytes()).unwrap(),
+                    location: explorer_model::LocationDescriptor::file_system(format!(
+                        r"C:\portable\OpenKoikatsu\{name}"
+                    )),
+                    display_name: name.to_owned(),
+                    is_container: false,
+                    metadata: explorer_model::FileEntryMetadata::default(),
+                };
+                let service = Arc::new(RecordingService::default());
+                let mut root = ExplorerRoot::for_directory_fixture(
+                    UiTokens::default(),
+                    vec![entry.clone()],
+                    explorer_model::ViewMode::Content,
+                );
+                root.service = Some(service.clone());
+                root.shell_icon_dpi = dpi;
+                let tab = root.state.tabs().active_tab();
+                let context = explorer_model::RequestContext::new(tab.id, tab.generation);
+                root.submit_file_icon_loads(&context, std::slice::from_ref(&entry));
+                let commands = std::mem::take(&mut *service.0.lock().unwrap());
+                let key = commands
+                    .into_iter()
+                    .find_map(|command| match command {
+                        explorer_model::ExplorerCommand::LoadShellIcon { key, .. }
+                            if key.item_id.is_none() =>
+                        {
+                            Some(key)
+                        }
+                        _ => None,
+                    })
+                    .unwrap();
+                let now = Instant::now();
+                root.record_icon_failure(
+                    &key,
+                    explorer_model::ShellIconFallbackReason::ShellUnavailable,
+                    now,
+                );
+                assert!(!root.negative_icon_keys.contains(&key));
+                root.submit_file_icon_loads(&context, std::slice::from_ref(&entry));
+                assert!(
+                    service.0.lock().unwrap().is_empty(),
+                    "do not retry on every render"
+                );
+                assert!(!root.wake_icon_retries(now + Duration::from_millis(499)));
+                assert!(root.wake_icon_retries(now + Duration::from_millis(500)));
+                root.submit_file_icon_loads(&context, std::slice::from_ref(&entry));
+                assert!(service.0.lock().unwrap().iter().any(|command| matches!(command, explorer_model::ExplorerCommand::LoadShellIcon { key: retry, .. } if retry == &key)));
+                let payload = explorer_model::ShellIconPayload::new(
+                    key.clone(),
+                    1,
+                    1,
+                    4,
+                    vec![20, 40, 60, 255],
+                    None,
+                )
+                .unwrap();
+                root.remember_loaded_shell_texture(
+                    &payload,
+                    super::shell_icon_texture(&payload).unwrap(),
+                );
+                assert!(!root.icon_retries.contains_key(&key));
+                let presentation =
+                    crate::navigation_pane::file_icon_key_for_size(&entry, key.theme, dpi, 32);
+                assert!(
+                    root.navigation_icon_snapshot(&[entry])
+                        .textures
+                        .contains_key(&presentation),
+                    "name={name} dpi={dpi}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn permanent_icon_failure_does_not_schedule_retries() {
+        let mut root = ExplorerRoot::default();
+        let key = crate::navigation_pane::shell_icon_key(
+            &explorer_model::LocationDescriptor::file_system(r"C:\unsupported"),
+            explorer_model::ShellIconTheme::Dark,
+            96,
         );
-        assert!(super::uses_shared_base_icon(
-            &explorer_model::BaseIconClass::Folder
+        root.record_icon_failure(
+            &key,
+            explorer_model::ShellIconFallbackReason::UnsupportedItem,
+            Instant::now(),
+        );
+        assert!(root.negative_icon_keys.contains(&key));
+        assert!(root.icon_retries.is_empty());
+    }
+
+    #[test]
+    fn shared_type_icons_are_loaded_once_and_reused_for_other_files_and_directories() {
+        for (suffix, folder) in [
+            ("TXT", false),
+            ("md", false),
+            ("pdf", false),
+            ("docx", false),
+            ("xlsx", false),
+            ("cmd", false),
+            ("bat", false),
+            ("sln", false),
+            ("zip", false),
+            ("7z", true),
+            ("rar", true),
+            ("unknown-type", false),
+            ("", false),
+            ("", true),
+        ] {
+            let service = Arc::new(RecordingService::default());
+            let entries = (0u32..40)
+                .map(|index| explorer_model::FileEntry {
+                    id: explorer_model::ShellItemId::from_provider_bytes(index.to_le_bytes())
+                        .unwrap(),
+                    location: explorer_model::LocationDescriptor::file_system(format!(
+                        r"C:\fixture\item-{index}.{suffix}"
+                    )),
+                    display_name: format!("item-{index}.{suffix}"),
+                    is_container: folder,
+                    metadata: explorer_model::FileEntryMetadata {
+                        archive_member: folder && !suffix.is_empty(),
+                        ..explorer_model::FileEntryMetadata::default()
+                    },
+                })
+                .collect::<Vec<_>>();
+            let mut root = ExplorerRoot::for_directory_fixture(
+                UiTokens::default(),
+                entries.clone(),
+                explorer_model::ViewMode::Content,
+            );
+            root.service = Some(service.clone());
+            let tab = root.state.tabs().active_tab();
+            let context = explorer_model::RequestContext::new(tab.id, tab.generation);
+            root.submit_file_icon_loads(&context, &entries);
+            root.submit_file_icon_loads(&context, &entries);
+            let commands = std::mem::take(&mut *service.0.lock().unwrap());
+            let keys = commands
+                .into_iter()
+                .filter_map(|command| match command {
+                    explorer_model::ExplorerCommand::LoadShellIcon { key, .. } => Some(key),
+                    _ => None,
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(keys.len(), 1, "one type request, not one per row");
+            assert!(keys[0].item_id.is_none());
+            assert!(
+                root.pending_icon_contexts.contains_key(&keys[0]),
+                "a re-render must not discard the shared request's reply context"
+            );
+            let payload = explorer_model::ShellIconPayload::new(
+                keys[0].clone(),
+                1,
+                1,
+                4,
+                vec![1, 2, 3, 255],
+                None,
+            )
+            .unwrap();
+            let texture = super::shell_icon_texture(&payload).unwrap();
+            root.remember_loaded_shell_texture(&payload, Arc::clone(&texture));
+            root.submit_file_icon_loads(&context, &entries);
+            let mut other = entries[0].clone();
+            other.id =
+                explorer_model::ShellItemId::from_provider_bytes(b"other-directory").unwrap();
+            other.location =
+                explorer_model::LocationDescriptor::file_system(format!(r"D:\other\new.{suffix}"));
+            root.submit_file_icon_loads(&context, std::slice::from_ref(&other));
+            assert!(
+                service.0.lock().unwrap().is_empty(),
+                "cached type never re-requests each file"
+            );
+            let snapshot = root.navigation_icon_snapshot(&[other.clone()]);
+            let key = crate::navigation_pane::file_icon_key_for_size(
+                &other,
+                keys[0].theme,
+                keys[0].dpi,
+                32,
+            );
+            assert!(Arc::ptr_eq(
+                snapshot.textures.get(&key).expect("reused icon"),
+                &texture
+            ));
+        }
+    }
+
+    #[test]
+    fn ordinary_types_share_icons_but_executables_keep_their_own_artwork() {
+        for class in [
+            explorer_model::BaseIconClass::Folder,
+            explorer_model::BaseIconClass::Extension("txt".to_owned()),
+            explorer_model::BaseIconClass::Extension("md".to_owned()),
+            explorer_model::BaseIconClass::ExtensionlessFile,
+        ] {
+            assert!(super::uses_shared_base_icon(&class));
+            assert!(super::base_icon_request_location(&class).is_some());
+        }
+        let id = explorer_model::ShellItemId::from_provider_bytes([1]).unwrap();
+        assert!(!super::uses_shared_base_icon(
+            &explorer_model::BaseIconClass::Identity(id)
         ));
     }
 
@@ -13825,7 +14264,7 @@ mod tests {
         assert!(commands.iter().any(|command| matches!(
             command,
             explorer_model::ExplorerCommand::LoadShellIcon { key, .. }
-                if key.item_id.as_ref() == Some(&entry.id)
+                if key.item_id.is_none()
         )));
         assert!(commands.iter().any(|command| matches!(
             command,
@@ -13847,6 +14286,49 @@ mod tests {
                 ),
                 ..explorer_model::FileEntryMetadata::default()
             },
+        }
+    }
+
+    #[test]
+    fn shared_media_type_icons_keep_each_files_own_thumbnail_request() {
+        for extension in ["png", "jpg", "mp4", "webp", "mkv"] {
+            let entries = vec![
+                thumbnail_capable_entry(1, extension),
+                thumbnail_capable_entry(2, extension),
+            ];
+            let service = Arc::new(RecordingService::default());
+            let mut root = ExplorerRoot::for_directory_fixture(
+                UiTokens::default(),
+                entries.clone(),
+                explorer_model::ViewMode::LargeIcons,
+            );
+            root.service = Some(service.clone());
+            let tab = root.state.tabs().active_tab();
+            let context = explorer_model::RequestContext::new(tab.id, tab.generation);
+            root.submit_file_icon_loads(&context, &entries);
+            root.submit_file_icon_loads(&context, &entries);
+            let commands = service.0.lock().unwrap();
+            assert_eq!(
+                commands
+                    .iter()
+                    .filter(|command| matches!(
+                        command,
+                        explorer_model::ExplorerCommand::LoadShellIcon { .. }
+                    ))
+                    .count(),
+                1,
+                "the fallback type icon is shared"
+            );
+            for entry in &entries {
+                assert!(
+                    commands.iter().any(|command| matches!(
+                        command, explorer_model::ExplorerCommand::LoadThumbnail { key, .. }
+                            if key.item_id == entry.id
+                    )),
+                    "each media file retains its own thumbnail"
+                );
+            }
+            assert_eq!(root.pending_thumbnail_keys.len(), 2);
         }
     }
 
@@ -14122,6 +14604,51 @@ mod tests {
     }
 
     #[test]
+    fn menu_input_is_restored_after_native_completion_and_remote_dismissal() {
+        for outcome in [
+            explorer_model::ContextMenuOutcome::Cancelled,
+            explorer_model::ContextMenuOutcome::Invoked { command_offset: 7 },
+        ] {
+            let mut root = ExplorerRoot::default();
+            let command = root
+                .state
+                .begin_context_menu_request(None, 1, 0, 0, 0.0, 0.0, true, false)
+                .unwrap();
+            root.prepare_menu_input(0);
+            root.restore_menu_input_if_closed();
+            assert!(
+                root.menu_input_guard.is_some(),
+                "keep English while the menu is open"
+            );
+            root.prepare_menu_input(0);
+            root.state
+                .apply_service_event(explorer_model::ExplorerEvent::ContextMenuFinished {
+                    context: command.context().unwrap().clone(),
+                    outcome,
+                });
+            root.restore_menu_input_if_closed();
+            assert!(root.menu_input_guard.is_none());
+        }
+        let mut root = ExplorerRoot::default();
+        root.state = AppViewState::with_initial_location(explorer_model::HistoryEntry::new(
+            explorer_model::LocationDescriptor::try_virtual("adb", [7; 16], 1, None, Vec::new())
+                .unwrap(),
+            "remote",
+        ));
+        root.prepare_menu_input(0);
+        assert!(
+            root.state
+                .begin_context_menu_request(None, 1, 0, 0, 0.0, 0.0, true, false)
+                .is_none()
+        );
+        root.restore_menu_input_if_closed();
+        assert!(root.menu_input_guard.is_some());
+        root.state.close_remote_context_menu();
+        root.restore_menu_input_if_closed();
+        assert!(root.menu_input_guard.is_none());
+    }
+
+    #[test]
     fn qos_command_overload_completes_context_menu_and_preview_lifecycles() {
         let mut root = ExplorerRoot {
             service: Some(Arc::new(OverloadedService)),
@@ -14131,10 +14658,12 @@ mod tests {
             .state
             .begin_context_menu_request(None, 1, 0, 0, 0.0, 0.0, true, false)
             .expect("background context menu request");
+        root.prepare_menu_input(0);
         assert!(root.state.context_menu_pending());
         assert!(!root.submit_command(menu));
         assert!(!root.state.context_menu_pending());
         assert!(root.state.context_menu_error().is_some());
+        assert!(root.menu_input_guard.is_none());
 
         let selection = explorer_model::PreviewSelection {
             item_id: explorer_model::ShellItemId::from_provider_bytes([1])

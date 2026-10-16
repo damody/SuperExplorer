@@ -773,6 +773,26 @@ fn is_delete_request(request: &FileOperationRequest) -> bool {
     )
 }
 
+pub(crate) fn deletion_contains_item(
+    deleting: &[ItemDescriptor],
+    id: &ShellItemId,
+    location: &LocationDescriptor,
+) -> bool {
+    deleting.iter().any(|item| {
+        if &item.id == id || &item.location == location {
+            return true;
+        }
+        match (item.location.path(), location.path()) {
+            (Some(root), Some(path)) => {
+                let root = std::path::PathBuf::from(root.to_string_lossy().to_lowercase());
+                let path = std::path::PathBuf::from(path.to_string_lossy().to_lowercase());
+                path.starts_with(root)
+            }
+            _ => false,
+        }
+    })
+}
+
 fn delete_resources(request: &FileOperationRequest) -> Vec<LocationDescriptor> {
     let limits = explorer_common::RoadmapLimits::default();
     let (FileOperationKind::RecycleDelete { items }
@@ -937,6 +957,7 @@ pub(crate) struct RemoteContextMenuState {
     pub(crate) y: f32,
     pub(crate) background: bool,
     pub(crate) paste_available: bool,
+    pub(crate) open_file_location: bool,
     pub(crate) item_row_index: Option<usize>,
     pub(crate) item_is_container: bool,
     pub(crate) allow_create_symlink: bool,
@@ -965,6 +986,16 @@ struct PendingNewFolderRename {
     parent: LocationDescriptor,
     item_id: ShellItemId,
     use_create_item: bool,
+}
+
+#[derive(Clone, Debug)]
+struct PendingCreatedSelection {
+    tab_id: TabId,
+    parent: LocationDescriptor,
+    source: explorer_common::RequestId,
+    before: HashSet<String>,
+    armed: bool,
+    expires: Instant,
 }
 
 #[derive(Clone, Debug)]
@@ -1002,6 +1033,7 @@ struct PendingColumnCycle {
     item_id: ShellItemId,
     location: LocationDescriptor,
     display_name: String,
+    retain_clicked_selection: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -1041,11 +1073,13 @@ pub struct AppViewState {
     operation_terminal_notice: Option<(explorer_common::RequestId, Instant)>,
     paste_notice: Option<(String, bool, Instant)>,
     paste_requests: HashSet<explorer_common::RequestId>,
+    executable_drop_requests: HashSet<explorer_common::RequestId>,
     apk_install_notices: VecDeque<ApkInstallNotice>,
     cancelling_operations: HashSet<explorer_common::RequestId>,
     rename_editor: Option<explorer_model::RenameEditorState>,
     pending_new_folder_rename: Option<PendingNewFolderRename>,
     pending_leave_selection: Option<PendingLeaveSelection>,
+    pending_created_selection: Option<PendingCreatedSelection>,
     leave_selection_reveal: Option<usize>,
     permanent_delete_confirmation: Option<PermanentDeleteConfirmation>,
     permanent_delete_confirmation_focus: PermanentDeleteDialogTarget,
@@ -1178,6 +1212,7 @@ pub struct AppViewState {
     column_reveal_stamp: Option<ColumnRevealStamp>,
     column_preview_resize: Option<ColumnPreviewResizeSession>,
     column_hscroll_drag: Option<ColumnStripScrollDrag>,
+    column_vscroll_drag: Option<ColumnVerticalScrollDrag>,
     column_width_resize: Option<ColumnWidthResizeSession>,
     drive_kinds: HashMap<char, explorer_model::DriveKind>,
 }
@@ -1390,6 +1425,17 @@ struct ColumnWidthResizeSession {
 struct ColumnStripScrollDrag {
     track_left: f32,
     track_width: f32,
+    grab_offset: f32,
+    minimum_thumb: f32,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct ColumnVerticalScrollDrag {
+    tab_id: TabId,
+    revision: u64,
+    column_index: usize,
+    track_top: f32,
+    track_height: f32,
     grab_offset: f32,
     minimum_thumb: f32,
 }
@@ -1650,11 +1696,13 @@ impl AppViewState {
             operation_terminal_notice: None,
             paste_notice: None,
             paste_requests: HashSet::new(),
+            executable_drop_requests: HashSet::new(),
             apk_install_notices: VecDeque::with_capacity(APK_INSTALL_NOTICE_CAPACITY),
             cancelling_operations: HashSet::new(),
             rename_editor: None,
             pending_new_folder_rename: None,
             pending_leave_selection: None,
+            pending_created_selection: None,
             leave_selection_reveal: None,
             permanent_delete_confirmation: None,
             permanent_delete_confirmation_focus: PermanentDeleteDialogTarget::Delete,
@@ -1786,6 +1834,7 @@ impl AppViewState {
             column_reveal_stamp: None,
             column_preview_resize: None,
             column_hscroll_drag: None,
+            column_vscroll_drag: None,
             column_width_resize: None,
             drive_kinds: HashMap::new(),
         }
@@ -2832,6 +2881,19 @@ impl AppViewState {
         &self.operation_center
     }
 
+    pub(crate) fn deleting_items(&self) -> Vec<ItemDescriptor> {
+        self.operation_center
+            .records()
+            .filter(|record| !record.phase.is_terminal())
+            .flat_map(|record| match &record.request.kind {
+                FileOperationKind::RecycleDelete { items }
+                | FileOperationKind::PermanentDelete { items, .. } => items.as_slice(),
+                _ => &[],
+            })
+            .cloned()
+            .collect()
+    }
+
     pub(crate) fn operation_is_cancelling(&self, request_id: explorer_common::RequestId) -> bool {
         self.cancelling_operations.contains(&request_id)
     }
@@ -3528,11 +3590,16 @@ impl AppViewState {
             .history
             .current()
             .is_some_and(|entry| entry.location.path().is_some());
-        explorer_model::search_engine_availability(explorer_model::SearchEngineFacts {
-            has_local_filesystem_path,
-            everything_available: self.search_engine_availability.everything.is_available(),
-            mft_index_available: self.search_engine_availability.mft.is_available(),
-        })
+        let availability =
+            explorer_model::search_engine_availability(explorer_model::SearchEngineFacts {
+                has_local_filesystem_path,
+                everything_available: self.search_engine_availability.everything.is_available(),
+                mft_index_available: self.search_engine_availability.mft.is_available(),
+            });
+        self.tabs.active_tab().history.current().map_or(
+            explorer_model::SearchEngineAvailability::all_unavailable(),
+            |entry| availability.for_location(&entry.location),
+        )
     }
 
     fn effective_search_engine_availability(&self) -> explorer_model::SearchEngineAvailability {
@@ -5997,6 +6064,13 @@ impl AppViewState {
         location: LocationDescriptor,
         refresh: bool,
     ) -> Option<ExplorerCommand> {
+        if self
+            .pending_created_selection
+            .as_ref()
+            .is_some_and(|pending| pending.parent != location)
+        {
+            self.pending_created_selection = None;
+        }
         self.cancel_pending_column_cycle();
         let tab_id = self.tabs.active_tab_id();
         let stale_column_target = self.column_branches.get(tab_id).is_some_and(|branch| {
@@ -6190,6 +6264,20 @@ impl AppViewState {
     }
 
     pub(crate) fn begin_refresh_navigation(&mut self) -> Option<ExplorerCommand> {
+        if let Some(parent) = self
+            .pending_created_selection
+            .as_ref()
+            .filter(|pending| pending.armed && pending.tab_id == self.tabs.active_tab_id())
+            .map(|pending| pending.parent.clone())
+            && self
+                .tabs
+                .active_tab()
+                .history
+                .current()
+                .is_some_and(|entry| entry.location != parent)
+        {
+            return self.begin_active_navigation(parent, false);
+        }
         let location = self.tabs.active_tab().history.current()?.location.clone();
         let command = self.begin_active_navigation(location.clone(), true)?;
         if let Some(context) = command.context()
@@ -6223,6 +6311,31 @@ impl AppViewState {
             input: explorer_model::SearchInput::new(input),
             engine,
         })
+    }
+
+    fn focused_file_location_target(&self) -> Option<(LocationDescriptor, LocationDescriptor)> {
+        self.tabs.active_tab().search_results()?;
+        let child = self.presentation_entry(self.focused_row_index()?)?.location;
+        let parent = child.virtual_parent().or_else(|| {
+            child
+                .path()?
+                .parent()
+                .map(|parent| LocationDescriptor::file_system(parent.to_path_buf()))
+        })?;
+        Some((parent, child))
+    }
+
+    pub(crate) fn can_open_focused_file_location(&self) -> bool {
+        self.focused_file_location_target().is_some()
+    }
+
+    pub(crate) fn begin_open_focused_file_location(&mut self) -> Option<ExplorerCommand> {
+        let (parent, child) = self.focused_file_location_target()?;
+        self.close_remote_context_menu();
+        let command = self.begin_active_navigation(parent, false)?;
+        self.queue_leave_selection(child);
+        self.focus(FocusSurface::FileView);
+        Some(command)
     }
 
     pub(crate) fn begin_search_editing(&mut self) {
@@ -6818,6 +6931,10 @@ impl AppViewState {
                 replacement_queued = self.queued_context_menu.is_some(),
                 "applying context-menu terminal"
             );
+            self.finish_created_selection(
+                context,
+                matches!(outcome, explorer_model::ContextMenuOutcome::Invoked { .. }),
+            );
             self.pending_context_menu = None;
             self.context_menu_error = match outcome {
                 explorer_model::ContextMenuOutcome::Failed { error } => Some(error.clone()),
@@ -6942,6 +7059,14 @@ impl AppViewState {
             event,
             ExplorerEvent::OperationProgress { .. } | ExplorerEvent::OperationFinished { .. }
         ) {
+            if let ExplorerEvent::OperationFinished { context, outcome } = &event
+                && self.executable_drop_requests.remove(&context.request_id)
+            {
+                if let OperationTerminal::Failed(error) = outcome {
+                    self.set_paste_notice(error.user_message.clone(), true);
+                }
+                return WindowEventOutcome::Applied;
+            }
             if matches!(event, ExplorerEvent::OperationFinished { .. }) {
                 self.cancel_permanent_delete_confirmation();
             }
@@ -6961,6 +7086,17 @@ impl AppViewState {
                     false
                 };
             let operation_applied = self.operation_center.apply_event(&event);
+            if operation_applied
+                && let ExplorerEvent::OperationFinished { context, outcome } = &event
+            {
+                self.finish_created_selection(
+                    context,
+                    matches!(
+                        outcome,
+                        OperationTerminal::Finished | OperationTerminal::Partial { .. }
+                    ),
+                );
+            }
             if let ExplorerEvent::OperationFinished { context, outcome } = &event
                 && self.paste_requests.remove(&context.request_id)
             {
@@ -7090,6 +7226,7 @@ impl AppViewState {
                 }
             }
             self.apply_pending_leave_selection();
+            self.apply_pending_created_selection();
         }
         outcome
     }
@@ -7146,6 +7283,11 @@ impl AppViewState {
     fn queue_file_operation(&mut self, request: FileOperationRequest) -> ExplorerCommand {
         let tab = self.tabs.active_tab();
         let context = RequestContext::new(tab.id, tab.generation);
+        if let FileOperationKind::CreateFolder { parent, .. }
+        | FileOperationKind::CreateItem { parent, .. } = &request.kind
+        {
+            self.capture_created_selection(&context, parent.clone());
+        }
         self.insert_operation_record(&context, request.clone());
         ExplorerCommand::ExecuteFileOperation { context, request }
     }
@@ -7414,6 +7556,7 @@ impl AppViewState {
 
     pub(crate) fn select_row(&mut self, row_index: usize) -> bool {
         self.pending_leave_selection = None;
+        self.pending_created_selection = None;
         self.select_row_preserving_leave(row_index)
     }
 
@@ -7440,6 +7583,88 @@ impl AppViewState {
         };
         self.tabs.active_tab_mut().selection.select_only(id);
         true
+    }
+
+    fn capture_created_selection(&mut self, context: &RequestContext, parent: LocationDescriptor) {
+        self.pending_created_selection = Some(PendingCreatedSelection {
+            tab_id: context.tab_id,
+            parent,
+            source: context.request_id,
+            before: self.command_parent_names(),
+            armed: false,
+            expires: Instant::now() + Duration::from_secs(30),
+        });
+    }
+
+    fn finish_created_selection(&mut self, context: &RequestContext, succeeded: bool) {
+        let Some(pending) = self
+            .pending_created_selection
+            .as_mut()
+            .filter(|pending| pending.source == context.request_id)
+        else {
+            return;
+        };
+        if succeeded {
+            pending.armed = true;
+            pending.expires = Instant::now() + Duration::from_secs(30);
+            self.apply_pending_created_selection();
+        } else {
+            self.pending_created_selection = None;
+        }
+    }
+
+    fn apply_pending_created_selection(&mut self) {
+        let Some(pending) = self.pending_created_selection.as_ref() else {
+            return;
+        };
+        if !pending.armed {
+            return;
+        }
+        let tab = self.tabs.active_tab();
+        if pending.tab_id != tab.id || Instant::now() > pending.expires {
+            self.pending_created_selection = None;
+            return;
+        }
+        let current = self
+            .column_command_parent()
+            .or_else(|| tab.history.current().map(|entry| entry.location.clone()));
+        if current.as_ref() != Some(&pending.parent) {
+            self.pending_created_selection = None;
+            return;
+        }
+        if self.effective_view_mode() == explorer_model::ViewMode::Columns {
+            let column = self
+                .column_branches
+                .get(tab.id)
+                .map(|branch| branch.active_index());
+            let entry = column
+                .and_then(|column| self.column_directory_snapshot(column))
+                .and_then(|snapshot| {
+                    snapshot
+                        .entries()
+                        .iter()
+                        .find(|entry| !pending.before.contains(&entry.display_name.to_lowercase()))
+                        .cloned()
+                });
+            if let (Some(column), Some(entry)) = (column, entry) {
+                self.pending_created_selection = None;
+                if let Some(branch) = self.column_branches.get_mut(self.tabs.active_tab_id()) {
+                    branch.select_only(column, entry.id);
+                }
+                self.mirror_current_column_selection();
+                self.focus(FocusSurface::FileView);
+                self.reveal_active_column_selection();
+            }
+            return;
+        }
+        let child = (0..self.visible_row_count())
+            .filter_map(|row| self.presentation_entry(row))
+            .find(|entry| !pending.before.contains(&entry.display_name.to_lowercase()))
+            .map(|entry| entry.location);
+        if let Some(child) = child {
+            self.pending_created_selection = None;
+            self.queue_leave_selection(child);
+        }
     }
 
     fn queue_leave_selection(&mut self, child: LocationDescriptor) {
@@ -7966,6 +8191,7 @@ impl AppViewState {
                 y: client_y.max(0.0),
                 background,
                 paste_available: self.paste_available(),
+                open_file_location: self.can_open_focused_file_location(),
                 item_row_index,
                 item_is_container: item_row_index
                     .is_some_and(|row| self.presentation_row_is_container(row)),
@@ -7993,9 +8219,13 @@ impl AppViewState {
             },
             immersive_native_context_menus: tab.view.settings.immersive_native_context_menus,
             paste_available: self.paste_available(),
+            open_file_location: self.can_open_focused_file_location(),
             requested_verb: None,
             deadline_ms: 2_000,
         };
+        if let explorer_model::ShellContextMenuTarget::Background { parent } = &request.target {
+            self.capture_created_selection(&context, parent.clone());
+        }
         if let Some(pending) = self.pending_context_menu.as_ref() {
             let request_id = pending.request_id;
             pending.cancellation.cancel();
@@ -8076,6 +8306,7 @@ impl AppViewState {
                 y: client_y.max(0.0),
                 background: true,
                 paste_available: self.paste_available(),
+                open_file_location: false,
                 item_row_index: None,
                 item_is_container: true,
                 allow_create_symlink,
@@ -8107,6 +8338,7 @@ impl AppViewState {
             },
             immersive_native_context_menus,
             paste_available: self.paste_available(),
+            open_file_location: false,
             requested_verb: None,
             deadline_ms: 2_000,
         };
@@ -8178,6 +8410,7 @@ impl AppViewState {
             color_scheme: explorer_model::ContextMenuColorScheme::Light,
             immersive_native_context_menus: false,
             paste_available: false,
+            open_file_location: false,
             requested_verb: Some("undo".to_owned()),
             deadline_ms: 2_000,
         };
@@ -8220,6 +8453,7 @@ impl AppViewState {
             color_scheme: explorer_model::ContextMenuColorScheme::Light,
             immersive_native_context_menus: false,
             paste_available: false,
+            open_file_location: false,
             requested_verb: Some("properties".to_owned()),
             deadline_ms: 2_000,
         };
@@ -8266,6 +8500,7 @@ impl AppViewState {
                 color_scheme: explorer_model::ContextMenuColorScheme::Light,
                 immersive_native_context_menus: false,
                 paste_available: false,
+                open_file_location: false,
                 requested_verb: Some("empty".to_owned()),
                 deadline_ms: 10_000,
             },
@@ -8295,6 +8530,7 @@ impl AppViewState {
             color_scheme: explorer_model::ContextMenuColorScheme::Light,
             immersive_native_context_menus: false,
             paste_available: false,
+            open_file_location: false,
             requested_verb: Some(canonical_verb.to_owned()),
             deadline_ms: 2_000,
         };
@@ -8600,6 +8836,14 @@ impl AppViewState {
     ) {
         self.drop_target_row = None;
         self.drag_session.reset();
+        if let Some(entry) = destination_row.and_then(|row| self.presentation_entry(row))
+            && !entry.metadata.archive_member
+            && explorer_model::is_executable_drop_target(&entry.location, entry.is_container)
+        {
+            self.pending_drag_command =
+                self.executable_drop_command(&entry.location, paths, effect, allowed);
+            return;
+        }
         let item_destination = destination_row
             .and_then(|row| self.presentation_entry(row))
             .filter(|entry| entry.is_container)
@@ -8684,6 +8928,26 @@ impl AppViewState {
                 conflict: explorer_model::ConflictDecision::Prompt,
             },
         });
+    }
+
+    fn executable_drop_command(
+        &mut self,
+        destination: &LocationDescriptor,
+        paths: Vec<std::path::PathBuf>,
+        effect: explorer_model::DragEffect,
+        allowed: explorer_model::TransferEffects,
+    ) -> Option<ExplorerCommand> {
+        if paths.is_empty() || effect != explorer_model::DragEffect::Copy || !allowed.copy {
+            return None;
+        }
+        let executable = destination.path()?.to_path_buf();
+        let tab = self.tabs.active_tab();
+        let context = RequestContext::new(tab.id, tab.generation);
+        self.executable_drop_requests.insert(context.request_id);
+        Some(ExplorerCommand::DataTransfer {
+            context,
+            request: explorer_model::DataTransferRequest::LaunchExecutable { executable, paths },
+        })
     }
 
     pub(crate) fn resolve_right_drop(&mut self, effect: explorer_model::DragEffect) {
@@ -8935,21 +9199,6 @@ impl AppViewState {
         true
     }
 
-    pub(crate) fn permanent_delete_selected_request(&self) -> Option<FileOperationRequest> {
-        let items = self.selected_items();
-        (!items.is_empty()).then_some(FileOperationRequest {
-            kind: FileOperationKind::PermanentDelete {
-                items,
-                confirmed: true,
-            },
-            flags: explorer_model::FileOperationFlags {
-                require_confirmation: true,
-                allow_undo: false,
-                ..explorer_model::FileOperationFlags::default()
-            },
-        })
-    }
-
     pub(crate) fn confirm_permanent_delete(&mut self) -> Option<FileOperationRequest> {
         let confirmation = self.permanent_delete_confirmation.take()?;
         let tab = self.tabs.active_tab();
@@ -8963,7 +9212,7 @@ impl AppViewState {
                 confirmed: true,
             },
             flags: explorer_model::FileOperationFlags {
-                require_confirmation: true,
+                require_confirmation: false,
                 allow_undo: false,
                 ..explorer_model::FileOperationFlags::default()
             },
@@ -10741,14 +10990,29 @@ impl AppViewState {
             return None;
         }
         let _ = self.cancel_drag();
-        self.activate_column_item(
+        let command = self.activate_column_item(
             press.column_index,
-            press.item_id,
+            press.item_id.clone(),
             press.location,
             press.is_container,
             press.shift,
             press.control,
-        )
+        );
+        // Expanding a folder reveals its children, but the mouse still selected
+        // the folder itself. Keep keyboard commands (including F2) on that row.
+        if press.is_container {
+            if let Some(branch) = self.column_branches.get_mut(self.tabs.active_tab_id()) {
+                branch.select_only(press.column_index, press.item_id.clone());
+            }
+            if let Some(pending) = self.pending_column_cycle.as_mut()
+                && pending.column == press.column_index
+                && pending.item_id == press.item_id
+            {
+                pending.retain_clicked_selection = true;
+            }
+            self.mirror_current_column_selection();
+        }
+        command
     }
 
     fn commit_column_drag_source(&mut self) {
@@ -10804,6 +11068,13 @@ impl AppViewState {
     ) -> Option<ExplorerCommand> {
         if effect == explorer_model::DragEffect::None {
             return None;
+        }
+        if let Some(entry) = folder_id.and_then(|id| self.column_visible_entry(column_index, id))
+            && !entry.metadata.archive_member
+            && explorer_model::is_executable_drop_target(&entry.location, entry.is_container)
+        {
+            self.clear_external_drag();
+            return self.executable_drop_command(&entry.location, paths.to_vec(), effect, allowed);
         }
         let destination = self.column_drop_destination(column_index, folder_id)?;
         let selected = self.selected_items();
@@ -11742,6 +12013,7 @@ impl AppViewState {
             return false;
         }
         self.end_column_width_resize();
+        self.end_column_vertical_scroll();
         self.column_hscroll_drag = Some(ColumnStripScrollDrag {
             track_left,
             track_width,
@@ -11789,6 +12061,94 @@ impl AppViewState {
         self.column_hscroll_drag.is_some()
     }
 
+    pub(crate) fn begin_column_vertical_scroll(
+        &mut self,
+        column_index: usize,
+        track_top: f32,
+        track_height: f32,
+        grab_offset: f32,
+        minimum_thumb: f32,
+    ) -> bool {
+        if self.effective_view_mode() != explorer_model::ViewMode::Columns
+            || !track_top.is_finite()
+            || !track_height.is_finite()
+            || track_height <= 1.0
+            || !grab_offset.is_finite()
+            || grab_offset < 0.0
+            || !minimum_thumb.is_finite()
+        {
+            return false;
+        }
+        let tab_id = self.tabs.active_tab_id();
+        let Some(branch) = self.column_branches.get(tab_id) else {
+            return false;
+        };
+        if column_index >= branch.levels().len() {
+            return false;
+        }
+        let revision = branch.revision();
+        self.end_column_width_resize();
+        self.end_column_preview_resize();
+        self.end_column_horizontal_scroll();
+        self.end_marquee();
+        self.set_column_list_viewport_height(track_height);
+        self.column_vscroll_drag = Some(ColumnVerticalScrollDrag {
+            tab_id,
+            revision,
+            column_index,
+            track_top,
+            track_height,
+            grab_offset,
+            minimum_thumb: minimum_thumb.max(1.0),
+        });
+        true
+    }
+
+    pub(crate) fn update_column_vertical_scroll(&mut self, pointer_y: f32) -> bool {
+        let Some(session) = self.column_vscroll_drag else {
+            return false;
+        };
+        if !pointer_y.is_finite() {
+            return false;
+        }
+        let valid = self.effective_view_mode() == explorer_model::ViewMode::Columns
+            && session.tab_id == self.tabs.active_tab_id()
+            && self
+                .column_branches
+                .get(session.tab_id)
+                .is_some_and(|branch| {
+                    branch.revision() == session.revision
+                        && session.column_index < branch.levels().len()
+                })
+            && (self.column_list_viewport_height - session.track_height).abs() <= 0.5;
+        if !valid {
+            self.end_column_vertical_scroll();
+            return false;
+        }
+        let content = self.column_displayed_row_count(session.column_index) as f32
+            * crate::column_view::COLUMN_ROW_HEIGHT;
+        let maximum = (content - session.track_height).max(0.0);
+        let Some(target) = crate::interaction::scrollbar_target_offset(
+            session.track_height,
+            maximum,
+            session.minimum_thumb,
+            pointer_y - session.track_top,
+            session.grab_offset,
+        ) else {
+            return false;
+        };
+        self.set_column_scroll(session.column_index, target);
+        true
+    }
+
+    pub(crate) fn end_column_vertical_scroll(&mut self) {
+        self.column_vscroll_drag = None;
+    }
+
+    pub(crate) const fn column_vertical_scroll_active(&self) -> bool {
+        self.column_vscroll_drag.is_some()
+    }
+
     pub(crate) fn begin_column_width_resize(
         &mut self,
         column_index: usize,
@@ -11809,6 +12169,7 @@ impl AppViewState {
         let revision = branch.revision();
         self.end_column_preview_resize();
         self.end_column_horizontal_scroll();
+        self.end_column_vertical_scroll();
         self.end_marquee();
         self.column_width_resize = Some(ColumnWidthResizeSession {
             tab_id,
@@ -12249,6 +12610,7 @@ impl AppViewState {
             item_id: entry.id.clone(),
             location: entry.location.clone(),
             display_name: entry.display_name.clone(),
+            retain_clicked_selection: false,
         });
         ExplorerCommand::ResolveColumnCycle {
             context,
@@ -12314,6 +12676,11 @@ impl AppViewState {
                 branch.hold_pending_navigation(location.clone());
             }
             self.pending_column_cycle_navigation = self.begin_active_navigation(location, false);
+        }
+        if pending.retain_clicked_selection
+            && let Some(branch) = self.column_branches.get_mut(context.tab_id)
+        {
+            branch.select_only(column, entry.id.clone());
         }
         self.mirror_current_column_selection();
         self.sync_column_horizontal_reveal();
@@ -14647,6 +15014,134 @@ mod tests {
     }
 
     #[test]
+    fn created_items_are_focused_after_listing_for_files_folders_and_shell_templates() {
+        use explorer_model::*;
+        for mode in ViewMode::ALL {
+            for kind in 0..3 {
+                let mut state = state_with_rows();
+                state.set_view_mode(mode);
+                if mode == ViewMode::Columns {
+                    state.ensure_column_branch();
+                }
+                let parent = LocationDescriptor::file_system(r"C:\fixture");
+                let before = state
+                    .tabs
+                    .active_tab()
+                    .directory
+                    .snapshot()
+                    .unwrap()
+                    .entries()
+                    .to_vec();
+                if kind == 2 {
+                    let menu = state
+                        .begin_context_menu_request(None, 42, 0, 0, 0.0, 0.0, true, false)
+                        .unwrap();
+                    state.apply_service_event(ExplorerEvent::ContextMenuFinished {
+                        context: menu.context().unwrap().clone(),
+                        outcome: ContextMenuOutcome::Invoked { command_offset: 7 },
+                    });
+                } else {
+                    let request = if kind == 0 {
+                        state.create_folder_request()
+                    } else {
+                        state.create_new_item_request(1)
+                    }
+                    .unwrap();
+                    let command = state.begin_file_operation(request);
+                    state.apply_service_event(ExplorerEvent::OperationFinished {
+                        context: command.context().unwrap().clone(),
+                        outcome: OperationTerminal::Finished,
+                    });
+                }
+                let refresh = state.begin_refresh_navigation().unwrap();
+                let context = refresh.context().unwrap().clone();
+                state.apply_service_event(ExplorerEvent::LocationResolved {
+                    context: context.clone(),
+                    metadata: LocationMetadata {
+                        descriptor: parent,
+                        display_title: "fixture".to_owned(),
+                        can_go_up: true,
+                        can_write: true,
+                    },
+                });
+                state.apply_service_event(ExplorerEvent::DirectoryBatch {
+                    context: context.clone(),
+                    entries: before,
+                });
+                assert!(
+                    state.pending_created_selection.is_some(),
+                    "existing rows must not consume the selection"
+                );
+                let mut entry = folder_entry(99, "新項目.docx", r"C:\fixture\新項目.docx");
+                entry.is_container = kind == 0;
+                state.apply_service_event(ExplorerEvent::DirectoryBatch {
+                    context: context.clone(),
+                    entries: vec![entry],
+                });
+                state.apply_service_event(ExplorerEvent::DirectoryFinished { context });
+                assert_eq!(
+                    focused_display_name(&state).as_deref(),
+                    Some("新項目.docx"),
+                    "mode={mode:?} kind={kind}"
+                );
+                assert_eq!(state.focused_surface(), FocusSurface::FileView);
+                assert!(state.pending_created_selection.is_none());
+            }
+        }
+    }
+
+    #[test]
+    fn created_item_focus_survives_watcher_listing_before_operation_completion() {
+        use explorer_model::*;
+        for mode in [ViewMode::Details, ViewMode::Columns] {
+            let mut state = state_with_rows();
+            state.set_view_mode(mode);
+            if mode == ViewMode::Columns {
+                state.ensure_column_branch();
+            }
+            let parent = LocationDescriptor::file_system(r"C:\fixture");
+            let request = state.create_folder_request().unwrap();
+            let command = state.begin_file_operation(request);
+            let entries = vec![folder_entry(99, "新項目", r"C:\fixture\新項目")];
+            let watcher = state.begin_refresh_navigation().unwrap();
+            complete_cached_directory(&mut state, &watcher, parent.clone(), entries.clone());
+            state.apply_service_event(ExplorerEvent::OperationFinished {
+                context: command.context().unwrap().clone(),
+                outcome: OperationTerminal::Finished,
+            });
+            let refresh = state.begin_refresh_navigation().unwrap();
+            complete_cached_directory(&mut state, &refresh, parent, entries);
+            assert_eq!(
+                focused_display_name(&state).as_deref(),
+                Some("新項目"),
+                "mode={mode:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn cancelled_creation_and_user_selection_do_not_steal_focus() {
+        use explorer_model::*;
+        for user_selected in [false, true] {
+            let mut state = state_with_rows();
+            let request = state.create_folder_request().unwrap();
+            let command = state.begin_file_operation(request);
+            if user_selected {
+                assert!(state.select_row(0));
+            }
+            state.apply_service_event(ExplorerEvent::OperationFinished {
+                context: command.context().unwrap().clone(),
+                outcome: if user_selected {
+                    OperationTerminal::Finished
+                } else {
+                    OperationTerminal::Cancelled
+                },
+            });
+            assert!(state.pending_created_selection.is_none());
+        }
+    }
+
+    #[test]
     fn operation_terminal_notice_tracks_latest_request_and_rejects_stale_completion() {
         let mut state = state_with_rows();
         let first = state
@@ -15127,6 +15622,104 @@ mod tests {
     }
 
     #[test]
+    fn executable_drop_launches_all_paths_and_reports_failure_without_transfer() {
+        use explorer_model::{
+            ExplorerCommand, ExplorerEvent, LocationDescriptor, OperationTerminal,
+        };
+        let mut state = state_with_rows();
+        let program = preview_entry("viewer.EXE", 7, false, 0);
+        install_column_entries(&mut state, vec![program.clone()]);
+        let paths = vec![
+            r"C:\外部資料\one file.txt".into(),
+            r"D:\two & three.txt".into(),
+        ];
+        state.queue_external_drop(
+            paths.clone(),
+            Some(0),
+            explorer_model::DragEffect::Copy,
+            false,
+            explorer_model::TransferEffects::COPY,
+        );
+        let command = state
+            .take_pending_drag_command()
+            .expect("executable launch");
+        let context = command.context().unwrap().clone();
+        assert!(state.operation_center().get(context.request_id).is_none());
+        assert!(matches!(command, ExplorerCommand::DataTransfer {
+            request: explorer_model::DataTransferRequest::LaunchExecutable { executable, paths: actual }, ..
+        } if Some(executable.as_path()) == program.location.path() && actual == paths));
+        let error = explorer_common::ExplorerError::new(
+            explorer_common::ExplorerErrorKind::Availability,
+            "launch",
+            true,
+            "launch failed",
+            "fixture",
+        );
+        assert_eq!(
+            state.apply_service_event(ExplorerEvent::OperationFinished {
+                context,
+                outcome: OperationTerminal::Failed(error),
+            }),
+            explorer_model::WindowEventOutcome::Applied
+        );
+        assert_eq!(state.paste_notice().unwrap().0, "launch failed");
+        for (paths, effect, allowed) in [
+            (
+                Vec::new(),
+                explorer_model::DragEffect::Copy,
+                explorer_model::TransferEffects::COPY,
+            ),
+            (
+                paths.clone(),
+                explorer_model::DragEffect::Move,
+                explorer_model::TransferEffects::MOVE,
+            ),
+        ] {
+            state.queue_external_drop(paths, Some(0), effect, false, allowed);
+            assert!(state.take_pending_drag_command().is_none());
+        }
+        assert!(!explorer_model::is_executable_drop_target(
+            &program.location,
+            true
+        ));
+        assert!(!explorer_model::is_executable_drop_target(
+            &LocationDescriptor::file_system(r"C:\viewer.exe.txt"),
+            false,
+        ));
+    }
+
+    #[test]
+    fn column_executable_drop_uses_ancestor_target_and_never_queues_copy() {
+        use explorer_model::ExplorerCommand;
+        let mut fixture = ancestor_column_fixture();
+        let program = with_column_commands(column_letter(12, r"C:\alpha", "viewer.exe", false));
+        let mut snapshot = explorer_model::DirectorySnapshot::default();
+        snapshot.upsert(program.clone());
+        let branch = fixture
+            .state
+            .column_branches
+            .get_mut(fixture.state.tabs.active_tab_id())
+            .unwrap();
+        branch.begin_load(fixture.alpha_index, explorer_common::RequestId::new());
+        assert!(branch.apply_cached_snapshot(fixture.alpha_index, snapshot));
+        let paths = vec![r"C:\外部資料\one file.txt".into(), r"D:\two.txt".into()];
+        let command = fixture
+            .state
+            .column_drop_transfer(
+                fixture.alpha_index,
+                Some(&program.id),
+                &paths,
+                explorer_model::DragEffect::Copy,
+                false,
+                explorer_model::TransferEffects::COPY,
+            )
+            .expect("ancestor executable launch");
+        assert!(matches!(command, ExplorerCommand::DataTransfer {
+            request: explorer_model::DataTransferRequest::LaunchExecutable { executable, paths: actual }, ..
+        } if Some(executable.as_path()) == program.location.path() && actual == paths));
+    }
+
+    #[test]
     fn left_drag_external_drop_routes_background_and_folder_to_typed_request() {
         let mut state = state_with_rows();
         state.queue_external_drop(
@@ -15560,6 +16153,7 @@ mod tests {
                 y: 80.0,
                 background: true,
                 paste_available: false,
+                open_file_location: false,
                 item_row_index: None,
                 item_is_container: false,
                 allow_create_symlink: true,
@@ -16229,6 +16823,161 @@ mod tests {
             explorer_model::ExplorerCommand::Navigate { location, .. }
                 if location == canonical
         ));
+    }
+
+    #[test]
+    fn unc_live_search_uses_enumeration_with_stale_local_index_availability() {
+        use explorer_model::{ExplorerCommand, LocationDescriptor, SearchEnginePreference};
+        for selected in [
+            SearchEnginePreference::Mft,
+            SearchEnginePreference::Everything,
+        ] {
+            let location = LocationDescriptor::file_system(r"\\damody\gdrive\動畫");
+            let mut state = AppViewState::with_initial_location(explorer_model::HistoryEntry::new(
+                location.clone(),
+                "動畫",
+            ));
+            state.search_engine_availability = explorer_model::SearchEngineAvailability::default();
+            state.tabs.active_tab_mut().view.settings.search_engine = selected;
+            let first = state
+                .update_active_search_text("測".to_owned())
+                .expect("live search");
+            assert!(
+                matches!(&first, ExplorerCommand::StartSearch { location: root, engine: SearchEnginePreference::FileEnumeration, .. } if root == &location)
+            );
+            let cancellation = first.context().unwrap().cancellation.clone();
+            let replacement = state
+                .update_active_search_text("測試".to_owned())
+                .expect("replacement search");
+            assert!(cancellation.is_cancelled());
+            assert!(matches!(
+                &replacement,
+                ExplorerCommand::StartSearch {
+                    engine: SearchEnginePreference::FileEnumeration,
+                    ..
+                }
+            ));
+            assert!(state.update_active_search_text(String::new()).is_none());
+            assert!(replacement.context().unwrap().cancellation.is_cancelled());
+            assert_eq!(
+                state.tabs.active_tab().history.current().unwrap().location,
+                location
+            );
+        }
+    }
+
+    #[test]
+    fn search_file_location_opens_parent_and_focuses_target_after_async_listing() {
+        use explorer_model::*;
+        let mut targets = vec![
+            LocationDescriptor::file_system(r"C:\動畫\nested\異.mp4"),
+            LocationDescriptor::file_system(r"\\damody\gdrive\動畫\nested\異.mp4"),
+        ];
+        for provider in ["adb", "ftp", "sftp", "gdrive", "rust-7z:resource"] {
+            targets.push(
+                LocationDescriptor::try_virtual(
+                    provider,
+                    [1; 16],
+                    1,
+                    None,
+                    vec!["動畫".to_owned(), "nested".to_owned(), "異.mp4".to_owned()],
+                )
+                .unwrap(),
+            );
+        }
+        for child in targets {
+            let parent = child.virtual_parent().unwrap_or_else(|| {
+                LocationDescriptor::file_system(child.path().unwrap().parent().unwrap())
+            });
+            let mut state =
+                AppViewState::with_initial_location(HistoryEntry::new(parent.clone(), "nested"));
+            assert!(!state.can_open_focused_file_location());
+            let search = state.begin_active_search("異".to_owned()).unwrap();
+            let search_context = search.context().unwrap().clone();
+            let mut hit = cached_virtual_entry(1, "異.mp4", child.clone());
+            hit.is_container = false;
+            state.apply_service_event(ExplorerEvent::SearchBatch {
+                context: search_context.clone(),
+                source: SearchBackend::FileSystemFallback,
+                entries: vec![hit.clone()],
+            });
+            assert!(state.select_row(0));
+            assert!(state.can_open_focused_file_location());
+            let id = state.presentation_item_id(0).unwrap();
+            let menu =
+                state.begin_context_menu_request(Some(id), 42, 100, 200, 10.0, 20.0, true, false);
+            if matches!(child, LocationDescriptor::Virtual(_)) {
+                assert!(menu.is_none());
+                assert!(state.remote_context_menu().unwrap().open_file_location);
+            } else {
+                assert!(
+                    matches!(menu, Some(ExplorerCommand::ShowContextMenu { request, .. }) if request.open_file_location)
+                );
+            }
+            let open = state.begin_open_focused_file_location().unwrap();
+            assert!(
+                matches!(&open, ExplorerCommand::Navigate { location, .. } if location == &parent)
+            );
+            assert!(search_context.cancellation.is_cancelled());
+            assert!(matches!(
+                state.tabs.active_tab().search,
+                TabSearchState::Idle
+            ));
+            let context = open.context().unwrap().clone();
+            state.apply_service_event(ExplorerEvent::LocationResolved {
+                context: context.clone(),
+                metadata: LocationMetadata {
+                    descriptor: parent,
+                    display_title: "nested".to_owned(),
+                    can_go_up: true,
+                    can_write: true,
+                },
+            });
+            let other =
+                cached_virtual_entry(2, "other", LocationDescriptor::file_system(r"C:\other"));
+            state.apply_service_event(ExplorerEvent::DirectoryBatch {
+                context: context.clone(),
+                entries: vec![other],
+            });
+            assert_ne!(focused_display_name(&state).as_deref(), Some("other"));
+            hit.id = ShellItemId::from_provider_bytes([9]).unwrap();
+            state.apply_service_event(ExplorerEvent::DirectoryBatch {
+                context: context.clone(),
+                entries: vec![hit],
+            });
+            state.apply_service_event(ExplorerEvent::DirectoryFinished { context });
+            assert_eq!(focused_display_name(&state).as_deref(), Some("異.mp4"));
+            assert_eq!(state.focused_surface(), FocusSurface::FileView);
+            assert!(state.take_leave_selection_reveal().is_some());
+        }
+    }
+
+    #[test]
+    fn virtual_filesystems_can_search_without_local_index_capabilities() {
+        for provider in ["adb", "ftp", "sftp", "gdrive", "rust-7z:resource"] {
+            let location = explorer_model::LocationDescriptor::try_virtual(
+                provider,
+                [1; 16],
+                1,
+                None,
+                vec!["動畫".to_owned()],
+            )
+            .unwrap();
+            let mut state = AppViewState::with_initial_location(explorer_model::HistoryEntry::new(
+                location.clone(),
+                "動畫",
+            ));
+            state.search_engine_availability =
+                explorer_model::SearchEngineAvailability::all_unavailable();
+            state.tabs.active_tab_mut().view.settings.search_engine =
+                explorer_model::SearchEnginePreference::Mft;
+            let command = state
+                .update_active_search_text("測試".to_owned())
+                .expect("virtual search");
+            assert!(
+                matches!(command, explorer_model::ExplorerCommand::StartSearch { engine: explorer_model::SearchEnginePreference::FileEnumeration, location: root, .. } if root == location)
+            );
+        }
     }
 
     #[test]
@@ -16914,6 +17663,70 @@ mod tests {
     }
 
     #[test]
+    fn deleting_items_follow_all_active_delete_operations_and_terminal_outcomes() {
+        use explorer_model::{
+            ExplorerEvent, FileOperationKind, FileOperationRequest, OperationTerminal,
+        };
+        for permanent in [false, true] {
+            for outcome in [
+                OperationTerminal::Finished,
+                OperationTerminal::Cancelled,
+                OperationTerminal::Failed(explorer_common::ExplorerError::new(
+                    explorer_common::ExplorerErrorKind::Availability,
+                    "delete",
+                    true,
+                    "Delete failed",
+                    "test failure",
+                )),
+                OperationTerminal::Partial { outcomes: Vec::new() },
+            ] {
+                let mut state = state_with_rows();
+                assert!(state.select_row(1));
+                let items = state.selected_items();
+                let item = items[0].clone();
+                let request = FileOperationRequest {
+                    kind: if permanent {
+                        FileOperationKind::PermanentDelete {
+                            items,
+                            confirmed: true,
+                        }
+                    } else {
+                        FileOperationKind::RecycleDelete { items }
+                    },
+                    flags: explorer_model::FileOperationFlags::default(),
+                };
+                assert!(state.deleting_items().is_empty());
+                let command = state.begin_file_operation(request);
+                let context = command.context().unwrap().clone();
+                assert!(super::deletion_contains_item(
+                    &state.deleting_items(), &item.id, &item.location,
+                ));
+                state.apply_service_event(ExplorerEvent::OperationFinished { context, outcome });
+                assert!(state.deleting_items().is_empty());
+            }
+        }
+    }
+
+    #[test]
+    fn deleting_items_match_descendants_and_case_without_matching_sibling_prefixes() {
+        use explorer_model::{ItemDescriptor, LocationDescriptor, ShellItemId};
+        let deleting = vec![ItemDescriptor {
+            id: ShellItemId::from_provider_bytes([1]).unwrap(),
+            location: LocationDescriptor::file_system(r"C:\fixture\Deleting"),
+        }];
+        let other_id = ShellItemId::from_provider_bytes([2]).unwrap();
+        for path in [r"c:\FIXTURE\deleting", r"C:\fixture\Deleting\nested\file.txt"] {
+            assert!(super::deletion_contains_item(
+                &deleting, &other_id, &LocationDescriptor::file_system(path),
+            ));
+        }
+        assert!(!super::deletion_contains_item(
+            &deleting, &other_id,
+            &LocationDescriptor::file_system(r"C:\fixture\Deleting-other\file.txt"),
+        ));
+    }
+
+    #[test]
     fn operation_center_tracks_progress_terminal_and_rejects_late_progress() {
         let mut state = AppViewState::default();
         let request = explorer_model::FileOperationRequest {
@@ -17206,16 +18019,16 @@ mod tests {
     }
 
     #[test]
-    fn shift_delete_request_uses_only_the_windows_shell_confirmation() {
+    fn shift_delete_request_requires_owned_confirmation_without_a_second_shell_prompt() {
         let mut state = state_with_rows();
         assert!(state.select_row(1));
 
-        let request = state
-            .permanent_delete_selected_request()
-            .expect("selected item permanent delete request");
+        assert!(state.confirm_permanent_delete().is_none());
+        assert!(state.begin_permanent_delete_confirmation());
+        let request = state.confirm_permanent_delete().expect("confirmed request");
 
         assert_eq!(state.permanent_delete_confirmation_count(), None);
-        assert!(request.flags.require_confirmation);
+        assert!(!request.flags.require_confirmation);
         assert!(!request.flags.allow_undo);
         assert!(matches!(
             request.kind,
@@ -17312,7 +18125,7 @@ mod tests {
                 ref items,
             } if items.len() == 1
         ));
-        assert!(request.flags.require_confirmation);
+        assert!(!request.flags.require_confirmation);
         assert!(!request.flags.allow_undo);
         assert!(!matches!(
             request.kind,
@@ -20180,6 +20993,165 @@ mod tests {
             deep,
             sibling,
         }
+    }
+
+    #[test]
+    fn column_view_clicked_folder_remains_the_f2_target_after_child_load() {
+        for native_identity in [false, true] {
+            let mut fixture = ancestor_column_fixture();
+            let state = &mut fixture.state;
+            let mut folder = fixture.sibling.clone();
+            if native_identity {
+                folder.id = column_filesystem_item_id(77);
+                let mut snapshot = explorer_model::DirectorySnapshot::default();
+                snapshot.upsert(folder.clone());
+                state
+                    .directory_cache
+                    .insert(&fixture.alpha, snapshot.clone());
+                state
+                    .column_branches
+                    .get_mut(state.tabs.active_tab_id())
+                    .unwrap()
+                    .begin_load(fixture.alpha_index, explorer_model::RequestId::new());
+                assert!(
+                    state
+                        .column_branches
+                        .get_mut(state.tabs.active_tab_id())
+                        .unwrap()
+                        .apply_cached_snapshot(fixture.alpha_index, snapshot)
+                );
+            }
+            assert!(state.press_column_row(
+                fixture.alpha_index,
+                folder.id.clone(),
+                folder.location.clone(),
+                true,
+                10.0,
+                10.0,
+                false,
+                false,
+            ));
+            let mut command = state.finish_column_press().expect("expand clicked folder");
+            if let explorer_model::ExplorerCommand::ResolveColumnCycle {
+                context,
+                branch_revision,
+                column,
+                item,
+                location,
+                ..
+            } = command
+            {
+                state.apply_service_event(explorer_model::ExplorerEvent::ColumnCycleResolved {
+                    context,
+                    branch_revision,
+                    column,
+                    item,
+                    location,
+                    outcome: explorer_model::ColumnCycleOutcome::Distinct {
+                        identities: Vec::new(),
+                    },
+                });
+                command = state
+                    .take_pending_column_cycle_navigation()
+                    .expect("resolved navigation");
+            }
+            for loaded in [false, true] {
+                if loaded {
+                    finish_column_directory(
+                        state,
+                        &command,
+                        folder.location.clone(),
+                        vec![fixture.deep.clone()],
+                    );
+                    state.ensure_column_branch();
+                }
+                let trace = crate::actions::dispatch_action(
+                    state,
+                    crate::actions::ExplorerAction::BeginRenameFocused,
+                    crate::actions::ActionSource::Keyboard,
+                );
+                assert_eq!(
+                    trace.outcome,
+                    crate::actions::ActionOutcome::Handled,
+                    "native={native_identity}, loaded={loaded}"
+                );
+                let editor = state.rename_editor().expect("clicked folder rename editor");
+                assert_eq!(editor.item.id, folder.id);
+                assert_eq!(editor.item.location, folder.location);
+                assert_eq!(editor.buffer, "sibling");
+                assert_eq!(editor.selection, 0.."sibling".len());
+                state.update_inline_rename("renamed-folder".to_owned());
+                let request = state
+                    .commit_inline_rename(explorer_model::RenameCommitTrigger::Enter)
+                    .expect("valid rename")
+                    .expect("rename operation");
+                assert!(
+                    matches!(request.kind, explorer_model::FileOperationKind::Rename { item, new_name }
+                    if item.id == folder.id && item.location == folder.location && new_name == "renamed-folder")
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn column_view_vertical_scrollbar_drags_only_its_column_and_cancels_when_stale() {
+        let mut fixture = ancestor_column_fixture();
+        let state = &mut fixture.state;
+        let entries = (0u32..1000)
+            .map(|index| {
+                let mut entry = fixture.deep.clone();
+                entry.id =
+                    explorer_model::ShellItemId::from_provider_bytes(index.to_le_bytes()).unwrap();
+                entry.display_name = format!("file-{index:04}.txt");
+                entry
+            })
+            .collect();
+        install_column_entries(state, entries);
+        state.set_column_list_viewport_height(200.0);
+        let selected = state
+            .column_branches
+            .get(state.tabs.active_tab_id())
+            .unwrap()
+            .selected_ids()
+            .to_vec();
+        assert!(state.begin_column_vertical_scroll(fixture.beta_index, 50.0, 200.0, 5.0, 24.0));
+        assert!(state.update_column_vertical_scroll(250.0));
+        let branch = state
+            .column_branches
+            .get(state.tabs.active_tab_id())
+            .unwrap();
+        assert_eq!(
+            branch.levels()[fixture.beta_index].vertical_offset,
+            1000.0 * crate::column_view::COLUMN_ROW_HEIGHT - 200.0
+        );
+        assert_eq!(branch.levels()[fixture.alpha_index].vertical_offset, 0.0);
+        assert_eq!(branch.selected_ids(), selected);
+        assert!(state.update_column_vertical_scroll(-10.0));
+        assert_eq!(
+            state
+                .column_branches
+                .get(state.tabs.active_tab_id())
+                .unwrap()
+                .levels()[fixture.beta_index]
+                .vertical_offset,
+            0.0
+        );
+        state.end_column_vertical_scroll();
+        assert!(!state.column_vertical_scroll_active());
+        assert!(!state.update_column_vertical_scroll(200.0));
+
+        assert!(state.begin_column_vertical_scroll(fixture.beta_index, 50.0, 200.0, 5.0, 24.0));
+        state.set_column_list_viewport_height(300.0);
+        assert!(!state.update_column_vertical_scroll(200.0));
+        assert!(!state.column_vertical_scroll_active());
+        assert!(state.begin_column_vertical_scroll(fixture.beta_index, 50.0, 300.0, 5.0, 24.0));
+        state
+            .column_branches
+            .get_mut(state.tabs.active_tab_id())
+            .unwrap()
+            .align_to_location(fixture.alpha, 240, None);
+        assert!(!state.update_column_vertical_scroll(200.0));
+        assert!(!state.column_vertical_scroll_active());
     }
 
     #[test]
@@ -24315,6 +25287,46 @@ mod tests {
                 "location {location:?} must not prompt for credentials"
             );
         }
+    }
+
+    #[test]
+    fn network_login_recovers_bare_unc_host_after_logon_failure() {
+        let mut state = AppViewState::default();
+        let target = explorer_model::LocationDescriptor::file_system(r"\\192.168.0.239");
+        let command = state
+            .begin_active_navigation(target.clone(), false)
+            .expect("host navigation");
+        let context = command.context().expect("navigation context").clone();
+        state.set_navigation_target(context.tab_id, context.request_id, target.clone());
+        let event = explorer_model::ExplorerEvent::Failed {
+            context,
+            error: explorer_common::ExplorerError::new(
+                explorer_common::ExplorerErrorKind::Authorization,
+                "resolve location",
+                true,
+                "login failed",
+                "ERROR_LOGON_FAILURE",
+            )
+            .with_native_code(i32::from_ne_bytes(0x8007_052e_u32.to_ne_bytes())),
+        };
+        let request = state
+            .network_login_request(&event)
+            .expect("host login request");
+        assert_eq!(request.host, "192.168.0.239");
+        assert_eq!(request.remote, r"\\192.168.0.239");
+        assert_eq!(
+            state.apply_service_event(event),
+            explorer_model::WindowEventOutcome::Applied
+        );
+        let NetworkLoginRetry::ActiveLocation(location) = request.retry else {
+            panic!("active navigation retry");
+        };
+        let retry = state
+            .begin_active_navigation(location, false)
+            .expect("retry after login");
+        assert!(
+            matches!(retry, explorer_model::ExplorerCommand::Navigate { location, .. } if location == target)
+        );
     }
 
     #[test]

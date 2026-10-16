@@ -1019,6 +1019,7 @@ impl RenderOnce for ExplorerWindow {
         let side_pane_resizing = self.state.side_pane_resize_active();
         let column_preview_resizing = self.state.column_preview_resize_active();
         let column_hscroll_dragging = self.state.column_horizontal_scroll_active();
+        let column_vscroll_dragging = self.state.column_vertical_scroll_active();
         let column_width_resizing = self.state.column_width_resize_active();
         let marquee = self.state.marquee_session().cloned();
         let marquee_active = marquee.is_some();
@@ -1257,6 +1258,7 @@ impl RenderOnce for ExplorerWindow {
                                         self.state.catalog(),
                                         self.on_action.clone(),
                                     )
+                                    .with_deleting_items(self.state.deleting_items())
                                     .into_any_element()
                                 },
                             )
@@ -1430,6 +1432,7 @@ impl RenderOnce for ExplorerWindow {
                     || side_pane_resizing
                     || column_preview_resizing
                     || column_hscroll_dragging
+                    || column_vscroll_dragging
                     || column_width_resizing
                     || marquee_active,
                 |element| {
@@ -1440,6 +1443,7 @@ impl RenderOnce for ExplorerWindow {
                         side_pane_resizing,
                         column_preview_resizing,
                         column_hscroll_dragging,
+                        column_vscroll_dragging,
                         column_width_resizing,
                         marquee_active,
                         file_origin_x,
@@ -4890,7 +4894,7 @@ fn remote_context_menu(
     let close_cb = callback.clone();
     let close_right = close.clone();
     let close_right_cb = callback.clone();
-    let commands = remote_menu_commands(
+    let mut commands = remote_menu_commands(
         catalog,
         menu.background,
         menu.paste_available,
@@ -4899,6 +4903,18 @@ fn remote_context_menu(
         menu.allow_create_symlink,
         menu.gdrive_trash,
     );
+    if menu.open_file_location && !menu.background {
+        commands.insert(
+            1,
+            RemoteMenuCommand {
+                label: catalog.t("menu-open-file-location"),
+                action: ExplorerAction::OpenFileLocation,
+                icon: None,
+                placement: RemoteMenuPlacement::Text,
+                danger: false,
+            },
+        );
+    }
     let primary_count = commands
         .iter()
         .take_while(|command| command.placement == RemoteMenuPlacement::Text)
@@ -7961,6 +7977,7 @@ pub(crate) fn captured_left_mouse_up_action(
     side_pane_resizing: bool,
     column_preview_resizing: bool,
     column_hscroll_dragging: bool,
+    column_vscroll_dragging: bool,
     column_width_resizing: bool,
 ) -> Option<ExplorerAction> {
     if marquee_active {
@@ -7975,6 +7992,8 @@ pub(crate) fn captured_left_mouse_up_action(
         Some(ExplorerAction::EndDetailsColumnResize)
     } else if column_preview_resizing {
         Some(ExplorerAction::EndColumnPreviewResize)
+    } else if column_vscroll_dragging {
+        Some(ExplorerAction::EndColumnVerticalScroll)
     } else if column_hscroll_dragging {
         Some(ExplorerAction::EndColumnHorizontalScroll)
     } else if column_width_resizing {
@@ -7991,6 +8010,7 @@ pub(crate) fn pointer_drag_capture_listener(
     side_pane_resizing: bool,
     column_preview_resizing: bool,
     column_hscroll_dragging: bool,
+    column_vscroll_dragging: bool,
     column_width_resizing: bool,
     marquee_active: bool,
     file_origin_x: f32,
@@ -8060,6 +8080,12 @@ pub(crate) fn pointer_drag_capture_listener(
                         }
                     } else if column_preview_resizing {
                         ExplorerAction::EndColumnPreviewResize
+                    } else if column_vscroll_dragging && event.dragging() {
+                        ExplorerAction::UpdateColumnVerticalScroll {
+                            pointer_y: f32::from(event.position.y),
+                        }
+                    } else if column_vscroll_dragging {
+                        ExplorerAction::EndColumnVerticalScroll
                     } else if column_hscroll_dragging && event.dragging() {
                         ExplorerAction::UpdateColumnHorizontalScroll {
                             pointer_x: f32::from(event.position.x),
@@ -8095,6 +8121,7 @@ pub(crate) fn pointer_drag_capture_listener(
                         side_pane_resizing,
                         column_preview_resizing,
                         column_hscroll_dragging,
+                        column_vscroll_dragging,
                         column_width_resizing,
                     ) else {
                         // Windows OLE submits an external file drop to GPUI as a synthetic left
@@ -13216,6 +13243,7 @@ pub struct FileViewHost {
     provisional_new_folder: Option<explorer_model::FileEntry>,
     rename_input: Option<gpui::WeakEntity<EditableTextState>>,
     clipboard: explorer_model::ClipboardState,
+    deleting_items: Vec<explorer_model::ItemDescriptor>,
     drag_state: explorer_model::DragSessionState,
     drop_target_row: Option<usize>,
     target_can_write: bool,
@@ -13312,6 +13340,7 @@ impl FileViewHost {
             provisional_new_folder,
             rename_input,
             clipboard,
+            deleting_items: Vec::new(),
             drag_state,
             drop_target_row,
             target_can_write,
@@ -13344,6 +13373,11 @@ impl FileViewHost {
             catalog,
             on_action,
         }
+    }
+
+    fn with_deleting_items(mut self, items: Vec<explorer_model::ItemDescriptor>) -> Self {
+        self.deleting_items = items;
+        self
     }
 }
 
@@ -13711,6 +13745,7 @@ impl RenderOnce for FileViewHost {
             .map(|input| input.read(cx).focus_handle(cx));
         let selection = self.model.selection;
         let clipboard = self.clipboard;
+        let deleting_items = self.deleting_items;
         let drag_state = self.drag_state;
         let drop_target_row = self.drop_target_row;
         let target_can_write = self.target_can_write;
@@ -14173,6 +14208,11 @@ impl RenderOnce for FileViewHost {
             .children(entries.into_iter().map(move |item| {
                 let view_settings = Arc::clone(&row_settings);
                 let (visible_index, _snapshot_index, entry) = item;
+                let deleting = crate::state::deletion_contains_item(
+                    &deleting_items,
+                    &entry.id,
+                    &entry.location,
+                );
                 let code_lines_columns = row_code_lines_columns.clone();
                 let row_column_registry = row_column_registry.clone();
                 // Built-in File Count and Folder Count consume the same
@@ -14242,10 +14282,35 @@ impl RenderOnce for FileViewHost {
                 );
                 let mut ordered_detail_cells = Vec::new();
                 if view_settings.mode == explorer_model::ViewMode::Details && !drive_view {
+                    let mut deletion_status_shown = false;
                     for column_id in
                         visible_details_column_ids(&view_settings, &row_column_registry)
                     {
                         if column_id == explorer_model::ColumnId::Name {
+                            continue;
+                        }
+                        if deleting {
+                            let text = if deletion_status_shown {
+                                String::new()
+                            } else {
+                                catalog.t("file-row-deleting")
+                            };
+                            deletion_status_shown = true;
+                            ordered_detail_cells.push(
+                                div()
+                                    .id(details_column_selector(
+                                        &format!("{row_id}-details-cell"), &column_id,
+                                    ))
+                                    .role(Role::Cell)
+                                    .aria_label(text.clone())
+                                    .w(px(f32::from(
+                                        view_settings.details_column_width(&column_id),
+                                    )))
+                                    .flex_none()
+                                    .text_color(colors.text_secondary.to_gpui())
+                                    .child(text)
+                                    .into_any_element(),
+                            );
                             continue;
                         }
                         let builtin_text = match &column_id {
@@ -14388,7 +14453,7 @@ impl RenderOnce for FileViewHost {
                     .as_ref()
                     .and_then(|drive| drive.available_bytes)
                     .map(|bytes| format_explorer_size(bytes, catalog))
-                    .unwrap_or_default();
+                    .unwrap_or_else(|| drive_capacity_text.clone().unwrap_or_default());
                 let drive_filesystem_display = drive
                     .as_ref()
                     .and_then(|drive| drive.filesystem_name.clone())
@@ -14409,7 +14474,9 @@ impl RenderOnce for FileViewHost {
                     layout.control_padding_horizontal.value()
                         - layout.divider_width.value() / 2.0,
                 );
-                let can_accept_drop = entry.is_container;
+                let executable_drop = !entry.metadata.archive_member
+                    && explorer_model::is_executable_drop_target(&entry.location, entry.is_container);
+                let can_accept_drop = entry.is_container || executable_drop;
                 let row_drop_destination = entry.location.clone();
                 let row_drop_cue = drop_target_row == Some(visible_index);
                 let activate = on_action.clone();
@@ -14500,7 +14567,7 @@ impl RenderOnce for FileViewHost {
                         let drop_destination = row_drop_destination.clone();
                         let move_destination = row_drop_destination.clone();
                         element
-                            // File rows must remain transparent to external drops so the file-view
+                            // Ordinary file rows remain transparent to external drops so the file-view
                             // background can accept them into the current directory. Registering a
                             // rejecting child drop target here makes a full Details viewport
                             // impossible to drop onto, which is especially visible in populated
@@ -14511,21 +14578,21 @@ impl RenderOnce for FileViewHost {
                                         value
                                             .downcast_ref::<gpui::ExternalPaths>()
                                             .is_some_and(|paths| {
-                                                negotiate_external_paths(
+                                                negotiate_item_drop(
                                                     paths,
-                                                    true,
-                                                    Some(&can_drop_destination),
+                                                    &can_drop_destination,
+                                                    executable_drop,
                                                 ) != explorer_model::DragEffect::None
                                             })
                                     })
                                     .on_drop(move |paths: &gpui::ExternalPaths, window, cx| {
-                                        // A folder row owns the drop. Letting this bubble to the
-                                        // background can change a valid child-folder effect.
+                                        // Folder and executable rows own their drops. Bubbling to
+                                        // the background would perform a different operation.
                                         cx.stop_propagation();
-                                        let effect = negotiate_external_paths(
+                                        let effect = negotiate_item_drop(
                                             paths,
-                                            true,
-                                            Some(&drop_destination),
+                                            &drop_destination,
+                                            executable_drop,
                                         );
                                         drop_callback(
                                             &ExplorerAction::DropExternal {
@@ -14542,10 +14609,10 @@ impl RenderOnce for FileViewHost {
                                     .on_drag_move::<gpui::ExternalPaths>(
                                         move |event, window, cx| {
                                             cx.stop_propagation();
-                                            let effect = negotiate_external_paths(
+                                            let effect = negotiate_item_drop(
                                                 event.drag(cx),
-                                                true,
-                                                Some(&move_destination),
+                                                &move_destination,
+                                                executable_drop,
                                             );
                                             drag_move_callback(
                                                 &ExplorerAction::UpdateExternalDrag {
@@ -18772,6 +18839,29 @@ fn right_drag_terminal_menu(
         ))
 }
 
+pub(crate) fn negotiate_item_drop(
+    paths: &gpui::ExternalPaths,
+    destination: &explorer_model::LocationDescriptor,
+    executable: bool,
+) -> explorer_model::DragEffect {
+    if !executable {
+        return negotiate_external_paths(paths, true, Some(destination));
+    }
+    // Opening files must never report Move: remote sources can delete their
+    // originals after a successful native move drop.
+    let accepted = !paths.paths().is_empty() && paths.drop_metadata().allowed.copy;
+    paths.set_negotiated_effect(if accepted {
+        gpui::ExternalDropEffect::Copy
+    } else {
+        gpui::ExternalDropEffect::None
+    });
+    if accepted {
+        explorer_model::DragEffect::Copy
+    } else {
+        explorer_model::DragEffect::None
+    }
+}
+
 pub(crate) fn negotiate_external_paths(
     paths: &gpui::ExternalPaths,
     target_can_write: bool,
@@ -20885,6 +20975,31 @@ mod tests {
     }
 
     #[test]
+    fn executable_drop_advertises_copy_even_with_shift_and_rejects_move_only() {
+        let program = explorer_model::LocationDescriptor::file_system(r"C:\viewer.exe");
+        let paths = external_paths_with_modifiers(r"C:\file with space.txt", false, true);
+        assert_eq!(
+            super::negotiate_item_drop(&paths, &program, true),
+            explorer_model::DragEffect::Copy
+        );
+        let move_only = gpui::ExternalPaths::with_metadata(
+            vec![r"C:\file.txt".into()].into(),
+            gpui::ExternalDropMetadata {
+                allowed: gpui::ExternalDropEffects {
+                    copy: false,
+                    move_item: true,
+                    link: false,
+                },
+                ..Default::default()
+            },
+        );
+        assert_eq!(
+            super::negotiate_item_drop(&move_only, &program, true),
+            explorer_model::DragEffect::None
+        );
+    }
+
+    #[test]
     fn left_drag_effect_uses_live_modifiers_and_real_destination_volume() {
         let same_volume = explorer_model::LocationDescriptor::file_system(r"C:\destination");
         let cross_volume = explorer_model::LocationDescriptor::file_system(r"D:\destination");
@@ -21702,29 +21817,47 @@ mod tests {
 
     #[test]
     fn idle_pointer_capture_leaves_external_ole_mouse_up_for_drop_target() {
+        assert!(matches!(
+            super::captured_left_mouse_up_action(
+                false, None, false, false, false, false, true, false
+            ),
+            Some(ExplorerAction::EndColumnVerticalScroll)
+        ));
         assert!(
-            super::captured_left_mouse_up_action(false, None, false, false, false, false, false)
-                .is_none(),
+            super::captured_left_mouse_up_action(
+                false, None, false, false, false, false, false, false
+            )
+            .is_none(),
             "an idle capture listener must not consume the synthetic MouseUp used by OLE Drop"
         );
         assert!(matches!(
-            super::captured_left_mouse_up_action(false, None, true, false, false, false, false),
+            super::captured_left_mouse_up_action(
+                false, None, true, false, false, false, false, false
+            ),
             Some(ExplorerAction::EndDetailsColumnResize)
         ));
         assert!(matches!(
-            super::captured_left_mouse_up_action(false, None, false, true, false, false, false),
+            super::captured_left_mouse_up_action(
+                false, None, false, true, false, false, false, false
+            ),
             Some(ExplorerAction::EndSidePaneResize)
         ));
         assert!(matches!(
-            super::captured_left_mouse_up_action(false, None, false, false, true, false, false),
+            super::captured_left_mouse_up_action(
+                false, None, false, false, true, false, false, false
+            ),
             Some(ExplorerAction::EndColumnPreviewResize)
         ));
         assert!(matches!(
-            super::captured_left_mouse_up_action(false, None, false, false, false, true, false),
+            super::captured_left_mouse_up_action(
+                false, None, false, false, false, true, false, false
+            ),
             Some(ExplorerAction::EndColumnHorizontalScroll)
         ));
         assert!(matches!(
-            super::captured_left_mouse_up_action(false, None, false, false, false, false, true),
+            super::captured_left_mouse_up_action(
+                false, None, false, false, false, false, false, true
+            ),
             Some(ExplorerAction::EndColumnWidthResize)
         ));
     }
@@ -21967,9 +22100,12 @@ mod tests {
         assert!(!content.wrapped && !content.stacked);
 
         for mode in [
+            explorer_model::ViewMode::ExtraLargeIcons,
             explorer_model::ViewMode::SmallIcons,
             explorer_model::ViewMode::MediumIcons,
             explorer_model::ViewMode::LargeIcons,
+            explorer_model::ViewMode::List,
+            explorer_model::ViewMode::Tiles,
         ] {
             let metrics = super::this_pc_spatial_grid_metrics(mode, layout);
             assert_eq!(

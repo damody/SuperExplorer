@@ -791,9 +791,119 @@ fn column_horizontal_scrollbar(
         .into_any_element()
 }
 
+fn column_vertical_scrollbar(
+    index: usize,
+    row_count: usize,
+    viewport: f32,
+    offset: f32,
+    minimum_thumb: f32,
+    track_width: f32,
+    divider_width: f32,
+    tokens: UiTokens,
+    catalog: Catalog,
+    on_action: Option<ActionCallback>,
+) -> gpui::AnyElement {
+    let colors = tokens.theme.colors;
+    let content = row_count as f32 * COLUMN_ROW_HEIGHT;
+    let metrics = column_scrollbar_metrics(content, viewport, offset, minimum_thumb);
+    let bounds = Rc::new(Cell::new(None::<(f32, f32)>));
+    let thumb_width = (track_width - tokens.layout.focus_stroke.value() * 2.0).max(8.0);
+    div()
+        .id(SharedString::from(format!(
+            "column-vertical-scrollbar-{index}"
+        )))
+        .debug_selector(move || format!("column-vertical-scrollbar-{index}"))
+        .role(Role::ScrollBar)
+        .aria_label(catalog.t("chrome-file-view-scrollbar"))
+        .aria_numeric_value(f64::from(metrics.offset))
+        .aria_min_numeric_value(0.0)
+        .aria_max_numeric_value(f64::from(metrics.maximum))
+        .absolute()
+        .right(px(divider_width))
+        .top_0()
+        .h(px(viewport))
+        .w(px(track_width))
+        .bg(colors.surface.to_gpui())
+        .child(
+            canvas(
+                {
+                    let bounds = Rc::clone(&bounds);
+                    move |rect, _, _| {
+                        bounds.set(Some((
+                            f32::from(rect.origin.y),
+                            f32::from(rect.size.height),
+                        )));
+                    }
+                },
+                |_, _, _, _| {},
+            )
+            .absolute()
+            .inset_0()
+            .size_full(),
+        )
+        .when_some(on_action, |bar, callback| {
+            bar.on_mouse_down(MouseButton::Left, move |event, window, cx| {
+                cx.stop_propagation();
+                let Some((track_top, track_height)) = bounds.get() else {
+                    return;
+                };
+                let metrics =
+                    column_scrollbar_metrics(content, track_height, offset, minimum_thumb);
+                let Some(hit) = column_scrollbar_hit(
+                    &metrics,
+                    track_height,
+                    f32::from(event.position.y) - track_top,
+                ) else {
+                    return;
+                };
+                // Publish the measured track before clamping a page or starting a drag.
+                callback(
+                    &ExplorerAction::SetColumnScroll {
+                        column_index: COLUMN_LIST_VIEWPORT_SLOT,
+                        offset: track_height,
+                    },
+                    window,
+                    cx,
+                );
+                let action = match hit {
+                    ColumnScrollbarHit::Thumb { grab_offset } => {
+                        ExplorerAction::BeginColumnVerticalScroll {
+                            column_index: index,
+                            track_top,
+                            track_height,
+                            grab_offset,
+                            minimum_thumb,
+                        }
+                    }
+                    ColumnScrollbarHit::Page { offset } => ExplorerAction::SetColumnScroll {
+                        column_index: index,
+                        offset,
+                    },
+                };
+                callback(&action, window, cx);
+            })
+        })
+        .child(
+            div()
+                .id(SharedString::from(format!(
+                    "column-vertical-scrollbar-thumb-{index}"
+                )))
+                .debug_selector(move || format!("column-vertical-scrollbar-thumb-{index}"))
+                .absolute()
+                .top(px(metrics.thumb_left))
+                .left(px((track_width - thumb_width) / 2.0))
+                .h(px(metrics.thumb_width))
+                .w(px(thumb_width))
+                .rounded(px(tokens.layout.corner_radius.value()))
+                .bg(colors.text_disabled.to_gpui())
+                .hover(|style| style.bg(colors.text_secondary.to_gpui())),
+        )
+        .into_any_element()
+}
+
 fn column_pane(
     mut pane: ColumnPaneModel,
-    _viewport_height: f32,
+    viewport_height: f32,
     published_viewport: f32,
     measured_viewport: Rc<Cell<f32>>,
     horizontal_offset: f32,
@@ -839,6 +949,20 @@ fn column_pane(
     let index = pane.index;
     let width = pane.width;
     let vertical_offset = pane.vertical_offset;
+    let viewport = if published_viewport > 1.0 {
+        published_viewport
+    } else {
+        viewport_height
+    };
+    let minimum_thumb = tokens.layout.minimum_hit_target.value();
+    let vertical_scrollbar = column_scrollbar_metrics(
+        row_count as f32 * COLUMN_ROW_HEIGHT,
+        viewport,
+        vertical_offset,
+        minimum_thumb,
+    );
+    let divider_width = tokens.layout.divider_width.value().max(6.0);
+    let scrollbar_width = (tokens.layout.content_spacing.value() * 1.5).max(12.0);
     let status = column_status_text(catalog, pane.status, pane.status_detail.as_deref());
     let offers_refresh = column_status_offers_refresh(pane.status);
     let directory = pane.directory.clone();
@@ -915,6 +1039,9 @@ fn column_pane(
             // Gaps stand in for rows that were not built. The negative margin scrolls.
             div()
                 .w_full()
+                .when(vertical_scrollbar.visible, |rows| {
+                    rows.pr(px(scrollbar_width + divider_width))
+                })
                 .flex_1()
                 .min_h(px(0.0))
                 .flex()
@@ -932,6 +1059,20 @@ fn column_pane(
             catalog,
             on_action.clone(),
         ))
+        .when(vertical_scrollbar.visible, |pane| {
+            pane.child(column_vertical_scrollbar(
+                index,
+                row_count,
+                viewport,
+                vertical_offset,
+                minimum_thumb,
+                scrollbar_width,
+                divider_width,
+                tokens,
+                catalog,
+                on_action.clone(),
+            ))
+        })
         .child({
             let hit = tokens.layout.divider_width.value().max(6.0);
             div()
@@ -1096,9 +1237,13 @@ fn column_row(
     rename_input: Option<gpui::WeakEntity<EditableTextState>>,
 ) -> gpui::AnyElement {
     let colors = tokens.theme.colors;
-    let selected = row.selected || row.branch_selected;
+    // Ancestor branch markers describe the open path, not keyboard focus or
+    // selection. Only the active column supplies actual selected rows.
+    let selected = row.selected;
     let name = row.name.clone();
     let is_container = row.is_container;
+    let executable_drop = !row.metadata.archive_member
+        && explorer_model::is_executable_drop_target(&row.location, is_container);
     let icon = column_row_icon(&row, icons, icon_dpi, icon_logical, theme);
     let item_id = row.id.clone();
     let icon_id = column_debug_key("column-row-icon", column_index, &item_id);
@@ -1243,7 +1388,7 @@ fn column_row(
                     );
                     right_out_callback(&ExplorerAction::CancelFileDrag, window, cx);
                 })
-                .when(is_container, |element| {
+                .when(is_container || executable_drop, |element| {
                     let folder_id = drop_id.clone();
                     let accept_folder = location.clone();
                     let drop_folder = location.clone();
@@ -1252,27 +1397,33 @@ fn column_row(
                             value
                                 .downcast_ref::<gpui::ExternalPaths>()
                                 .is_some_and(|paths| {
-                                    negotiate_column_drop(paths, &accept_folder)
-                                        != explorer_model::DragEffect::None
+                                    crate::chrome::negotiate_item_drop(
+                                        paths,
+                                        &accept_folder,
+                                        executable_drop,
+                                    ) != explorer_model::DragEffect::None
                                 })
                         })
                         .on_drag_move::<gpui::ExternalPaths>({
                             let hover_folder = drop_folder.clone();
                             move |event, _, cx| {
-                                if column_drag_hover_effect(
-                                    event.drag(cx),
-                                    &hover_folder,
-                                    event.bounds.contains(&event.event.position),
-                                )
-                                .is_some()
-                                {
+                                if event.bounds.contains(&event.event.position) {
+                                    let _ = crate::chrome::negotiate_item_drop(
+                                        event.drag(cx),
+                                        &hover_folder,
+                                        executable_drop,
+                                    );
                                     cx.stop_propagation();
                                 }
                             }
                         })
                         .on_drop(move |paths: &gpui::ExternalPaths, window, cx| {
                             cx.stop_propagation();
-                            let effect = negotiate_column_drop(paths, &drop_folder);
+                            let effect = crate::chrome::negotiate_item_drop(
+                                paths,
+                                &drop_folder,
+                                executable_drop,
+                            );
                             drop_callback(
                                 &ExplorerAction::DropOnColumn {
                                     column_index,
@@ -3022,6 +3173,93 @@ mod tests {
     }
 
     #[gpui::test]
+    fn column_view_vertical_scrollbars_fit_each_overflowing_column(cx: &mut gpui::TestAppContext) {
+        let height = 200.0;
+        let maximum = 1000.0 * COLUMN_ROW_HEIGHT - height;
+        let panes = [1000, 1000, 5]
+            .into_iter()
+            .enumerate()
+            .map(|(index, row_count)| super::ColumnPaneModel {
+                index,
+                title: format!("Column {index}"),
+                directory: LocationDescriptor::file_system(r"E:\fixture"),
+                width: 180.0,
+                vertical_offset: if index == 1 { maximum } else { 0.0 },
+                row_count,
+                row_origin: 0,
+                rows: Vec::new(),
+                pinned_row: None,
+                status: super::ColumnPaneStatus::Ready,
+                status_detail: None,
+            })
+            .collect();
+        let model = super::ColumnStripModel {
+            panes,
+            active: 0,
+            horizontal_offset: 0.0,
+            preview_visible: false,
+            preview_width: 280.0,
+            file_surface_width: 600.0,
+            list_viewport_height: height,
+            preview_title: String::new(),
+            preview_detail: String::new(),
+            preview_status: String::new(),
+            preview_route: ColumnPreviewRoute::None,
+        };
+        let window = cx.open_window(gpui::size(px(600.0), px(height)), |_, _| {
+            ColumnFilenameProbe {
+                tokens: crate::UiTokens::default(),
+                model,
+                rename: None,
+            }
+        });
+        let any_window = window.into();
+        cx.update_window(any_window, |_, window, cx| window.draw(cx).clear())
+            .unwrap();
+        let mut visual = gpui::VisualTestContext::from_window(any_window, cx);
+        for (index, bar_selector, thumb_selector, divider_selector) in [
+            (
+                0,
+                "column-vertical-scrollbar-0",
+                "column-vertical-scrollbar-thumb-0",
+                "column-divider-0",
+            ),
+            (
+                1,
+                "column-vertical-scrollbar-1",
+                "column-vertical-scrollbar-thumb-1",
+                "column-divider-1",
+            ),
+        ] {
+            let bar = visual
+                .debug_bounds(bar_selector)
+                .expect("overflow scrollbar");
+            let thumb = visual.debug_bounds(thumb_selector).expect("scroll thumb");
+            let divider = visual
+                .debug_bounds(divider_selector)
+                .expect("resize divider");
+            assert!((f32::from(bar.size.height) - height).abs() <= 0.5);
+            assert!(inside(bar, thumb));
+            assert!(
+                edge_right(bar) <= f32::from(divider.origin.x) + 0.5,
+                "scrolling and column resizing must have separate hit targets"
+            );
+            if index == 0 {
+                assert!((f32::from(thumb.origin.y) - f32::from(bar.origin.y)).abs() <= 0.5);
+            } else {
+                assert!(
+                    (edge_bottom(thumb) - edge_bottom(bar)).abs() <= 0.5,
+                    "dragging to the end must leave the thumb at the bottom"
+                );
+            }
+        }
+        assert!(
+            visual.debug_bounds("column-vertical-scrollbar-2").is_none(),
+            "a short column does not need a scrollbar"
+        );
+    }
+
+    #[gpui::test]
     fn wrapped_column_filenames_stay_inside_adjacent_rows(cx: &mut gpui::TestAppContext) {
         use explorer_model::{ItemDescriptor, RenameEditorState};
 
@@ -3122,6 +3360,7 @@ mod tests {
         let folder_chevron = read(&mut visual, "column-chevron-0-6e");
         let rename_editor = read(&mut visual, "column-inline-rename");
         let rename_text = read(&mut visual, "column-inline-rename-text");
+        let scrollbar = read(&mut visual, "column-vertical-scrollbar-0");
 
         for (name, row) in [
             ("short", short_row),
@@ -3136,9 +3375,8 @@ mod tests {
                 COLUMN_ROW_HEIGHT
             );
             assert!(
-                (f32::from(row.size.width) - 180.0).abs() <= 2.0,
-                "{name} row width {}",
-                f32::from(row.size.width)
+                (edge_right(row) - f32::from(scrollbar.origin.x)).abs() <= 1.0,
+                "{name} row must end before the scrollbar: {row:?}, {scrollbar:?}"
             );
         }
         assert!(
@@ -3387,6 +3625,7 @@ mod tests {
                     element.child(crate::chrome::pointer_drag_capture_listener(
                         Some(callback),
                         None,
+                        false,
                         false,
                         false,
                         false,
