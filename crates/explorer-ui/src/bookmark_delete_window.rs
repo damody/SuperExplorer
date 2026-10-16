@@ -45,6 +45,7 @@ pub struct BookmarkDeleteWindow {
     owner: WindowHandle<ExplorerRoot>,
     snapshot: BookmarkDeleteWindowSnapshotV1,
     focus_handle: FocusHandle,
+    cancel_focus_handle: FocusHandle,
 }
 
 impl BookmarkDeleteWindow {
@@ -52,14 +53,17 @@ impl BookmarkDeleteWindow {
         tokens: UiTokens,
         owner: WindowHandle<ExplorerRoot>,
         snapshot: BookmarkDeleteWindowSnapshotV1,
-        _: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
+        let focus_handle = cx.focus_handle();
+        focus_handle.focus(window, cx);
         Self {
             tokens,
             owner,
             snapshot,
-            focus_handle: cx.focus_handle(),
+            focus_handle,
+            cancel_focus_handle: cx.focus_handle(),
         }
     }
 
@@ -70,6 +74,7 @@ impl BookmarkDeleteWindow {
         cx: &mut Context<Self>,
     ) {
         self.snapshot = snapshot;
+        self.focus_handle.focus(window, cx);
         cx.notify();
         window.refresh();
     }
@@ -110,7 +115,6 @@ impl Render for BookmarkDeleteWindow {
             .role(gpui::Role::Dialog)
             .aria_label(catalog.t("a11y-delete-bookmark"))
             .size_full()
-            .track_focus(&self.focus_handle)
             .capture_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, window, cx| {
                 match event.keystroke.key.as_str() {
                     "escape" => {
@@ -119,7 +123,20 @@ impl Render for BookmarkDeleteWindow {
                     }
                     "enter" => {
                         cx.stop_propagation();
-                        this.confirm(window, cx);
+                        if this.cancel_focus_handle.is_focused(window) {
+                            window.remove_window();
+                        } else {
+                            this.confirm(window, cx);
+                        }
+                    }
+                    "tab" | "left" | "right" => {
+                        cx.stop_propagation();
+                        if this.cancel_focus_handle.is_focused(window) {
+                            this.focus_handle.focus(window, cx);
+                        } else {
+                            this.cancel_focus_handle.focus(window, cx);
+                        }
+                        cx.notify();
                     }
                     _ => {}
                 }
@@ -139,11 +156,15 @@ impl Render for BookmarkDeleteWindow {
                     .child(
                         div()
                             .id("bookmark-delete-cancel")
+                            .track_focus(&self.cancel_focus_handle)
                             .role(gpui::Role::Button)
                             .cursor_pointer()
                             .rounded(px(6.0))
                             .border_1()
                             .border_color(colors.divider.to_gpui())
+                            .when(self.cancel_focus_handle.is_focused(window), |button| {
+                                button.border_color(colors.accent.to_gpui())
+                            })
                             .px(px(12.0))
                             .py(px(7.0))
                             .child(catalog.t("menu-cancel"))
@@ -152,6 +173,7 @@ impl Render for BookmarkDeleteWindow {
                     .child(
                         div()
                             .id("bookmark-delete-confirm")
+                            .track_focus(&self.focus_handle)
                             .role(gpui::Role::Button)
                             .cursor_pointer()
                             .rounded(px(6.0))
@@ -160,6 +182,11 @@ impl Render for BookmarkDeleteWindow {
                             .px(px(12.0))
                             .py(px(7.0))
                             .text_color(colors.danger.to_gpui())
+                            .when(self.focus_handle.is_focused(window), |button| {
+                                button
+                                    .bg(colors.danger.to_gpui())
+                                    .text_color(colors.surface.to_gpui())
+                            })
                             .child(catalog.t("menu-delete"))
                             .on_click(cx.listener(|this, _, window, cx| this.confirm(window, cx))),
                     ),
