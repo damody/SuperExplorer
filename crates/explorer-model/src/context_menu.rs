@@ -106,6 +106,7 @@ pub struct ContextMenuRequest {
     pub immersive_native_context_menus: bool,
     /// Application-owned clipboard state captured when the popup request is created.
     pub paste_available: bool,
+    pub open_file_location: bool,
     /// When present, invoke this canonical Shell verb without showing the popup menu.
     pub requested_verb: Option<String>,
     pub deadline_ms: u32,
@@ -189,6 +190,7 @@ impl ContextMenuSession {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ContextMenuHostCommand {
     Open,
+    OpenFileLocation,
     Cut,
     Copy,
     Paste,
@@ -208,6 +210,7 @@ impl ContextMenuHostCommand {
     pub const fn wire_name(self) -> &'static str {
         match self {
             Self::Open => "open",
+            Self::OpenFileLocation => "openfilelocation",
             Self::Cut => "cut",
             Self::Copy => "copy",
             Self::Paste => "paste",
@@ -227,6 +230,7 @@ impl ContextMenuHostCommand {
     pub fn from_wire_name(value: &str) -> Option<Self> {
         match value {
             "open" => Some(Self::Open),
+            "openfilelocation" => Some(Self::OpenFileLocation),
             "cut" => Some(Self::Cut),
             "copy" => Some(Self::Copy),
             "paste" => Some(Self::Paste),
@@ -281,6 +285,7 @@ mod tests {
     fn host_context_command_wire_names_round_trip_without_localized_labels() {
         for command in [
             ContextMenuHostCommand::Open,
+            ContextMenuHostCommand::OpenFileLocation,
             ContextMenuHostCommand::Cut,
             ContextMenuHostCommand::Copy,
             ContextMenuHostCommand::Paste,

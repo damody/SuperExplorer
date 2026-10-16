@@ -119,8 +119,16 @@ pub fn classify_base_icon(entry: &FileEntry) -> BaseIconClass {
     if identity_specific_location || filesystem_root {
         return BaseIconClass::Identity(entry.id.clone());
     }
-    if entry.is_container {
+    // Navigable archive files share their file type artwork, not folder artwork.
+    let archive_file = entry.is_container
+        && entry.metadata.archive_member
+        && entry.location.path().is_some()
+        && entry.metadata.filesystem_attributes & 0x10 == 0;
+    if entry.is_container && !archive_file {
         return BaseIconClass::Folder;
+    }
+    if entry.display_name.starts_with('.') {
+        return BaseIconClass::Identity(entry.id.clone());
     }
     let extension = entry
         .location
@@ -534,6 +542,11 @@ impl fmt::Debug for SearchInput {
 /// Clipboard or drag request represented without apartment-affine `IDataObject` values.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum DataTransferRequest {
+    /// Launch a local executable with each dropped path as a separate argument.
+    LaunchExecutable {
+        executable: std::path::PathBuf,
+        paths: Vec<std::path::PathBuf>,
+    },
     Copy {
         items: Vec<ItemDescriptor>,
     },
@@ -555,6 +568,12 @@ pub enum DataTransferRequest {
         effect: crate::DragEffect,
         conflict: ConflictDecision,
     },
+}
+
+pub fn is_executable_drop_target(location: &LocationDescriptor, is_container: bool) -> bool {
+    !is_container
+        && matches!(location, LocationDescriptor::FileSystem(path)
+            if path.extension().is_some_and(|extension| extension.eq_ignore_ascii_case("exe")))
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -888,6 +907,31 @@ impl Default for SearchEngineAvailability {
 }
 
 impl SearchEngineAvailability {
+    /// Index engines describe this computer's volumes, not a UNC server's contents.
+    /// Network shares remain searchable by walking their filesystem paths.
+    #[must_use]
+    pub fn for_location(self, location: &LocationDescriptor) -> Self {
+        let Some(path) = location.path() else {
+            if location.synthetic_root().is_none() {
+                return Self {
+                    everything: SearchEngineSupport::Unavailable,
+                    mft: SearchEngineSupport::Unavailable,
+                    file_enumeration: SearchEngineSupport::Available,
+                };
+            }
+            return Self::all_unavailable();
+        };
+        if crate::network_unc_parts(path).is_some() {
+            Self {
+                everything: SearchEngineSupport::Unavailable,
+                mft: SearchEngineSupport::Unavailable,
+                file_enumeration: SearchEngineSupport::Available,
+            }
+        } else {
+            self
+        }
+    }
+
     #[must_use]
     pub const fn all_unavailable() -> Self {
         Self {
@@ -1380,6 +1424,12 @@ mod tests {
         assert_eq!(
             classify_base_icon(&icon_entry(4, r"C:\fixture\README", false)),
             BaseIconClass::ExtensionlessFile
+        );
+        let mut archive = icon_entry(5, r"C:\fixture\bundle.7z", true);
+        archive.metadata.archive_member = true;
+        assert_eq!(
+            classify_base_icon(&archive),
+            BaseIconClass::Extension("7z".to_owned())
         );
 
         for (id, extension) in ["exe", "dll", "ico", "lnk", "url", "cpl"]
