@@ -233,3 +233,7 @@ desktop-repair-cancelled-title = Cancelled
 desktop-repair-cancelled-message = SuperExplorer launch was cancelled.
 desktop-repair-timeout-title = Launch timed out
 desktop-repair-timeout-message = SuperExplorer did not respond within five seconds.
+
+menu-open-file-location = Open file location
+
+file-row-deleting = Deleting

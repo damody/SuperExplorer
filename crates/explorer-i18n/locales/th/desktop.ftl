@@ -378,3 +378,5 @@ desktop-repair-cancelled-title = ยกเลิกแล้ว
 desktop-repair-cancelled-message = การเริ่ม SuperExplorer ถูกยกเลิก
 desktop-repair-timeout-title = หมดเวลาเริ่มต้น
 desktop-repair-timeout-message = SuperExplorer ไม่ตอบสนองภายในห้าวินาที
+
+menu-open-file-location = Open file location

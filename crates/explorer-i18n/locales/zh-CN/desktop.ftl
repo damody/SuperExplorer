@@ -378,3 +378,7 @@ desktop-repair-cancelled-title = 已取消
 desktop-repair-cancelled-message = SuperExplorer 启动已取消。
 desktop-repair-timeout-title = 启动超时
 desktop-repair-timeout-message = SuperExplorer 未在五秒内响应。
+
+menu-open-file-location = 打开文件所在位置
+
+file-row-deleting = 删除中

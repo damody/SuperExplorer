@@ -378,3 +378,5 @@ desktop-repair-cancelled-title = İptal edildi
 desktop-repair-cancelled-message = SuperExplorer başlatması iptal edildi.
 desktop-repair-timeout-title = Başlatma zaman aşımına uğradı
 desktop-repair-timeout-message = SuperExplorer beş saniye içinde yanıt vermedi.
+
+menu-open-file-location = Open file location

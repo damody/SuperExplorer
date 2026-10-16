@@ -378,3 +378,5 @@ desktop-repair-cancelled-title = Đã hủy
 desktop-repair-cancelled-message = Quá trình khởi chạy SuperExplorer đã bị hủy.
 desktop-repair-timeout-title = Hết thời gian khởi chạy
 desktop-repair-timeout-message = SuperExplorer không phản hồi trong vòng năm giây.
+
+menu-open-file-location = Open file location

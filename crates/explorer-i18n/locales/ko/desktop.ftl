@@ -378,3 +378,5 @@ desktop-repair-cancelled-title = 취소됨
 desktop-repair-cancelled-message = SuperExplorer 시작이 취소되었습니다.
 desktop-repair-timeout-title = 시작 시간 초과
 desktop-repair-timeout-message = SuperExplorer가 5초 안에 응답하지 않았습니다.
+
+menu-open-file-location = Open file location

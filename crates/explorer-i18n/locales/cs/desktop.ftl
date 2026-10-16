@@ -378,3 +378,5 @@ desktop-repair-cancelled-title = Zrušeno
 desktop-repair-cancelled-message = Spuštění SuperExplorer bylo zrušeno.
 desktop-repair-timeout-title = Časový limit spuštění vypršel
 desktop-repair-timeout-message = SuperExplorer neodpověděl do pěti sekund.
+
+menu-open-file-location = Open file location

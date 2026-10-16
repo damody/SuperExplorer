@@ -378,3 +378,5 @@ desktop-repair-cancelled-title = Annulé
 desktop-repair-cancelled-message = Le lancement de SuperExplorer a été annulé.
 desktop-repair-timeout-title = Délai de lancement dépassé
 desktop-repair-timeout-message = SuperExplorer n’a pas répondu dans les cinq secondes.
+
+menu-open-file-location = Open file location

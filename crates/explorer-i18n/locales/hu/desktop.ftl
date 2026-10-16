@@ -378,3 +378,5 @@ desktop-repair-cancelled-title = Megszakítva
 desktop-repair-cancelled-message = A SuperExplorer indítása megszakítva.
 desktop-repair-timeout-title = Az indítás túllépte az időkorlátot
 desktop-repair-timeout-message = A SuperExplorer öt másodpercen belül nem válaszolt.
+
+menu-open-file-location = Open file location

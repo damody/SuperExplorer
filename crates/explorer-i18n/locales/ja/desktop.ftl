@@ -378,3 +378,5 @@ desktop-repair-cancelled-title = キャンセルしました
 desktop-repair-cancelled-message = SuperExplorer の起動がキャンセルされました。
 desktop-repair-timeout-title = 起動がタイムアウトしました
 desktop-repair-timeout-message = SuperExplorer は 5 秒以内に応答しませんでした。
+
+menu-open-file-location = Open file location
