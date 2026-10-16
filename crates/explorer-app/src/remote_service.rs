@@ -2004,6 +2004,72 @@ impl RemoteExplorerService {
         Ok(())
     }
 
+    fn submit_search(
+        &self,
+        context: explorer_model::RequestContext,
+        location: LocationDescriptor,
+        input: explorer_model::SearchInput,
+    ) -> Result<(), ExplorerServiceError> {
+        let active_request = {
+            let mut active = self
+                .active_remote_requests
+                .lock()
+                .map_err(|_| ExplorerServiceError::Internal)?;
+            if active.len() >= 4 {
+                return Err(ExplorerServiceError::Overloaded);
+            }
+            active.insert(context.request_id, context.cancellation.clone());
+            ActiveRemoteRequestGuard {
+                request_id: context.request_id,
+                active: Arc::clone(&self.active_remote_requests),
+            }
+        };
+        arm_request_deadline(&context);
+        let providers = Arc::clone(&self.providers);
+        let sender = self.sender.clone();
+        std::thread::spawn(move || {
+            let _active_request = active_request;
+            explorer_search::execute_listing_search(
+                &context,
+                &location,
+                &input,
+                &sender,
+                |directory| {
+                    let LocationDescriptor::Virtual(remote) = directory else {
+                        return Err("Invalid remote search directory".to_owned());
+                    };
+                    let provider = providers
+                        .resolve(directory)
+                        .map_err(|_| "Remote search provider is unavailable".to_owned())?;
+                    let entries = provider
+                        .list(remote, &context.cancellation)
+                        .map_err(|_| "Unable to read a remote search directory".to_owned())?;
+                    let mut rows = Vec::new();
+                    for entry in entries {
+                        let LocationDescriptor::Virtual(child) = &entry.location else {
+                            continue;
+                        };
+                        if child.provider_id != remote.provider_id
+                            || child.container_identity != remote.container_identity
+                            || child.container_generation != remote.container_generation
+                            || child.public_authority != remote.public_authority
+                            || child.components.len() != remote.components.len() + 1
+                            || !child.components.starts_with(&remote.components)
+                        {
+                            continue;
+                        }
+                        let recurse = entry.kind == RemoteEntryKind::Directory;
+                        if let Some(entry) = remote_file_entry(entry) {
+                            rows.push(explorer_search::ListingEntry { entry, recurse });
+                        }
+                    }
+                    Ok(rows)
+                },
+            );
+        });
+        Ok(())
+    }
+
     fn submit_ancestry(
         &self,
         context: explorer_model::RequestContext,
@@ -2610,6 +2676,12 @@ impl ExplorerService for RemoteExplorerService {
             self.invalidate_remote_clipboard_for_local_replacement()?;
         }
         match command {
+            ExplorerCommand::StartSearch {
+                context,
+                location,
+                input,
+                ..
+            } if Self::is_remote(&location) => self.submit_search(context, location, input),
             ExplorerCommand::Navigate { context, location }
             | ExplorerCommand::Refresh { context, location }
                 if Self::is_remote(&location) =>
@@ -3544,6 +3616,118 @@ mod tests {
                 !network_login_rejected_credentials(other),
                 "WIN32 code {other} must not re-prompt"
             );
+        }
+    }
+
+    struct SearchProvider(&'static str);
+    impl RemoteProvider for SearchProvider {
+        fn provider_id(&self) -> &'static str {
+            self.0
+        }
+        fn list(
+            &self,
+            parent: &explorer_model::VirtualLocationDescriptor,
+            _: &explorer_model::CancellationToken,
+        ) -> anyhow::Result<Vec<RemoteEntry>> {
+            let (name, kind) = if parent.components.len() == 1 {
+                ("動畫", RemoteEntryKind::Directory)
+            } else {
+                ("測試動畫.mp4", RemoteEntryKind::File)
+            };
+            let mut child = parent.clone();
+            child.components.push(name.to_owned());
+            Ok(vec![RemoteEntry {
+                name: name.to_owned(),
+                location: LocationDescriptor::Virtual(child),
+                kind,
+                size: Some(12000),
+                unix_mode: None,
+            }])
+        }
+        fn download(
+            &self,
+            _: &explorer_model::VirtualLocationDescriptor,
+            _: &std::path::Path,
+            _: &explorer_model::CancellationToken,
+        ) -> anyhow::Result<()> {
+            anyhow::bail!("search must not download")
+        }
+        fn upload(
+            &self,
+            _: &std::path::Path,
+            _: &explorer_model::VirtualLocationDescriptor,
+            _: &explorer_model::CancellationToken,
+        ) -> anyhow::Result<()> {
+            anyhow::bail!("search must not upload")
+        }
+        fn create_directory(
+            &self,
+            _: &explorer_model::VirtualLocationDescriptor,
+            _: &explorer_model::CancellationToken,
+        ) -> anyhow::Result<()> {
+            anyhow::bail!("search must not mutate")
+        }
+        fn rename(
+            &self,
+            _: &explorer_model::VirtualLocationDescriptor,
+            _: &explorer_model::VirtualLocationDescriptor,
+            _: &explorer_model::CancellationToken,
+        ) -> anyhow::Result<()> {
+            anyhow::bail!("search must not mutate")
+        }
+        fn delete(
+            &self,
+            _: &explorer_model::VirtualLocationDescriptor,
+            _: bool,
+            _: &explorer_model::CancellationToken,
+        ) -> anyhow::Result<()> {
+            anyhow::bail!("search must not mutate")
+        }
+    }
+
+    #[test]
+    fn remote_search_routes_all_provider_families_and_returns_nested_matches() {
+        for provider in ["adb", "sftp", "ftp", "gdrive"] {
+            let mut registry = RemoteProviderRegistry::default();
+            registry
+                .register(Arc::new(SearchProvider(provider)))
+                .unwrap();
+            let service =
+                RemoteExplorerService::new(Arc::new(TelemetryService), Arc::new(registry));
+            let LocationDescriptor::Virtual(mut root) = remote_location() else {
+                unreachable!()
+            };
+            root.provider_id = provider.to_owned();
+            let context = explorer_model::RequestContext::new(
+                explorer_model::TabId::new(),
+                explorer_model::Generation::new(1),
+            );
+            service
+                .submit(ExplorerCommand::StartSearch {
+                    context: context.clone(),
+                    location: LocationDescriptor::Virtual(root),
+                    input: explorer_model::SearchInput::new("測試 type:mp4 size:>10KB"),
+                    engine: explorer_model::SearchEnginePreference::Mft,
+                })
+                .unwrap();
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+            let mut hits = Vec::new();
+            loop {
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "remote search timeout: {provider}"
+                );
+                match service.try_recv().unwrap() {
+                    Some(ExplorerEvent::SearchBatch { entries, .. }) => hits.extend(entries),
+                    Some(ExplorerEvent::SearchFinished { outcome, .. }) => {
+                        assert!(matches!(outcome, explorer_model::SearchTerminal::Finished));
+                        break;
+                    }
+                    _ => std::thread::yield_now(),
+                }
+            }
+            assert_eq!(hits.len(), 1, "{provider}");
+            assert_eq!(hits[0].display_name, "測試動畫.mp4");
         }
     }
 

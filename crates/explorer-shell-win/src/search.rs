@@ -43,14 +43,80 @@ pub(crate) enum IndexAvailability {
 )]
 pub fn probe_search_engine_availability(location: &LocationDescriptor) -> SearchEngineAvailability {
     let Some(path) = location.path() else {
-        return SearchEngineAvailability::all_unavailable();
+        return SearchEngineAvailability::all_unavailable().for_location(location);
     };
+    if explorer_model::network_unc_parts(path).is_some() {
+        return SearchEngineAvailability::all_unavailable().for_location(location);
+    }
+    let indexed_drive = indexable_drive_letter(path);
     SearchEngineAvailability::from_facts(SearchEngineFacts {
         has_local_filesystem_path: true,
-        everything_available: crate::everything::EverythingProvider::open_adjacent().is_ok(),
-        mft_index_available: explorer_mft::volume_drive_letter(path)
+        everything_available: indexed_drive.is_some()
+            && crate::everything::EverythingProvider::open_adjacent().is_ok(),
+        mft_index_available: indexed_drive
             .is_some_and(|letter| explorer_mft::mft_sqlite_path(letter).is_file()),
     })
+}
+
+fn indexable_volume_letter(
+    requested: char,
+    volume_root: &str,
+    filesystem: &str,
+    drive_type: u32,
+) -> Option<char> {
+    // Folder-mounted volumes and redirected drives cannot use the containing drive's MFT.
+    (matches!(drive_type, 2 | 3)
+        && filesystem.eq_ignore_ascii_case("NTFS")
+        && volume_root.eq_ignore_ascii_case(&format!("{requested}:\\")))
+    .then_some(requested)
+}
+
+fn indexable_drive_letter(path: &Path) -> Option<char> {
+    use std::os::windows::ffi::OsStrExt as _;
+    use windows::{
+        Win32::Storage::FileSystem::{GetDriveTypeW, GetVolumeInformationW, GetVolumePathNameW},
+        core::PCWSTR,
+    };
+    let requested = explorer_mft::volume_drive_letter(path)?;
+    let wide: Vec<_> = path.as_os_str().encode_wide().chain([0]).collect();
+    let mut volume = vec![0_u16; 32_768];
+    let mut filesystem = [0_u16; 32];
+    // SAFETY: the input is NUL-terminated and both output buffers remain live for each call.
+    unsafe {
+        GetVolumePathNameW(PCWSTR(wide.as_ptr()), &mut volume).ok()?;
+    }
+    // Reject redirected/offline drives before asking their server for volume metadata.
+    // SAFETY: the successful call above wrote a NUL-terminated root into this live buffer.
+    let drive_type = unsafe { GetDriveTypeW(PCWSTR(volume.as_ptr())) };
+    if !matches!(drive_type, 2 | 3) {
+        return None;
+    }
+    // SAFETY: the root and writable filesystem-name buffer remain live for the call.
+    unsafe {
+        GetVolumeInformationW(
+            PCWSTR(volume.as_ptr()),
+            None,
+            None,
+            None,
+            None,
+            Some(&mut filesystem),
+        )
+        .ok()?;
+    }
+    let decode = |value: &[u16]| {
+        String::from_utf16_lossy(
+            &value[..value
+                .iter()
+                .position(|unit| *unit == 0)
+                .unwrap_or(value.len())],
+        )
+    };
+    indexable_volume_letter(
+        requested,
+        &decode(&volume),
+        &decode(&filesystem),
+        drive_type,
+    )
 }
 
 pub(crate) fn execute_with_terminals<P: RequiredTerminalPublisher>(
@@ -61,15 +127,6 @@ pub(crate) fn execute_with_terminals<P: RequiredTerminalPublisher>(
     events: &SyncSender<ExplorerEvent>,
     terminals: &P,
 ) -> Result<(), ExplorerError> {
-    let root = location.path().ok_or_else(|| {
-        ExplorerError::new(
-            ExplorerErrorKind::Input,
-            "start search",
-            true,
-            "此位置目前不支援檔案系統搜尋。",
-            "search root was not a filesystem location",
-        )
-    })?;
     let expression = parse(input.as_str()).map_err(|error| {
         ExplorerError::new(
             ExplorerErrorKind::Input,
@@ -79,6 +136,9 @@ pub(crate) fn execute_with_terminals<P: RequiredTerminalPublisher>(
             error.to_string(),
         )
     })?;
+    let Some(root) = location.path() else {
+        return execute_namespace_search(context, location, expression, events, terminals);
+    };
     let availability = probe_search_engine_availability(location);
     let engine = availability.resolve(engine);
     if !availability.support(engine).is_available() {
@@ -114,6 +174,92 @@ pub(crate) fn execute_with_terminals<P: RequiredTerminalPublisher>(
     }
 }
 
+fn execute_namespace_search<P: RequiredTerminalPublisher>(
+    context: &RequestContext,
+    location: &LocationDescriptor,
+    expression: Expr,
+    events: &SyncSender<ExplorerEvent>,
+    terminals: &P,
+) -> Result<(), ExplorerError> {
+    publish_status(
+        events,
+        context,
+        SearchBackend::FileSystemFallback,
+        SearchSourcePhase::Active,
+        None,
+    )?;
+    let outcome = explorer_search::search_listing(
+        location,
+        &expression,
+        &context.cancellation,
+        FallbackConfig::default(),
+        |directory| {
+            let resolved = crate::navigation::resolve_location(directory)
+                .map_err(|_| "Unable to read a Shell search directory".to_owned())?;
+            let mut rows = Vec::new();
+            let complete =
+                crate::navigation::enumerate_directory(context, &resolved, |event| {
+                    if let ExplorerEvent::DirectoryBatch { entries, .. } = event {
+                        rows.extend(entries.into_iter().map(|entry| {
+                            explorer_search::ListingEntry {
+                                recurse: entry.is_container
+                                    && entry.metadata.filesystem_attributes & 0x400 == 0,
+                                entry,
+                            }
+                        }));
+                    }
+                    rows.len() <= 65_536
+                })
+                .map_err(|_| "Unable to enumerate a Shell search directory".to_owned())?;
+            if !complete && !context.cancellation.is_cancelled() {
+                return Err("Shell directory search limit reached".to_owned());
+            }
+            Ok(rows)
+        },
+        |entries| {
+            events
+                .send(ExplorerEvent::SearchBatch {
+                    context: context.clone(),
+                    source: SearchBackend::FileSystemFallback,
+                    entries,
+                })
+                .map_err(|_| ())
+        },
+    );
+    let terminal = match outcome {
+        SearchOutcome::Finished(_) => SearchTerminal::Finished,
+        SearchOutcome::Cancelled(_) => SearchTerminal::Cancelled,
+        SearchOutcome::Partial { diagnostic, .. } => SearchTerminal::Partial(search_error(
+            ExplorerErrorKind::Availability,
+            "搜尋只完成部分位置。",
+            diagnostic.detail,
+        )),
+        SearchOutcome::Failed(diagnostic) => SearchTerminal::Failed(search_error(
+            ExplorerErrorKind::Availability,
+            "搜尋無法完成。",
+            diagnostic.detail,
+        )),
+    };
+    let phase = match &terminal {
+        SearchTerminal::Finished => SearchSourcePhase::Complete,
+        SearchTerminal::Cancelled => SearchSourcePhase::Cancelled,
+        SearchTerminal::Partial(_) => SearchSourcePhase::Partial,
+        SearchTerminal::Failed(_) => SearchSourcePhase::Failed,
+    };
+    publish_status(
+        events,
+        context,
+        SearchBackend::FileSystemFallback,
+        phase,
+        None,
+    )?;
+    terminals.publish_terminal(ExplorerEvent::SearchFinished {
+        context: context.clone(),
+        outcome: terminal,
+    });
+    Ok(())
+}
+
 fn execute_everything_only<P: RequiredTerminalPublisher>(
     context: &RequestContext,
     root: &Path,
@@ -131,7 +277,7 @@ fn execute_everything_only<P: RequiredTerminalPublisher>(
                 None,
             )?;
             match run_everything_bounded(provider, root, &expression, context, events) {
-                Ok(_result_count) => {
+                Ok(result_count) => {
                     publish_status(
                         events,
                         context,
@@ -139,6 +285,16 @@ fn execute_everything_only<P: RequiredTerminalPublisher>(
                         SearchSourcePhase::Complete,
                         None,
                     )?;
+                    if result_count == 0 {
+                        // A working IPC endpoint does not prove this scope is indexed.
+                        return execute_file_enumeration(
+                            context,
+                            root,
+                            expression.clone(),
+                            events,
+                            terminals,
+                        );
+                    }
                     terminals.publish_terminal(ExplorerEvent::SearchFinished {
                         context: context.clone(),
                         outcome: SearchTerminal::Finished,
@@ -167,15 +323,7 @@ fn execute_everything_only<P: RequiredTerminalPublisher>(
                         SearchSourcePhase::Unavailable,
                         Some(detail.clone()),
                     )?;
-                    terminals.publish_terminal(ExplorerEvent::SearchFinished {
-                        context: context.clone(),
-                        outcome: SearchTerminal::Failed(search_error(
-                            ExplorerErrorKind::Availability,
-                            "Everything 搜尋無法完成。",
-                            detail,
-                        )),
-                    });
-                    Ok(())
+                    execute_file_enumeration(context, root, expression.clone(), events, terminals)
                 }
             }
         }
@@ -187,15 +335,7 @@ fn execute_everything_only<P: RequiredTerminalPublisher>(
                 SearchSourcePhase::Unavailable,
                 Some(detail.clone()),
             )?;
-            terminals.publish_terminal(ExplorerEvent::SearchFinished {
-                context: context.clone(),
-                outcome: SearchTerminal::Failed(search_error(
-                    ExplorerErrorKind::Availability,
-                    "Everything SDK 或 IPC 無法使用。",
-                    detail,
-                )),
-            });
-            Ok(())
+            execute_file_enumeration(context, root, expression.clone(), events, terminals)
         }
     }
 }
@@ -325,13 +465,19 @@ fn execute_mft_only<P: RequiredTerminalPublisher>(
                 SearchSourcePhase::Unavailable,
                 Some(detail.clone()),
             )?;
-            SearchOutcome::Failed(explorer_search::BackendDiagnostic {
-                source: explorer_search::SearchSource::FileSystemFallback,
-                state: explorer_search::SearchSourceState::Failed,
-                detail,
-            })
+            return execute_file_enumeration(context, root, expression.clone(), events, terminals);
         }
     };
+    if matches!(&outcome, SearchOutcome::Finished(metrics) if metrics.matched == 0) {
+        publish_status(
+            events,
+            context,
+            SearchBackend::Mft,
+            SearchSourcePhase::Complete,
+            None,
+        )?;
+        return execute_file_enumeration(context, root, expression.clone(), events, terminals);
+    }
     let terminal = match outcome {
         SearchOutcome::Finished(_) => {
             publish_status(
@@ -399,7 +545,7 @@ fn execute_mft_only<P: RequiredTerminalPublisher>(
 fn load_mft_index_for_search(
     root: &Path,
 ) -> Result<explorer_mft::mft_size_map::MftIndexV1, String> {
-    let letter = explorer_mft::volume_drive_letter(root)
+    let letter = indexable_drive_letter(root)
         .ok_or_else(|| "MFT search requires a local drive-letter path".to_owned())?;
     let path = explorer_mft::mft_sqlite_path(letter);
     explorer_mft::mft_sqlite::MftSqliteStoreV1::load_index_read_only_for_search(
@@ -549,11 +695,23 @@ fn run_everything_bounded(
             return Err("Everything IPC query timed out".to_owned());
         }
         match receiver.recv_timeout(POLL.min(deadline.saturating_duration_since(now))) {
-            Ok(EverythingWorkerEvent::Batch(entries)) => {
+            Ok(EverythingWorkerEvent::Batch(mut entries)) => {
                 if cancellation.is_cancelled() {
                     return Err("cancelled".to_owned());
                 }
                 delivered = delivered.saturating_add(entries.len());
+                for entry in &mut entries {
+                    if let Some(path) = entry.location.path() {
+                        let bytes =
+                            crate::navigation::filesystem_identity(path, entry.is_container)
+                                .unwrap_or_else(|_| {
+                                    crate::navigation::fallback_filesystem_identity(path)
+                                });
+                        if let Some(id) = explorer_model::ShellItemId::from_provider_bytes(bytes) {
+                            entry.id = id;
+                        }
+                    }
+                }
                 events
                     .send(ExplorerEvent::SearchBatch {
                         context: context.clone(),
@@ -706,6 +864,234 @@ fn publish_status(
 mod tests {
     use super::*;
     use explorer_search::parse;
+
+    #[test]
+    #[ignore = "requires SUPEREXPLORER_TEST_UNC pointing to a readable populated network folder"]
+    fn live_unc_search_accepts_filesystem_and_shell_parsing_names() {
+        let root = std::env::var("SUPEREXPLORER_TEST_UNC").expect("set the live UNC test root");
+        let query = std::env::var("SUPEREXPLORER_TEST_QUERY").unwrap_or_else(|_| "*".to_owned());
+        assert!(root.starts_with(r"\\"));
+        for location in [
+            LocationDescriptor::file_system(&root),
+            LocationDescriptor::ParsingName(root.clone()),
+        ] {
+            let context = RequestContext::new(
+                explorer_model::TabId::new(),
+                explorer_model::Generation::new(1),
+            );
+            let (sender, receiver) = mpsc::sync_channel(32);
+            let worker_context = context.clone();
+            let worker_query = query.clone();
+            let worker = std::thread::spawn(move || {
+                let _apartment = crate::sta::ApartmentGuard::initialize().unwrap();
+                execute_with_terminals(
+                    &worker_context,
+                    &location,
+                    &SearchInput::new(worker_query),
+                    SearchEnginePreference::Mft,
+                    &sender,
+                    &sender,
+                )
+                .unwrap();
+            });
+            let mut received_results = false;
+            loop {
+                match receiver.recv_timeout(Duration::from_secs(30)) {
+                    Ok(ExplorerEvent::SearchBatch { entries, source, .. }) => {
+                        assert_eq!(source, SearchBackend::FileSystemFallback);
+                        assert!(!entries.is_empty());
+                        assert!(entries.iter().all(|entry| explorer_search::matches_entry(
+                            &parse(&query).unwrap(), entry
+                        )));
+                        received_results = true;
+                        context.cancellation.cancel();
+                    }
+                    Ok(ExplorerEvent::SearchFinished { outcome, .. }) => {
+                        assert!(received_results, "search ended without results: {outcome:?}");
+                        assert!(matches!(
+                            outcome,
+                            SearchTerminal::Cancelled | SearchTerminal::Finished
+                        ));
+                        break;
+                    }
+                    Ok(_) => {}
+                    Err(error) => {
+                        context.cancellation.cancel();
+                        panic!("live UNC search did not respond: {error}");
+                    }
+                }
+            }
+            worker.join().unwrap();
+        }
+    }
+
+    #[test]
+    fn index_capabilities_reject_non_ntfs_redirected_and_folder_mounted_volumes() {
+        for filesystem in ["FAT", "FAT32", "exFAT", "ReFS", "CDFS", ""] {
+            assert_eq!(
+                indexable_volume_letter('E', r"E:\", filesystem, 3),
+                None,
+                "{filesystem}"
+            );
+        }
+        for kind in [0, 1, 4, 5, 6] {
+            assert_eq!(indexable_volume_letter('E', r"E:\", "NTFS", kind), None);
+        }
+        assert_eq!(
+            indexable_volume_letter('C', r"C:\mounted-volume\", "NTFS", 3),
+            None
+        );
+        assert_eq!(indexable_volume_letter('C', r"D:\", "NTFS", 3), None);
+        assert_eq!(indexable_volume_letter('E', r"E:\", "NTFS", 2), Some('E'));
+        assert_eq!(indexable_volume_letter('C', r"C:\", "ntfs", 3), Some('C'));
+    }
+
+    #[test]
+    fn unavailable_index_engines_fall_back_and_emit_one_terminal() {
+        let _lock = crate::clipboard::CLIPBOARD_TEST_LOCK.lock().unwrap();
+        let _everything = crate::everything::force_unavailable_for_test();
+        let fixture = tempfile::tempdir().unwrap();
+        std::fs::write(fixture.path().join("fallback-match.txt"), b"fixture").unwrap();
+        // Extended paths are enumerable even though they are not drive-letter MFT scopes.
+        let root = fixture.path().canonicalize().unwrap();
+        for engine in [
+            SearchEnginePreference::Everything,
+            SearchEnginePreference::Mft,
+        ] {
+            let context = RequestContext::new(
+                explorer_model::TabId::new(),
+                explorer_model::Generation::new(1),
+            );
+            let (sender, receiver) = mpsc::sync_channel(32);
+            let expression = parse("fallback-match").unwrap();
+            match engine {
+                SearchEnginePreference::Everything => {
+                    execute_everything_only(&context, &root, &expression, &sender, &sender)
+                }
+                _ => execute_mft_only(&context, &root, &expression, &sender, &sender),
+            }
+            .unwrap();
+            let events: Vec<_> = receiver.try_iter().collect();
+            assert!(events.iter().any(|event| matches!(event, ExplorerEvent::SearchBatch { source: SearchBackend::FileSystemFallback, entries, .. } if entries.len() == 1)));
+            assert_eq!(
+                events
+                    .iter()
+                    .filter(|event| matches!(event, ExplorerEvent::SearchFinished { .. }))
+                    .count(),
+                1
+            );
+            assert!(matches!(
+                events.last(),
+                Some(ExplorerEvent::SearchFinished {
+                    outcome: SearchTerminal::Finished,
+                    ..
+                })
+            ));
+        }
+    }
+
+    #[test]
+    fn shell_namespace_search_uses_listing_instead_of_requiring_a_path() {
+        let _apartment = crate::sta::ApartmentGuard::initialize().unwrap();
+        let fixture = tempfile::tempdir().unwrap();
+        std::fs::create_dir(fixture.path().join("nested")).unwrap();
+        std::fs::write(
+            fixture.path().join("nested").join("namespace-match.txt"),
+            b"fixture",
+        )
+        .unwrap();
+        let location =
+            LocationDescriptor::ParsingName(fixture.path().to_string_lossy().into_owned());
+        let context = RequestContext::new(
+            explorer_model::TabId::new(),
+            explorer_model::Generation::new(1),
+        );
+        let (sender, receiver) = mpsc::sync_channel(32);
+        execute_with_terminals(
+            &context,
+            &location,
+            &SearchInput::new("namespace-match"),
+            SearchEnginePreference::Mft,
+            &sender,
+            &sender,
+        )
+        .unwrap();
+        let events: Vec<_> = receiver.try_iter().collect();
+        assert!(events.iter().any(|event| matches!(event, ExplorerEvent::SearchBatch { entries, .. } if entries.iter().any(|entry| entry.display_name == "namespace-match.txt"))));
+        assert!(matches!(
+            events.last(),
+            Some(ExplorerEvent::SearchFinished {
+                outcome: SearchTerminal::Finished,
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn unc_search_uses_file_enumeration_without_local_indexes() {
+        for path in [
+            r"\\damody\gdrive\動畫",
+            r"\\?\UNC\damody\gdrive\動畫",
+            r"\\192.168.0.239\share",
+        ] {
+            let availability =
+                probe_search_engine_availability(&LocationDescriptor::file_system(path));
+            assert!(!availability.everything.is_available());
+            assert!(!availability.mft.is_available());
+            for selected in [
+                SearchEnginePreference::Everything,
+                SearchEnginePreference::Mft,
+                SearchEnginePreference::FileEnumeration,
+            ] {
+                assert_eq!(
+                    availability.resolve(selected),
+                    SearchEnginePreference::FileEnumeration
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn file_enumeration_search_returns_nested_unicode_results_without_an_index() {
+        let fixture = tempfile::tempdir().unwrap();
+        let folder = fixture.path().join("動畫");
+        std::fs::create_dir(&folder).unwrap();
+        let target = folder.join("測試動畫.mp4");
+        std::fs::write(&target, b"fixture").unwrap();
+        std::fs::write(folder.join("unrelated.txt"), b"fixture").unwrap();
+        let context = RequestContext::new(
+            explorer_model::TabId::new(),
+            explorer_model::Generation::new(1),
+        );
+        let (events, receiver) = mpsc::sync_channel(16);
+        execute_file_enumeration(
+            &context,
+            fixture.path(),
+            parse("測試").unwrap(),
+            &events,
+            &events,
+        )
+        .unwrap();
+        drop(events);
+        let received: Vec<_> = receiver.try_iter().collect();
+        let matches: Vec<_> = received
+            .iter()
+            .filter_map(|event| match event {
+                ExplorerEvent::SearchBatch { entries, .. } => Some(entries),
+                _ => None,
+            })
+            .flatten()
+            .collect();
+        assert_eq!(matches.len(), 1);
+        assert_eq!(matches[0].location.path(), Some(target.as_path()));
+        assert!(matches!(
+            received.last(),
+            Some(ExplorerEvent::SearchFinished {
+                outcome: SearchTerminal::Finished,
+                ..
+            })
+        ));
+    }
 
     #[test]
     fn mft_index_search_matches_reconstructed_filenames_under_the_root() {

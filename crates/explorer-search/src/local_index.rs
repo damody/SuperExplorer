@@ -350,14 +350,12 @@ pub fn matches_entry(expression: &Expr, entry: &FileEntry) -> bool {
             value,
         } => match (key, value) {
             (PropertyKey::Name, Value::Text(v)) => contains(&entry.display_name, v),
-            (PropertyKey::Type, Value::Text(v)) => entry
-                .location
-                .path()
-                .and_then(Path::extension)
-                .is_some_and(|x| {
+            (PropertyKey::Type, Value::Text(v)) => {
+                Path::new(&entry.display_name).extension().is_some_and(|x| {
                     x.to_string_lossy()
                         .eq_ignore_ascii_case(v.trim_start_matches('.'))
-                }),
+                })
+            }
             (PropertyKey::Size, Value::Size(v)) => {
                 compare(&entry.metadata.size_bytes.unwrap_or(0), &v.0, *comparison)
             }

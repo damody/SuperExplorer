@@ -16,7 +16,9 @@
 
 mod address;
 mod engine;
+mod listing;
 mod local_index;
+pub use listing::{ListingEntry, execute_listing_search, search_listing};
 mod parser;
 
 pub use address::{AddressParseError, parse_address};

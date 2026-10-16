@@ -143,30 +143,26 @@ pub fn search_filesystem(
     let mut directories = VecDeque::from([request.root.clone()]);
     let mut visited_directories = HashSet::new();
     let mut batch = Vec::with_capacity(config.batch_size);
+    let mut problem = None;
     while let Some(directory) = directories.pop_front() {
         if request.cancellation.is_cancelled() {
             metrics.elapsed = started.elapsed();
             metrics.cancel_latency = Some(Duration::ZERO);
             return SearchOutcome::Cancelled(metrics);
         }
-        let Ok(canonical) = directory.canonicalize() else {
-            continue;
-        };
+        // Some mounted/remote providers allow listing but cannot resolve a final handle path.
+        let canonical = directory
+            .canonicalize()
+            .unwrap_or_else(|_| directory.clone());
         if !visited_directories.insert(canonical) {
             continue;
         }
         let entries = match fs::read_dir(&directory) {
             Ok(entries) => entries,
             Err(error) => {
-                metrics.elapsed = started.elapsed();
-                flush(&mut batch, &mut metrics, &mut deliver);
-                return SearchOutcome::Partial {
-                    metrics,
-                    diagnostic: diagnostic(
-                        SearchSourceState::Partial,
-                        format!("could not enumerate one directory: {error}"),
-                    ),
-                };
+                problem
+                    .get_or_insert_with(|| format!("could not enumerate one directory: {error}"));
+                continue;
             }
         };
         for entry in entries {
@@ -186,12 +182,23 @@ pub fn search_filesystem(
                     ),
                 };
             }
-            let Ok(entry) = entry else { continue };
-            let path = entry.path();
-            let Ok(metadata) = fs::symlink_metadata(&path) else {
-                continue;
+            let entry = match entry {
+                Ok(entry) => entry,
+                Err(error) => {
+                    problem.get_or_insert_with(|| format!("could not read one entry: {error}"));
+                    continue;
+                }
             };
+            let path = entry.path();
             metrics.visited += 1;
+            let metadata = match fs::symlink_metadata(&path) {
+                Ok(metadata) => metadata,
+                Err(error) => {
+                    problem
+                        .get_or_insert_with(|| format!("could not read entry metadata: {error}"));
+                    continue;
+                }
+            };
             let file_type = metadata.file_type();
             let is_directory = file_type.is_dir();
             let is_reparse_like = file_type.is_symlink();
@@ -247,7 +254,13 @@ pub fn search_filesystem(
         ));
     }
     metrics.elapsed = started.elapsed();
-    SearchOutcome::Finished(metrics)
+    match problem {
+        Some(detail) => SearchOutcome::Partial {
+            metrics,
+            diagnostic: diagnostic(SearchSourceState::Partial, detail),
+        },
+        None => SearchOutcome::Finished(metrics),
+    }
 }
 
 fn flush(
@@ -420,6 +433,20 @@ mod tests {
             assert_eq!(actual, expected, "query {query}");
             assert!(matches!(outcome, SearchOutcome::Finished(_)));
         }
+    }
+
+    #[test]
+    fn unavailable_filesystem_root_is_partial_instead_of_a_successful_empty_search() {
+        let fixture = tempdir().unwrap();
+        let request = SearchRequest {
+            root: fixture.path().join("missing-mount"),
+            expression: parse("file").unwrap(),
+            cancellation: CancellationToken::new(),
+        };
+        let outcome = search_filesystem(&request, FallbackConfig::default(), identity, |_| {
+            panic!("unavailable root cannot produce matches")
+        });
+        assert!(matches!(outcome, SearchOutcome::Partial { .. }));
     }
 
     #[test]

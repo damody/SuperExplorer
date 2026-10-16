@@ -56,6 +56,7 @@ fn operation_locations(command: &ExplorerCommand) -> Vec<(&LocationDescriptor, b
             }
         },
         ExplorerCommand::DataTransfer { request, .. } => match request {
+            D::LaunchExecutable { .. } => Vec::new(),
             D::Copy { items } | D::Cut { items } | D::BeginDrag { items, .. } => {
                 items.iter().map(|item| (&item.location, false)).collect()
             }
@@ -76,7 +77,14 @@ fn operation_locations(command: &ExplorerCommand) -> Vec<(&LocationDescriptor, b
 
 fn entries(path: &ArchivePath, context: &RequestContext) -> std::io::Result<Vec<FileEntry>> {
     let listing = list_archive(&path.archive, &|| context.cancellation.is_cancelled())?;
-    children(&listing, &path.member)?
+    entries_from_listing(path, &listing)
+}
+
+fn entries_from_listing(
+    path: &ArchivePath,
+    listing: &[explorer_common::archive::ArchiveEntry],
+) -> std::io::Result<Vec<FileEntry>> {
+    children(listing, &path.member)?
         .into_iter()
         .map(|entry| {
             let location = LocationDescriptor::file_system(path.member_path(&entry.member));
@@ -181,6 +189,9 @@ impl ArchiveBrowser {
             return Some(Ok(()));
         }
         let (context, location, revision) = match command {
+            ExplorerCommand::StartSearch {
+                context, location, ..
+            } => (context, location, None),
             ExplorerCommand::Navigate { context, location }
             | ExplorerCommand::Refresh { context, location } => (context, location, None),
             ExplorerCommand::EnumerateColumn {
@@ -198,6 +209,7 @@ impl ArchiveBrowser {
         // Other views retain native ZIP and extension 7z providers. Member paths from
         // a column session continue to resolve if that session later changes its view.
         if !context.archive_browsing
+            && !matches!(command, ExplorerCommand::StartSearch { .. })
             && revision.is_none()
             && supported_archive(path)
             && !path.ancestors().skip(1).any(supported_archive)
@@ -224,6 +236,12 @@ impl ArchiveBrowser {
             }
             let _slot = Slot(workers);
             if context.cancellation.is_cancelled() {
+                if matches!(command, ExplorerCommand::StartSearch { .. }) {
+                    let _ = sender.send(ExplorerEvent::SearchFinished {
+                        context,
+                        outcome: explorer_model::SearchTerminal::Cancelled,
+                    });
+                }
                 return;
             }
             let Some(path) = location.path().and_then(ArchivePath::resolve) else {
@@ -235,6 +253,40 @@ impl ArchiveBrowser {
                 }
                 return;
             };
+            if let ExplorerCommand::StartSearch { input, .. } = &command {
+                let listing = list_archive(&path.archive, &|| context.cancellation.is_cancelled());
+                explorer_search::execute_listing_search(
+                    &context,
+                    &location,
+                    input,
+                    &sender,
+                    |directory| {
+                        let listing = listing
+                            .as_ref()
+                            .map_err(|_| "Unable to list archive search entries".to_owned())?;
+                        let member = directory
+                            .path()
+                            .and_then(|value| value.strip_prefix(&path.archive).ok())
+                            .ok_or_else(|| "Invalid archive search scope".to_owned())?;
+                        let directory = ArchivePath {
+                            archive: path.archive.clone(),
+                            member: member.to_string_lossy().replace('\\', "/"),
+                        };
+                        entries_from_listing(&directory, listing)
+                            .map(|entries| {
+                                entries
+                                    .into_iter()
+                                    .map(|entry| explorer_search::ListingEntry {
+                                        recurse: entry.is_container,
+                                        entry,
+                                    })
+                                    .collect()
+                            })
+                            .map_err(|_| "Unable to read archive search directory".to_owned())
+                    },
+                );
+                return;
+            }
             // Opening a file member uses a private bounded temporary file. Browsing itself
             // never extracts to disk, and the retained files are removed when service drops.
             if let ExplorerCommand::OpenItem { disposition, .. } = &command
@@ -414,6 +466,59 @@ mod tests {
         );
         context.archive_browsing = true;
         context
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn archive_search_recurses_inside_members_without_a_filesystem_index() {
+        let directory = tempfile::tempdir().unwrap();
+        let archive = directory.path().join("search.rar");
+        std::fs::write(
+            &archive,
+            include_bytes!("../../explorer-common/tests/fixtures/browse.rar"),
+        )
+        .unwrap();
+        let (sender, receiver) = mpsc::sync_channel(32);
+        let browser = ArchiveBrowser::new(sender, Arc::new(ShellRecorder::default()));
+        browser
+            .submit(&ExplorerCommand::StartSearch {
+                context: context(),
+                location: LocationDescriptor::file_system(&archive),
+                input: explorer_model::SearchInput::new("type:txt"),
+                engine: explorer_model::SearchEnginePreference::Mft,
+            })
+            .unwrap()
+            .unwrap();
+        let mut rows = Vec::new();
+        loop {
+            match receiver.recv_timeout(Duration::from_secs(5)).unwrap() {
+                ExplorerEvent::SearchBatch { entries, .. } => rows.extend(entries),
+                ExplorerEvent::SearchFinished { outcome, .. } => {
+                    assert!(
+                        matches!(outcome, explorer_model::SearchTerminal::Finished),
+                        "{outcome:?}"
+                    );
+                    break;
+                }
+                _ => {}
+            }
+        }
+        assert!(!rows.is_empty());
+        assert!(
+            rows.iter()
+                .all(|entry| entry.metadata.archive_member && entry.display_name.ends_with(".txt"))
+        );
+        assert!(rows.iter().any(|entry| {
+            entry
+                .location
+                .path()
+                .unwrap()
+                .strip_prefix(&archive)
+                .unwrap()
+                .components()
+                .count()
+                > 1
+        }));
     }
 
     #[cfg(windows)]

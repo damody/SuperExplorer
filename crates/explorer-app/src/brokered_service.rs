@@ -789,6 +789,145 @@ impl BrokeredExplorerService {
         Some((record, entry))
     }
 
+    fn submit_virtual_search(
+        &self,
+        context: explorer_model::RequestContext,
+        location: explorer_model::LocationDescriptor,
+        input: explorer_model::SearchInput,
+    ) -> Result<(), ExplorerServiceError> {
+        let explorer_model::LocationDescriptor::Virtual(root) = &location else {
+            return Err(ExplorerServiceError::Internal);
+        };
+        let record = self
+            .virtual_containers
+            .lock()
+            .ok()
+            .and_then(|records| records.get(&root.container_identity).cloned())
+            .filter(|record| record.generation == root.container_generation)
+            .ok_or(ExplorerServiceError::Internal)?;
+        let runtime = self
+            .virtual_folder
+            .as_ref()
+            .cloned()
+            .ok_or(ExplorerServiceError::Disconnected)?;
+        if !self.try_reserve() {
+            return Err(ExplorerServiceError::Overloaded);
+        }
+        let in_flight = Arc::clone(&self.in_flight);
+        let sender = self.sender.clone();
+        std::thread::spawn(move || {
+            let _slot = ThumbnailSlotGuard { counter: in_flight };
+            explorer_search::execute_listing_search(
+                &context,
+                &location,
+                &input,
+                &sender,
+                |directory| {
+                    let explorer_model::LocationDescriptor::Virtual(parent) = directory else {
+                        return Err("Invalid virtual search directory".to_owned());
+                    };
+                    let container =
+                        explorer_extension_host::open_virtual_container_input_with_cancellation_v1(
+                            &record.path,
+                            record.generation,
+                            Some(context.cancellation.clone()),
+                        )
+                        .map_err(|_| "Unable to open search container".to_owned())?;
+                    let request = explorer_extension_api::VirtualEnumerateRequestV1 {
+                        container,
+                        container_generation: record.generation,
+                        source_generation: record.generation,
+                        parent_components: parent
+                            .components
+                            .iter()
+                            .cloned()
+                            .map(abi_stable::std_types::RString::from)
+                            .collect::<Vec<_>>()
+                            .into(),
+                        maximum_entries: explorer_extension_api::MAX_VIRTUAL_ENTRIES_V1 as u32,
+                        reserved: 0,
+                        secret: record.secret.mint(),
+                    };
+                    let outcome = runtime
+                        .lock()
+                        .map_err(|_| "Search provider is unavailable".to_owned())?
+                        .enumerate(SEVEN_Z_PROVIDER_V1, request)
+                        .map_err(|_| "Unable to enumerate search container".to_owned())?;
+                    if outcome.status != explorer_extension_api::VirtualProviderStatusV1::READY
+                        || outcome.container_generation != record.generation
+                        || outcome.source_generation != record.generation
+                    {
+                        return Err(
+                            "Unable to read search container (locked or unavailable)".to_owned()
+                        );
+                    }
+                    let mut rows = Vec::new();
+                    for entry in outcome.entries {
+                        let name = entry.name.to_string();
+                        let components: Vec<String> =
+                            entry.components.iter().map(ToString::to_string).collect();
+                        if components.len() != parent.components.len() + 1
+                            || !components.starts_with(&parent.components)
+                        {
+                            continue;
+                        }
+                        let directory =
+                            entry.kind == explorer_extension_api::VirtualEntryKindV1::DIRECTORY;
+                        record
+                            .entries
+                            .lock()
+                            .map_err(|_| "Search entry cache unavailable".to_owned())?
+                            .insert(
+                                entry.id.value,
+                                VirtualEntryRecordV1 {
+                                    id: entry.id,
+                                    is_container: directory,
+                                    size: entry.uncompressed_size,
+                                    name: name.clone(),
+                                    components: components.clone(),
+                                },
+                            );
+                        let location = explorer_model::LocationDescriptor::try_virtual(
+                            SEVEN_Z_PROVIDER_V1,
+                            parent.container_identity,
+                            record.generation,
+                            Some(entry.id.value),
+                            components,
+                        )
+                        .map_err(|_| "Invalid search entry".to_owned())?;
+                        let mut bytes = parent.container_identity.to_vec();
+                        bytes.extend_from_slice(&entry.id.namespace.into_raw().to_le_bytes());
+                        bytes.extend_from_slice(&entry.id.value.to_le_bytes());
+                        let id = explorer_model::ShellItemId::from_provider_bytes(bytes)
+                            .ok_or_else(|| "Invalid search identity".to_owned())?;
+                        rows.push(explorer_search::ListingEntry {
+                            recurse: directory,
+                            entry: explorer_model::FileEntry {
+                                id,
+                                display_name: name,
+                                location,
+                                is_container: directory,
+                                metadata: explorer_model::FileEntryMetadata {
+                                    size_bytes: (!directory).then_some(entry.uncompressed_size),
+                                    namespace_capabilities:
+                                        explorer_model::NamespaceCapabilities::from_public_bits(
+                                            explorer_model::NamespaceCapabilities::OPEN
+                                                | explorer_model::NamespaceCapabilities::COPY
+                                                | explorer_model::NamespaceCapabilities::RENAME
+                                                | explorer_model::NamespaceCapabilities::DELETE,
+                                        ),
+                                    ..Default::default()
+                                },
+                            },
+                        });
+                    }
+                    Ok(rows)
+                },
+            );
+        });
+        Ok(())
+    }
+
     fn submit_virtual_file_open(
         &self,
         context: explorer_model::RequestContext,
@@ -2205,6 +2344,19 @@ impl ExplorerService for BrokeredExplorerService {
             return result;
         }
         match &command {
+            ExplorerCommand::StartSearch {
+                context,
+                location,
+                input,
+                ..
+            } if matches!(location, explorer_model::LocationDescriptor::Virtual(value) if value.provider_id == SEVEN_Z_PROVIDER_V1) =>
+            {
+                return self.submit_virtual_search(
+                    context.clone(),
+                    location.clone(),
+                    input.clone(),
+                );
+            }
             ExplorerCommand::Navigate { context, location }
             | ExplorerCommand::Refresh { context, location } => {
                 if let Some(result) =
