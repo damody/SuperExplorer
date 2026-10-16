@@ -204,6 +204,7 @@ pub(crate) struct ResolvedLocation {
     descriptor: LocationDescriptor,
     display_title: String,
     preserve_namespace: bool,
+    is_this_pc: bool,
 }
 
 impl ResolvedLocation {
@@ -271,6 +272,11 @@ pub(crate) fn resolve_location(
     // it for every child adds redundant filesystem calls, especially over a network.
     let preserve_namespace = matches!(&published_descriptor, LocationDescriptor::ShellNamespace(_))
         || matches!(&published_descriptor, LocationDescriptor::FileSystem(path) if !path.is_dir());
+    let is_this_pc = name_from_pidl(
+        absolute.as_ptr(),
+        windows::Win32::UI::Shell::SIGDN_DESKTOPABSOLUTEPARSING,
+    )
+    .is_ok_and(|name| name.eq_ignore_ascii_case("::{20D04FE0-3AEA-1069-A2D8-08002B30309D}"));
 
     Ok(ResolvedLocation {
         absolute,
@@ -278,6 +284,7 @@ pub(crate) fn resolve_location(
         descriptor: published_descriptor,
         display_title,
         preserve_namespace,
+        is_this_pc,
     })
 }
 
@@ -588,6 +595,38 @@ mod tests {
     use explorer_test_support::OwnedTempFixture;
 
     #[test]
+    fn smb_logon_failures_are_authorization_errors() {
+        for code in [
+            5, 86, 1219, 1244, 1326, 1327, 1328, 1329, 1330, 1331, 1385, 1907, 1909, 2202,
+        ] {
+            let hresult = windows::core::HRESULT::from_win32(code).0;
+            let error = super::shell_error("resolve location", Some(hresult), "SMB login failed");
+            assert_eq!(
+                error.kind,
+                explorer_common::ExplorerErrorKind::Authorization,
+                "Win32 {code}"
+            );
+            assert_eq!(error.native_code, Some(hresult));
+        }
+        for code in [53, 67, 1231, 1460] {
+            let error = super::shell_error(
+                "resolve location",
+                Some(windows::core::HRESULT::from_win32(code).0),
+                "host unavailable",
+            );
+            assert_eq!(
+                error.kind,
+                explorer_common::ExplorerErrorKind::Availability,
+                "Win32 {code}"
+            );
+        }
+        assert_eq!(
+            super::shell_error("resolve location", None, "unknown").kind,
+            explorer_common::ExplorerErrorKind::Availability
+        );
+    }
+
+    #[test]
     fn batching_enforces_count_and_estimated_byte_caps() {
         let mut accumulator = DirectoryBatchAccumulator::new();
         let mut batches = Vec::new();
@@ -696,6 +735,32 @@ mod tests {
                 entry.metadata.type_display.is_some(),
                 "missing type: {entry:?}"
             );
+        }
+    }
+
+    #[test]
+    fn this_pc_enumeration_exposes_drive_capacity_for_parsing_and_namespace_locations() {
+        let _apartment = crate::sta::ApartmentGuard::initialize().expect("STA initializes");
+        let parsing = LocationDescriptor::ParsingName("shell:MyComputerFolder".to_owned());
+        let resolved = resolve_location(&parsing).expect("This PC resolves");
+        let namespace = LocationDescriptor::ShellNamespace(resolved.absolute.bytes().unwrap());
+        for location in [parsing, namespace] {
+            let resolved = resolve_location(&location).expect("This PC resolves");
+            let context = RequestContext::new(TabId::new(), Generation::new(1));
+            let mut rows = Vec::new();
+            enumerate_directory(&context, &resolved, |event| {
+                if let ExplorerEvent::DirectoryBatch { entries, .. } = event {
+                    rows.extend(entries);
+                }
+                true
+            })
+            .expect("This PC enumerates");
+            for entry in rows.iter().filter(|entry| entry.display_name.ends_with(":)")) {
+                assert!(entry.metadata.drive.is_some(), "missing capacity metadata for {}", entry.display_name);
+            }
+            assert!(rows.iter().any(|entry| entry.metadata.drive.as_ref().is_some_and(|drive| {
+                drive.total_bytes.is_some_and(|total| total > 0) && drive.available_bytes.is_some()
+            })), "This PC must publish at least the system drive capacity: {location:?}");
         }
     }
 
@@ -1338,7 +1403,17 @@ pub(crate) fn child_entry(
     let id = ShellItemId::from_provider_bytes(identity_bytes)
         .ok_or_else(|| shell_error("create Shell item identity", None, "identity was empty"))?;
     let is_container = attributes & 0x2000_0000 != 0;
-    let metadata = entry_metadata(&location, is_container, attributes);
+    let mut metadata = entry_metadata(&location, is_container, attributes);
+    // Namespace navigation retains PIDL identity, but drive capacity belongs to the
+    // filesystem root. Populate it independently of the descriptor used for opening.
+    if resolved.is_this_pc && resolved.preserve_namespace
+        && let Ok(path) = name_from_pidl(absolute.as_ptr(), SIGDN_FILESYSPATH)
+        && let Some(drive) = drive_metadata(Path::new(&path))
+    {
+        metadata.type_display = shell_type_name(Path::new(&path), true)
+            .or(metadata.type_display);
+        metadata.drive = Some(drive);
+    }
     Ok(FileEntry {
         id,
         display_name,
@@ -1384,6 +1459,7 @@ fn entry_metadata(
         }
         return metadata;
     };
+    let drive = drive_metadata(path);
     let filesystem_metadata = std::fs::metadata(path);
     let is_directory = filesystem_metadata
         .as_ref()
@@ -1416,10 +1492,11 @@ fn entry_metadata(
                 authors_display: None,
                 tags_display: None,
                 title_display: None,
-                drive: drive_metadata(path),
+                drive,
             }
         }
         Err(error) => FileEntryMetadata {
+            drive,
             type_display,
             filesystem_attributes: 0,
             unavailable_reason: Some(format!(
@@ -1741,9 +1818,39 @@ fn windows_error(operation: &'static str, error: &windows::core::Error) -> Explo
 }
 
 fn shell_error(operation: &'static str, code: Option<i32>, detail: &str) -> ExplorerError {
-    let kind = match code {
-        Some(-2_147_024_891) => ExplorerErrorKind::Authorization, // E_ACCESSDENIED
-        _ => ExplorerErrorKind::Availability,
+    use windows::Win32::Foundation::{
+        ERROR_ACCESS_DENIED, ERROR_ACCOUNT_DISABLED, ERROR_ACCOUNT_LOCKED_OUT,
+        ERROR_ACCOUNT_RESTRICTION, ERROR_BAD_USERNAME, ERROR_INVALID_LOGON_HOURS,
+        ERROR_INVALID_PASSWORD, ERROR_INVALID_WORKSTATION, ERROR_LOGON_FAILURE,
+        ERROR_LOGON_TYPE_NOT_GRANTED, ERROR_NOT_AUTHENTICATED, ERROR_PASSWORD_EXPIRED,
+        ERROR_PASSWORD_MUST_CHANGE, ERROR_SESSION_CREDENTIAL_CONFLICT,
+    };
+    // Shell wraps SMB logon failures in HRESULT_FROM_WIN32. These must reach the UI as
+    // Authorization so UNC navigation can request credentials instead of stopping here.
+    let authorization = code.is_some_and(|code| {
+        [
+            ERROR_ACCESS_DENIED,
+            ERROR_INVALID_PASSWORD,
+            ERROR_LOGON_FAILURE,
+            ERROR_ACCOUNT_RESTRICTION,
+            ERROR_BAD_USERNAME,
+            ERROR_LOGON_TYPE_NOT_GRANTED,
+            ERROR_NOT_AUTHENTICATED,
+            ERROR_SESSION_CREDENTIAL_CONFLICT,
+            ERROR_INVALID_LOGON_HOURS,
+            ERROR_INVALID_WORKSTATION,
+            ERROR_PASSWORD_EXPIRED,
+            ERROR_ACCOUNT_DISABLED,
+            ERROR_PASSWORD_MUST_CHANGE,
+            ERROR_ACCOUNT_LOCKED_OUT,
+        ]
+        .iter()
+        .any(|error| windows::core::HRESULT::from_win32(error.0).0 == code)
+    });
+    let kind = if authorization {
+        ExplorerErrorKind::Authorization
+    } else {
+        ExplorerErrorKind::Availability
     };
     let user_message = if kind == ExplorerErrorKind::Authorization {
         "您沒有存取這個位置的權限。"
