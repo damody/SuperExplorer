@@ -515,6 +515,7 @@ impl BrokerClient {
             keyboard_invoked: request.keyboard_invoked,
             invocation_profile: u8::from(request.invocation_profile.extended_verbs()),
             paste_available: request.paste_available,
+            open_file_location: request.open_file_location,
             immersive_native_context_menus: request.immersive_native_context_menus,
             dark_theme: matches!(
                 request.color_scheme,

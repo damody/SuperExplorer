@@ -748,6 +748,24 @@ pub(crate) fn show(request: &ContextMenuRequest) -> Result<ContextMenuOutcome, E
                 })?;
             next_custom_id = next_custom_id.saturating_add(1);
         }
+        if item_menu && request.open_file_location {
+            unsafe {
+                AppendMenuW(
+                    popup.get(),
+                    MF_STRING,
+                    next_custom_id as usize,
+                    w!("開啟檔案路徑"),
+                )
+            }
+            .map_err(|error| {
+                menu_error(
+                    "append file location command",
+                    "無法建立開啟檔案路徑命令",
+                    &error.to_string(),
+                )
+            })?;
+            next_custom_id = next_custom_id.saturating_add(1);
+        }
         if item_menu {
             unsafe {
                 AppendMenuW(
@@ -768,7 +786,8 @@ pub(crate) fn show(request: &ContextMenuRequest) -> Result<ContextMenuOutcome, E
     }
     let apk_first_id = first_custom_id
         .saturating_add(u32::from(request.paste_available))
-        .saturating_add(u32::from(item_menu));
+        .saturating_add(u32::from(item_menu))
+        .saturating_add(u32::from(item_menu && request.open_file_location));
     if let Some(menu_data) = &apk_devices {
         let submenu = unsafe { CreatePopupMenu() }.map_err(|error| {
             menu_error("create APK submenu", "無法建立安裝選單", &error.to_string())
@@ -886,6 +905,7 @@ pub(crate) fn show(request: &ContextMenuRequest) -> Result<ContextMenuOutcome, E
         return Ok(ContextMenuOutcome::Invoked { command_offset });
     }
     // SAFETY: the hidden owner window lives through the modal menu loop.
+    let menu_keyboard = prepare_menu_keyboard(owner.hwnd());
     let _ = unsafe { SetForegroundWindow(owner.hwnd()) };
     // SAFETY: the hidden menu owner is a live HWND until this function returns.
     let dpi = unsafe { GetDpiForWindow(owner.hwnd()) }.max(96);
@@ -941,6 +961,9 @@ pub(crate) fn show(request: &ContextMenuRequest) -> Result<ContextMenuOutcome, E
             .0;
             (command, None)
         };
+    // Restore before invoking a Shell command, which may immediately open a
+    // naming editor or another dialog on this thread.
+    drop(menu_keyboard);
     let replay_point = replay_hook
         .as_ref()
         .and_then(|_| MenuRightClickReplayHook::take())
@@ -1109,6 +1132,72 @@ const fn should_use_owned_popup(enabled: bool, high_contrast: bool) -> bool {
     enabled && !high_contrast
 }
 
+struct MenuKeyboardRestore {
+    layout: usize,
+    owner: HWND,
+    ime_open: Option<bool>,
+}
+
+impl Drop for MenuKeyboardRestore {
+    fn drop(&mut self) {
+        use windows::Win32::UI::Input::{
+            Ime::{ImmGetContext, ImmReleaseContext, ImmSetOpenStatus},
+            KeyboardAndMouse::{ActivateKeyboardLayout, HKL, KLF_ACTIVATE},
+        };
+        // SAFETY: this guard stays on the native popup's calling thread.
+        let _ = unsafe { ActivateKeyboardLayout(HKL(self.layout as *mut _), KLF_ACTIVATE) };
+        if let Some(open) = self.ime_open {
+            let context = unsafe { ImmGetContext(self.owner) };
+            if !context.0.is_null() {
+                unsafe {
+                    let _ = ImmSetOpenStatus(context, open);
+                    let _ = ImmReleaseContext(self.owner, context);
+                }
+            }
+        }
+    }
+}
+
+fn prepare_menu_keyboard(owner: HWND) -> MenuKeyboardRestore {
+    use windows::Win32::UI::Input::{
+        Ime::{ImmGetContext, ImmGetOpenStatus, ImmReleaseContext, ImmSetOpenStatus},
+        KeyboardAndMouse::{
+            ActivateKeyboardLayout, GetKeyboardLayout, GetKeyboardLayoutList, HKL, KLF_ACTIVATE,
+        },
+    };
+    // The native popup runs on a separate broker thread with its own input locale.
+    let mut restore = MenuKeyboardRestore {
+        layout: unsafe { GetKeyboardLayout(0) }.0 as usize,
+        owner,
+        ime_open: None,
+    };
+    let original_context = unsafe { ImmGetContext(owner) };
+    if !original_context.0.is_null() {
+        restore.ime_open = Some(unsafe { ImmGetOpenStatus(original_context) }.as_bool());
+        let _ = unsafe { ImmReleaseContext(owner, original_context) };
+    }
+    // SAFETY: Windows fills the bounded live slice with installed keyboard handles.
+    let count = unsafe { GetKeyboardLayoutList(None) }.clamp(0, 256) as usize;
+    let mut layouts = vec![HKL::default(); count];
+    let count = unsafe { GetKeyboardLayoutList(Some(&mut layouts)) }.max(0) as usize;
+    if let Some(layout) = layouts
+        .iter()
+        .take(count)
+        .find(|layout| (layout.0 as usize & 0x3ff) == 0x09)
+    {
+        let _ = unsafe { ActivateKeyboardLayout(*layout, KLF_ACTIVATE) };
+    }
+    // SAFETY: owner is this thread's live popup window; release its context once.
+    let context = unsafe { ImmGetContext(owner) };
+    if !context.0.is_null() {
+        unsafe {
+            let _ = ImmSetOpenStatus(context, false);
+            let _ = ImmReleaseContext(owner, context);
+        }
+    }
+    restore
+}
+
 fn host_command_applies_to_target(
     command: ContextMenuHostCommand,
     target: &ShellContextMenuTarget,
@@ -1122,6 +1211,9 @@ fn host_command_applies_to_target(
 fn app_owned_host_command(label: &str, item_menu: bool) -> Option<ContextMenuHostCommand> {
     if label == "貼上" {
         return Some(ContextMenuHostCommand::Paste);
+    }
+    if item_menu && label == "開啟檔案路徑" {
+        return Some(ContextMenuHostCommand::OpenFileLocation);
     }
     if item_menu && label == "加入書籤" {
         return Some(ContextMenuHostCommand::AddBookmark);
@@ -2911,6 +3003,11 @@ mod tests {
     #[test]
     fn app_owned_labels_map_to_host_commands_without_shell_verbs() {
         assert_eq!(
+            app_owned_host_command("開啟檔案路徑", true),
+            Some(ContextMenuHostCommand::OpenFileLocation)
+        );
+        assert_eq!(app_owned_host_command("開啟檔案路徑", false), None);
+        assert_eq!(
             app_owned_host_command("貼上", false),
             Some(ContextMenuHostCommand::Paste)
         );
@@ -4194,6 +4291,7 @@ mod tests {
             color_scheme: explorer_model::ContextMenuColorScheme::Light,
             immersive_native_context_menus: true,
             paste_available: false,
+            open_file_location: false,
             requested_verb: None,
             deadline_ms: 2_000,
         };

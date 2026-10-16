@@ -119,6 +119,7 @@ pub struct ContextMenuPayload {
     /// 0 = Explorer, 1 = Explorer plus Shift-extended verbs.
     pub invocation_profile: u8,
     pub paste_available: bool,
+    pub open_file_location: bool,
     pub immersive_native_context_menus: bool,
     pub dark_theme: bool,
     pub item_descriptors: Vec<Vec<u8>>,
@@ -253,7 +254,7 @@ pub enum PreviewMessage {
 }
 
 impl ContextMenuPayload {
-    pub const VERSION: u8 = 5;
+    pub const VERSION: u8 = 6;
     /// Encodes the complete context request with explicit lengths. Numeric HWND values are
     /// treated only as a cross-process owner contract; no pointer is dereferenced here.
     ///
@@ -270,6 +271,7 @@ impl ContextMenuPayload {
         bytes.push(u8::from(self.keyboard_invoked));
         bytes.push(self.invocation_profile);
         bytes.push(u8::from(self.paste_available));
+        bytes.push(u8::from(self.open_file_location));
         bytes.push(u8::from(self.immersive_native_context_menus));
         bytes.push(u8::from(self.dark_theme));
         let count = u16::try_from(self.item_descriptors.len())
@@ -324,6 +326,11 @@ impl ContextMenuPayload {
             1 => true,
             _ => return Err(ProtocolError::Malformed),
         };
+        let open_file_location = match cursor.u8()? {
+            0 => false,
+            1 => true,
+            _ => return Err(ProtocolError::Malformed),
+        };
         let immersive_native_context_menus = match cursor.u8()? {
             0 => false,
             1 => true,
@@ -364,6 +371,7 @@ impl ContextMenuPayload {
             keyboard_invoked,
             invocation_profile,
             paste_available,
+            open_file_location,
             immersive_native_context_menus,
             dark_theme,
             item_descriptors,
@@ -1162,6 +1170,7 @@ mod tests {
             keyboard_invoked: true,
             invocation_profile: 1,
             paste_available: true,
+            open_file_location: true,
             immersive_native_context_menus: true,
             dark_theme: true,
             item_descriptors: vec![b"C:\\one.txt".to_vec(), b"C:\\two.txt".to_vec()],
@@ -1346,6 +1355,7 @@ mod tests {
                 keyboard_invoked: false,
                 invocation_profile: 0,
                 paste_available: false,
+                open_file_location: false,
                 immersive_native_context_menus: false,
                 dark_theme: false,
                 item_descriptors: Vec::new(),

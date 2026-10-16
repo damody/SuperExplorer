@@ -267,6 +267,7 @@ fn execute_context_menu(request: &explorer_extension_protocol::StartPayload) -> 
             keyboard_invoked: true,
             invocation_profile: explorer_model::ContextMenuInvocationProfile::Explorer,
             paste_available: false,
+            open_file_location: false,
             requested_verb: (verb != "__show__").then(|| verb.to_owned()),
             deadline_ms: 10_000,
         };
@@ -363,6 +364,7 @@ fn execute_context_menu_payload(request: &explorer_extension_protocol::StartPayl
             explorer_model::ContextMenuInvocationProfile::Explorer
         },
         paste_available: payload.paste_available,
+        open_file_location: payload.open_file_location,
         requested_verb: payload.verb,
         deadline_ms: 10_000,
     };

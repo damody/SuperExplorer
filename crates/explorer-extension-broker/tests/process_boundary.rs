@@ -418,6 +418,7 @@ fn brokered_real_popup_appears_without_console_and_cancels_cleanly() {
         keyboard_invoked: false,
         invocation_profile: explorer_model::ContextMenuInvocationProfile::Explorer,
         paste_available: false,
+        open_file_location: false,
         requested_verb: None,
         deadline_ms: 5_000,
     };
@@ -877,6 +878,7 @@ fn brokered_context_menu_profiles_are_bounded_across_all_target_shapes() {
                 keyboard_invoked: false,
                 invocation_profile: u8::from(profile.extended_verbs()),
                 paste_available: false,
+                open_file_location: false,
                 immersive_native_context_menus: true,
                 dark_theme: false,
                 item_descriptors: locations.iter().map(encode_location).collect(),
@@ -1004,6 +1006,7 @@ fn brokered_and_direct_context_menu_preserve_safe_filesystem_effects() {
             keyboard_invoked: true,
             invocation_profile: explorer_model::ContextMenuInvocationProfile::Explorer,
             paste_available: false,
+            open_file_location: false,
             requested_verb: Some("Windows.CompressToZip".to_owned()),
             deadline_ms: 10_000,
         }
