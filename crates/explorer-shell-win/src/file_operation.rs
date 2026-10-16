@@ -11,8 +11,9 @@
 
 use std::{
     collections::HashSet,
-    os::windows::ffi::OsStrExt as _,
+    os::windows::{ffi::OsStrExt as _, process::CommandExt as _},
     path::{Path, PathBuf},
+    process::{Command, Stdio},
     sync::{Arc, Mutex, MutexGuard, mpsc::SyncSender},
 };
 
@@ -57,6 +58,11 @@ pub(crate) fn execute(
         return Ok(OperationTerminal::Cancelled);
     }
     validate_request(request)?;
+    if let FileOperationKind::PermanentDelete { items, .. } = &request.kind
+        && items.iter().all(|item| item.location.path().is_some())
+    {
+        return powershell_permanent_delete(context, items, events);
+    }
     if let FileOperationKind::CreateShortcut { items } = &request.kind {
         return create_shortcuts(context, items, events);
     }
@@ -173,6 +179,129 @@ pub(crate) fn execute(
     });
     let mut outcomes = skipped_outcomes(&request.kind, &skipped);
     outcomes.extend(lock_progress_state(&sink_state).outcomes.clone());
+    if outcomes
+        .iter()
+        .all(|outcome| outcome.result == OperationItemResult::Succeeded)
+    {
+        Ok(OperationTerminal::Finished)
+    } else {
+        Ok(OperationTerminal::Partial { outcomes })
+    }
+}
+
+// Keep paths out of PowerShell source: quotes, wildcard characters and dollar signs are data.
+// Return the underlying HRESULT so locked-file recovery retains its native error code.
+const PERMANENT_DELETE_SCRIPT: &str = "try { Remove-Item -LiteralPath $env:SUPEREXPLORER_DELETE_PATH -Recurse -Force -ErrorAction Stop -Confirm:$false; exit 0 } catch { exit $_.Exception.GetBaseException().HResult }";
+
+fn powershell_permanent_delete(
+    context: &RequestContext,
+    items: &[ItemDescriptor],
+    events: &SyncSender<ExplorerEvent>,
+) -> Result<OperationTerminal, ExplorerError> {
+    // Validate the entire selection before starting any irreversible work. Do not resolve
+    // symlinks: Remove-Item must remove the selected link, not its resolved destination.
+    for item in items {
+        let path = item.location.path().expect("filesystem selection");
+        if !path.is_absolute()
+            || path.parent().is_none()
+            || path
+                .components()
+                .any(|component| matches!(component, std::path::Component::ParentDir))
+        {
+            return Err(operation_error(
+                "validate permanent delete path",
+                "Please select an absolute file or folder path, not a drive root.",
+                &format!("refusing permanent delete of {}", path.display()),
+            ));
+        }
+    }
+    let powershell =
+        PathBuf::from(std::env::var_os("SystemRoot").unwrap_or_else(|| "C:\\Windows".into()))
+            .join("System32/WindowsPowerShell/v1.0/powershell.exe");
+    let mut outcomes = Vec::with_capacity(items.len());
+    for (index, item) in items.iter().enumerate() {
+        if context.cancellation.is_cancelled() {
+            return Ok(OperationTerminal::Cancelled);
+        }
+        let progress = |completed_items, phase| ExplorerEvent::OperationProgress {
+            context: context.clone(),
+            progress: OperationProgress {
+                completed_items,
+                total_items: items.len(),
+                completed_bytes: 0,
+                total_bytes: None,
+                phase,
+                current_item: None,
+            },
+        };
+        let _ = events.try_send(progress(
+            index,
+            explorer_model::TransferProgressPhase::Transferring,
+        ));
+        let mut child = Command::new(&powershell)
+            .args([
+                "-NoLogo",
+                "-NoProfile",
+                "-NonInteractive",
+                "-Command",
+                PERMANENT_DELETE_SCRIPT,
+            ])
+            .env(
+                "SUPEREXPLORER_DELETE_PATH",
+                item.location.path().expect("validated path"),
+            )
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .creation_flags(0x0800_0000) // CREATE_NO_WINDOW
+            .spawn()
+            .map_err(|error| {
+                operation_error(
+                    "start permanent delete",
+                    "Could not start PowerShell deletion.",
+                    &error.to_string(),
+                )
+            })?;
+        let status = loop {
+            if context.cancellation.is_cancelled() {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Ok(OperationTerminal::Cancelled);
+            }
+            match child.try_wait() {
+                Ok(Some(status)) => break status,
+                Ok(None) => std::thread::sleep(std::time::Duration::from_millis(50)),
+                Err(error) => {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return Err(operation_error(
+                        "wait for permanent delete",
+                        "Could not finish PowerShell deletion.",
+                        &error.to_string(),
+                    ));
+                }
+            }
+        };
+        let result = if status.success() {
+            OperationItemResult::Succeeded
+        } else {
+            OperationItemResult::Failed(native_error(
+                "PowerShell Remove-Item",
+                &windows::core::Error::from_hresult(HRESULT(
+                    status.code().unwrap_or(-2_147_467_259),
+                )),
+            ))
+        };
+        outcomes.push(OperationItemOutcome {
+            item: Some(item.clone()),
+            destination: None,
+            result,
+        });
+        let _ = events.try_send(progress(
+            index + 1,
+            explorer_model::TransferProgressPhase::Finalizing,
+        ));
+    }
     if outcomes
         .iter()
         .all(|outcome| outcome.result == OperationItemResult::Succeeded)
@@ -365,6 +494,16 @@ fn operation_flags(request: &FileOperationRequest) -> FILEOPERATION_FLAGS {
     }
     if matches!(&request.kind, FileOperationKind::RecycleDelete { .. }) {
         flags |= FOFX_RECYCLEONDELETE | FOF_ALLOWUNDO;
+    }
+    if matches!(
+        &request.kind,
+        FileOperationKind::PermanentDelete {
+            confirmed: true,
+            ..
+        }
+    ) && !request.flags.require_confirmation
+    {
+        flags |= FOF_NOCONFIRMATION;
     }
     flags
 }
@@ -1413,6 +1552,46 @@ mod tests {
             })
             .collect::<Vec<_>>();
         assert_eq!(links.len(), 1, "exactly one collision-safe .lnk is created");
+    }
+
+    #[test]
+    fn powershell_delete_removes_literal_nested_readonly_paths_only() {
+        let fixture = tempfile::tempdir().expect("fixture");
+        let target = fixture.path().join("中文 [target] ' $data; test");
+        let nested = target.join("nested");
+        std::fs::create_dir_all(&nested).expect("nested folder");
+        let file = nested.join("readonly.txt");
+        std::fs::write(&file, b"delete me").expect("file");
+        let mut permissions = std::fs::metadata(&file).unwrap().permissions();
+        permissions.set_readonly(true);
+        std::fs::set_permissions(&file, permissions).unwrap();
+        let sentinel = fixture.path().join("keep.txt");
+        std::fs::write(&sentinel, b"keep me").unwrap();
+        let request = FileOperationRequest {
+            kind: FileOperationKind::PermanentDelete {
+                items: vec![ItemDescriptor {
+                    id: ShellItemId::from_provider_bytes([0x45]).unwrap(),
+                    location: LocationDescriptor::file_system(&target),
+                }],
+                confirmed: true,
+            },
+            flags: FileOperationFlags {
+                require_confirmation: false,
+                allow_undo: false,
+                ..FileOperationFlags::default()
+            },
+        };
+        let context = explorer_model::RequestContext::new(
+            explorer_model::TabId::new(),
+            explorer_model::Generation::new(1),
+        );
+        let (events, _receiver) = std::sync::mpsc::sync_channel(64);
+        assert!(matches!(
+            execute(&context, &request, &events),
+            Ok(explorer_model::OperationTerminal::Finished)
+        ));
+        assert!(!target.exists());
+        assert_eq!(std::fs::read(&sentinel).unwrap(), b"keep me");
     }
 
     #[test]
