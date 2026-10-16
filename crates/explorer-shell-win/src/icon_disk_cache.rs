@@ -103,6 +103,9 @@ impl Default for ShellIconDiskCache {
 }
 
 impl ShellIconDiskCache {
+    pub(crate) fn raw_root(&self) -> Option<PathBuf> {
+        self.root.as_ref().map(|root| root.join("rgba-v1"))
+    }
     #[cfg(test)]
     pub(crate) fn with_root(root: PathBuf) -> Self {
         Self {
@@ -547,7 +550,7 @@ pub fn thumbnail_disk_cache_stats() -> ShellDiskCacheStatsV1 {
     ShellIconDiskCache::with_root_lossy_thumbnail(root).stats()
 }
 
-fn key_digest(key: &ShellIconKey) -> u64 {
+pub(crate) fn key_digest(key: &ShellIconKey) -> u64 {
     key_digest_for_build(key, windows_build())
 }
 

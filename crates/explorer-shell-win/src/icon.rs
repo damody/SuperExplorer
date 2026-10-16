@@ -34,6 +34,15 @@ use windows::{
 
 pub(crate) const SHELL_ICON_CACHE_CAPACITY: usize = 512;
 
+// Shell assigns the same image-list slot to files with the same artwork. Overlay
+// queries may still be needed per item, but GDI readback and pixel conversion are
+// shared even for those items. Keep this cache on the owning Shell STA.
+type ImageListKey = (i32, u32, u16, u16, explorer_model::ShellIconTheme, u64, u64);
+thread_local! {
+    static IMAGE_LIST_PIXELS: std::cell::RefCell<HashMap<ImageListKey, ShellIconPayload>> =
+        std::cell::RefCell::new(HashMap::new());
+}
+
 struct CacheEntry {
     payload: ShellIconPayload,
     last_used: u64,
@@ -44,6 +53,7 @@ pub(crate) struct ShellIconCache {
     clock: u64,
     capacity: usize,
     disk: crate::icon_disk_cache::ShellIconDiskCache,
+    raw: crate::icon_raw_cache::RawIconCache,
     stats: ShellIconCacheStats,
 }
 
@@ -65,11 +75,14 @@ impl Default for ShellIconCache {
 
 impl ShellIconCache {
     fn with_capacity(capacity: usize) -> Self {
+        let disk = crate::icon_disk_cache::ShellIconDiskCache::default();
+        let raw = crate::icon_raw_cache::RawIconCache::with_root(disk.raw_root());
         Self {
             entries: HashMap::new(),
             clock: 0,
             capacity: capacity.max(1),
-            disk: crate::icon_disk_cache::ShellIconDiskCache::default(),
+            disk,
+            raw,
             stats: ShellIconCacheStats::default(),
         }
     }
@@ -77,6 +90,7 @@ impl ShellIconCache {
     #[cfg(test)]
     fn with_disk(capacity: usize, disk: crate::icon_disk_cache::ShellIconDiskCache) -> Self {
         Self {
+            raw: crate::icon_raw_cache::RawIconCache::with_root(disk.raw_root()),
             disk,
             ..Self::with_capacity(capacity)
         }
@@ -89,64 +103,28 @@ impl ShellIconCache {
 
     pub(crate) fn load(&mut self, key: &ShellIconKey) -> Result<ShellIconPayload, ExplorerError> {
         self.clock = self.clock.wrapping_add(1);
-        let bc7_enabled = crate::icon_disk_cache::icon_bc7_enabled();
-        if let Some(entry) = self.entries.get_mut(key)
-            && (!bc7_enabled || entry.payload.bc7.is_some())
-        {
+        if let Some(entry) = self.entries.get_mut(key) {
             entry.last_used = self.clock;
             self.stats.memory_hits = self.stats.memory_hits.saturating_add(1);
             tracing::debug!(cache_source = "memory", "Shell icon cache hit");
             return Ok(entry.payload.clone());
         }
         self.entries.remove(key);
-        // Filesystem overlay state (including TortoiseGit) can change while the path and the
-        // persisted cache key remain stable across process launches. Ask the live Shell first
-        // for existing paths, then refresh the disk entry. The persisted pixels remain a useful
-        // fallback when an overlay handler or the Shell image list is temporarily unavailable.
-        if key.location.path().is_some_and(std::path::Path::exists) {
-            self.stats.shell_loads = self.stats.shell_loads.saturating_add(1);
-            match load(key) {
-                Ok(payload) => {
-                    if crate::icon_disk_cache::icon_bc7_enabled() {
-                        let _ = crate::bc7_pipeline::schedule(
-                            crate::bc7_codec::Bc7ContentKind::Icon,
-                            payload.clone(),
-                            self.disk.clone(),
-                            None,
-                            None,
-                        );
-                    }
-                    self.insert(payload.clone());
-                    tracing::debug!(cache_source = "shell-refresh", "Shell icon cache refreshed");
-                    return Ok(payload);
-                }
-                Err(error) => {
-                    tracing::debug!(?error, "live Shell icon refresh failed; trying disk cache");
-                }
-            }
+        // Uncompressed pixels are cheap to persist and do not depend on the optional
+        // BC7 rollout. Source metadata, associations and presentation epochs version
+        // these entries, so a warm launch need not extract the same icon again.
+        if let Some(payload) = self.raw.load(key) {
+            self.stats.disk_hits = self.stats.disk_hits.saturating_add(1);
+            self.insert(payload.clone());
+            return Ok(payload);
         }
-        if bc7_enabled {
-            match self.disk.load_outcome(key) {
-                crate::icon_disk_cache::DiskCacheLoad::Hit(payload)
-                    if crate::icon_disk_cache::icon_bc7_enabled() =>
-                {
-                    self.stats.disk_hits = self.stats.disk_hits.saturating_add(1);
-                    tracing::debug!(cache_source = "bc7-disk", "Shell icon cache hit");
-                    self.insert((*payload).clone());
-                    return Ok(*payload);
-                }
-                crate::icon_disk_cache::DiskCacheLoad::Hit(_)
-                | crate::icon_disk_cache::DiskCacheLoad::Miss => {
-                    self.stats.disk_misses = self.stats.disk_misses.saturating_add(1);
-                }
-                crate::icon_disk_cache::DiskCacheLoad::Rejected => {
-                    self.stats.disk_corrupt = self.stats.disk_corrupt.saturating_add(1);
-                }
-            }
-        }
+        self.stats.disk_misses = self.stats.disk_misses.saturating_add(1);
         tracing::debug!(cache_source = "shell", "Shell icon cache miss");
         self.stats.shell_loads = self.stats.shell_loads.saturating_add(1);
         let payload = load(key)?;
+        if !self.raw.store(&payload) {
+            self.stats.disk_write_failures = self.stats.disk_write_failures.saturating_add(1);
+        }
         if crate::icon_disk_cache::icon_bc7_enabled() {
             let _ = crate::bc7_pipeline::schedule(
                 crate::bc7_codec::Bc7ContentKind::Icon,
@@ -292,6 +270,22 @@ fn load_filesystem_icon_with_overlays(
         )
     })?;
     let overlay_index = packed_index >> 24;
+    let pixels_key = (
+        image_index,
+        overlay_index,
+        key.size_bucket,
+        key.dpi,
+        key.theme,
+        key.association_generation,
+        key.overlay_generation,
+    );
+    if key.size_bucket <= 256
+        && let Some(mut payload) =
+            IMAGE_LIST_PIXELS.with(|cache| cache.borrow().get(&pixels_key).cloned())
+    {
+        payload.key = key.clone();
+        return Ok(payload);
+    }
     if key.size_bucket > 256
         && overlay_index == 0
         && let Ok(payload) = load_shell_item_image_factory(key)
@@ -340,7 +334,17 @@ fn load_filesystem_icon_with_overlays(
             "monochrome Shell icons are unsupported",
         )
     })?;
-    bitmap_to_rgba(key.clone(), &color)
+    let payload = bitmap_to_rgba(key.clone(), &color)?;
+    if key.size_bucket <= 256 {
+        IMAGE_LIST_PIXELS.with(|cache| {
+            let mut cache = cache.borrow_mut();
+            if cache.len() >= 256 {
+                cache.clear();
+            }
+            cache.insert(pixels_key, payload.clone());
+        });
+    }
+    Ok(payload)
 }
 
 const fn shell_image_list_kind(requested_physical_size: u16) -> u32 {
@@ -609,7 +613,7 @@ mod tests {
     }
 
     #[test]
-    fn each_process_refreshes_existing_filesystem_overlays_and_persists_the_result() {
+    fn warm_process_reuses_persisted_icons_without_shell_extraction() {
         let _serial = REAL_SHELL_ICON_TEST_LOCK.lock().unwrap();
         let root = tempfile::tempdir().expect("cross-process cache");
         let executable = std::env::current_exe().expect("current test executable");
@@ -644,8 +648,8 @@ mod tests {
         assert_eq!(&cold[1..3], &[1, 0], "cold process must extract from Shell");
         assert_eq!(
             &warm[1..3],
-            &[1, 0],
-            "warm process must refresh live overlay state instead of trusting stale disk pixels"
+            &[0, 1],
+            "warm process must reuse persisted pixels without another Shell extraction"
         );
         assert!(
             std::fs::read_dir(root.path())
@@ -658,6 +662,41 @@ mod tests {
                 })),
             "live refresh must still persist a BC7 fallback for later launches"
         );
+    }
+
+    #[test]
+    #[ignore = "read-only probe for a user-specified directory"]
+    fn live_directory_content_icons_have_pixels() {
+        let _serial = REAL_SHELL_ICON_TEST_LOCK.lock().unwrap();
+        let _apartment = crate::sta::ApartmentGuard::initialize().unwrap();
+        let directory = std::env::var_os("SUPEREXPLORER_TEST_ICON_DIRECTORY").unwrap();
+        let mut failures = Vec::new();
+        for entry in std::fs::read_dir(directory)
+            .unwrap()
+            .flatten()
+            .filter(|entry| entry.path().is_file())
+            .take(64)
+        {
+            let key = ShellIconKey {
+                item_id: Some(
+                    ShellItemId::from_provider_bytes(entry.path().to_string_lossy().as_bytes())
+                        .unwrap(),
+                ),
+                location: LocationDescriptor::file_system(entry.path()),
+                size_bucket: 32,
+                dpi: 96,
+                theme: ShellIconTheme::Dark,
+                association_generation: 1,
+                overlay_generation: 0,
+            };
+            match load(&key) {
+                Ok(payload) if payload.rgba.chunks_exact(4).any(|pixel| pixel[3] != 0) => {
+                    eprintln!("icon ok: {:?}", entry.file_name())
+                }
+                result => failures.push((entry.file_name(), format!("{result:?}"))),
+            }
+        }
+        assert!(failures.is_empty(), "{failures:?}");
     }
 
     #[test]
@@ -723,6 +762,37 @@ mod tests {
     }
 
     #[test]
+    fn matching_file_type_reuses_image_list_pixels_without_borrowing_another_item_identity() {
+        let _serial = REAL_SHELL_ICON_TEST_LOCK.lock().unwrap();
+        let _apartment = crate::sta::ApartmentGuard::initialize().unwrap();
+        super::IMAGE_LIST_PIXELS.with(|cache| cache.borrow_mut().clear());
+        let fixture = tempfile::tempdir().unwrap();
+        let mut payloads = Vec::new();
+        for name in ["first.txt", "second.TXT"] {
+            let path = fixture.path().join(name);
+            std::fs::write(&path, "text").unwrap();
+            let key = ShellIconKey {
+                item_id: ShellItemId::from_provider_bytes(name.as_bytes()),
+                location: LocationDescriptor::file_system(path),
+                size_bucket: 32,
+                dpi: 96,
+                theme: ShellIconTheme::Light,
+                association_generation: 1,
+                overlay_generation: 0,
+            };
+            let payload = load(&key).unwrap();
+            assert_eq!(payload.key, key);
+            payloads.push(payload);
+        }
+        assert_eq!(payloads[0].rgba, payloads[1].rgba);
+        assert_ne!(payloads[0].key.item_id, payloads[1].key.item_id);
+        assert_eq!(
+            super::IMAGE_LIST_PIXELS.with(|cache| cache.borrow().len()),
+            1
+        );
+    }
+
+    #[test]
     fn warm_disk_payload_becomes_a_memory_hit_with_non_sensitive_counters() {
         let _guard = crate::icon_disk_cache::BC7_GATE_TEST_LOCK
             .lock()
@@ -742,16 +812,12 @@ mod tests {
         let payload =
             explorer_model::ShellIconPayload::new(key.clone(), 1, 1, 4, vec![1, 2, 3, 4], None)
                 .expect("valid payload");
-        assert!(disk.store(&payload));
+        assert!(crate::icon_raw_cache::RawIconCache::with_root(disk.raw_root()).store(&payload));
         let mut cache = ShellIconCache::with_disk(2, disk);
         let disk_hit = cache.load(&key).expect("disk hit");
         assert_eq!(disk_hit.key, payload.key);
         assert_eq!((disk_hit.width, disk_hit.height), (1, 1));
-        assert!(disk_hit.rgba.is_empty());
-        assert!(
-            disk_hit.bc7.is_some(),
-            "persisted icons are promoted to BC7"
-        );
+        assert_eq!(disk_hit.rgba, payload.rgba);
         assert_eq!(cache.load(&key).expect("memory hit"), disk_hit);
         assert_eq!(
             cache.stats(),
@@ -853,7 +919,7 @@ mod tests {
         let _apartment = crate::sta::ApartmentGuard::initialize().expect("STA initializes");
         let fixture = tempfile::Builder::new()
             .prefix("custom-folder-icon-")
-            .tempdir_in(r"D:\test\target")
+            .tempdir()
             .expect("custom folder fixture");
         let folder = fixture.path().join("custom");
         std::fs::create_dir(&folder).expect("custom folder");
@@ -965,7 +1031,7 @@ mod tests {
         let _apartment = crate::sta::ApartmentGuard::initialize().expect("STA initializes");
         let fixture = tempfile::Builder::new()
             .prefix("identity-icon-fixture-")
-            .tempdir_in(r"D:\test\target")
+            .tempdir()
             .expect("identity icon fixture");
         let executable = std::env::current_exe().expect("current executable");
         let shortcut = fixture.path().join("executable.lnk");
