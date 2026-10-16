@@ -455,6 +455,20 @@ fn compare_file_entries(
 ) -> Ordering {
     let left = &snapshot.entries()[left_index];
     let right = &snapshot.entries()[right_index];
+    let drive_group = right
+        .metadata
+        .drive
+        .is_some()
+        .cmp(&left.metadata.drive.is_some());
+    if drive_group != Ordering::Equal {
+        return drive_group;
+    }
+    if sort.column == ColumnId::Name && left.metadata.drive.is_some() {
+        let drive_order = compare_optional(drive_letter(left), drive_letter(right), sort.direction);
+        if drive_order != Ordering::Equal {
+            return drive_order;
+        }
+    }
     let classification = compare_entry_classification(left, right);
     if classification != Ordering::Equal {
         return classification;
@@ -523,6 +537,25 @@ fn compare_file_entries(
 /// a browsable container.
 fn compare_entry_classification(left: &FileEntry, right: &FileEntry) -> Ordering {
     is_folder_for_sorting(right).cmp(&is_folder_for_sorting(left))
+}
+
+fn drive_letter(entry: &FileEntry) -> Option<u8> {
+    if let Some(path) = entry.location.path().and_then(|path| path.to_str()) {
+        let bytes = path.strip_prefix(r"\\?\").unwrap_or(path).as_bytes();
+        if bytes.len() >= 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':' {
+            return Some(bytes[0].to_ascii_uppercase());
+        }
+    }
+    // Opaque Shell drive identities still expose the standard localized label (C:).
+    entry
+        .display_name
+        .as_bytes()
+        .windows(4)
+        .rev()
+        .find_map(|part| {
+            (part[0] == b'(' && part[1].is_ascii_alphabetic() && part[2..] == *b":)")
+                .then(|| part[1].to_ascii_uppercase())
+        })
 }
 
 const FILE_ATTRIBUTE_DIRECTORY_V1: u32 = 0x10;
@@ -1131,6 +1164,43 @@ mod tests {
                 .find(|entry| entry.display_name == "archive.zip")
                 .is_some_and(|entry| entry.is_container)
         );
+    }
+
+    #[test]
+    fn this_pc_defaults_to_drive_letter_order_for_filesystem_and_namespace_entries() {
+        for namespace in [false, true] {
+            let mut snapshot = DirectorySnapshot::default();
+            for (id, letter, label) in [(1, 'E', "Alpha"), (2, 'C', "Zeta"), (3, 'D', "Beta")] {
+                let mut drive = entry(id, &format!("{label} ({letter}:)"));
+                drive.is_container = true;
+                drive.location = if namespace {
+                    LocationDescriptor::ShellNamespace(vec![0, 0])
+                } else {
+                    LocationDescriptor::file_system(format!("{letter}:\\"))
+                };
+                drive.metadata.drive = Some(DriveMetadata {
+                    kind: DriveKind::Fixed,
+                    availability: DriveAvailability::Available,
+                    volume_label: Some(label.into()),
+                    filesystem_name: Some("NTFS".into()),
+                    total_bytes: Some(2_000),
+                    available_bytes: Some(800),
+                });
+                snapshot.upsert(drive);
+            }
+            let mut cloud = entry(4, "A cloud provider");
+            cloud.is_container = true;
+            snapshot.upsert(cloud);
+            let presentation =
+                DirectoryPresentation::build(&snapshot, false, SortDescriptor::default());
+            let names = (0..presentation.len())
+                .map(|index| presentation.entry(index).unwrap().1.display_name.as_str())
+                .collect::<Vec<_>>();
+            assert_eq!(
+                names,
+                ["Zeta (C:)", "Beta (D:)", "Alpha (E:)", "A cloud provider"]
+            );
+        }
     }
 
     #[test]
