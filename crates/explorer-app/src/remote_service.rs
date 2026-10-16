@@ -1206,6 +1206,18 @@ pub(crate) const fn network_login_rejected_credentials(code: u32) -> bool {
     matches!(code, 5 | 86 | 1326 | 1327 | 2202 | 1385)
 }
 
+fn network_login_connection_remote(host: &str, remote: &str) -> String {
+    // A server root is enumerable, but WNet needs a share to establish its SMB session.
+    if remote
+        .trim_end_matches('\\')
+        .eq_ignore_ascii_case(&format!(r"\\{host}"))
+    {
+        format!(r"\\{host}\IPC$")
+    } else {
+        remote.to_owned()
+    }
+}
+
 #[cfg(windows)]
 #[expect(
     unsafe_code,
@@ -1220,7 +1232,7 @@ pub(crate) fn prompt_network_login(
         Win32::{
             Foundation::{ERROR_CANCELLED, ERROR_SUCCESS},
             NetworkManagement::WNet::{
-                CONNECT_CMD_SAVECRED, CONNECT_UPDATE_PROFILE, NETRESOURCEW, RESOURCETYPE_DISK,
+                CONNECT_CMD_SAVECRED, CONNECT_UPDATE_PROFILE, NETRESOURCEW, RESOURCETYPE_ANY,
                 WNetAddConnection2W, WNetCancelConnection2W,
             },
             Security::Credentials::{
@@ -1269,7 +1281,7 @@ pub(crate) fn prompt_network_login(
     }
     fn connect(remote_wide: &mut [u16], username: &[u16], password: &[u16]) -> u32 {
         let mut resource = NETRESOURCEW {
-            dwType: RESOURCETYPE_DISK,
+            dwType: RESOURCETYPE_ANY,
             lpRemoteName: PWSTR(remote_wide.as_mut_ptr()),
             ..Default::default()
         };
@@ -1297,7 +1309,8 @@ pub(crate) fn prompt_network_login(
         pszCaptionText: PCWSTR(caption.as_ptr()),
         ..Default::default()
     };
-    let mut remote_wide = wide(remote);
+    let connection_remote = network_login_connection_remote(host, remote);
+    let mut remote_wide = wide(&connection_remote);
     let mut incorrect = false;
     loop {
         // wincred.h limits exclude the terminating NUL: username 513, password 256.
@@ -1341,9 +1354,8 @@ pub(crate) fn prompt_network_login(
             incorrect = true;
             continue;
         }
-        store_credential(host, &username_value, &password_value);
         let username_wide = wide(&username_value);
-        let password_wide = wide(&password_value);
+        let mut password_wide = wide(&password_value);
         let mut code = connect(&mut remote_wide, &username_wide, &password_wide);
         if code == ERROR_SESSION_CREDENTIAL_CONFLICT {
             // An existing session for this server used different credentials. Drop it once and
@@ -1356,14 +1368,18 @@ pub(crate) fn prompt_network_login(
             code = connect(&mut remote_wide, &username_wide, &password_wide);
         }
         if code == 0 {
+            store_credential(host, &username_value, &password_value);
+            password_wide.fill(0);
+            std::hint::black_box(&mut password_wide);
             return Ok(true);
         }
+        password_wide.fill(0);
+        std::hint::black_box(&mut password_wide);
         if network_login_rejected_credentials(code) {
             incorrect = true;
             continue;
         }
-        // Unreachable host or provider failure: credentials may still be saved for the retry.
-        return Ok(true);
+        return Err(format!("Windows 無法建立網路連線（錯誤代碼 {code}）。"));
     }
 }
 
@@ -3602,6 +3618,20 @@ mod tests {
         }
     }
     use super::*;
+
+    #[test]
+    fn network_login_connects_server_roots_through_ipc_share() {
+        for remote in [r"\\192.168.0.239", r"\\192.168.0.239\"] {
+            assert_eq!(
+                network_login_connection_remote("192.168.0.239", remote),
+                r"\\192.168.0.239\IPC$"
+            );
+        }
+        assert_eq!(
+            network_login_connection_remote("server", r"\\server\share"),
+            r"\\server\share"
+        );
+    }
 
     #[test]
     fn network_login_retries_only_for_rejected_credentials() {
