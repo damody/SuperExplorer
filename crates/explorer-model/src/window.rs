@@ -626,6 +626,7 @@ mod tests {
     fn missing_active_identity_uses_isolated_recovery_state_without_panicking() {
         let mut window = ExplorerWindowState::new(initial("first"));
         let original = window.active_tab_id();
+        window.active_tab_mut().view.settings.hidden_items = false;
         window.active_tab_id = TabId::new();
 
         assert!(matches!(

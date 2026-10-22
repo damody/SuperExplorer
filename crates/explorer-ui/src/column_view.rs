@@ -1268,6 +1268,7 @@ fn column_row(
         .role(Role::ListItem)
         .aria_label(format!("{} {name}", catalog.t("a11y-column-row")))
         .aria_selected(selected)
+        .opacity(crate::file_view::item_opacity(&row.name, &row.metadata, false))
         .h(px(COLUMN_ROW_HEIGHT))
         .min_h(px(COLUMN_ROW_HEIGHT))
         .max_h(px(COLUMN_ROW_HEIGHT))

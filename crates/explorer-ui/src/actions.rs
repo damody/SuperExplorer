@@ -3657,7 +3657,7 @@ mod tests {
             ActionSource::Mouse,
         );
         assert!(!state.view_menu_open());
-        assert!(state.view_settings().hidden_items);
+        assert!(!state.view_settings().hidden_items);
         assert!(state.view_settings().compact_view);
     }
 

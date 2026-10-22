@@ -14453,7 +14453,7 @@ impl RenderOnce for FileViewHost {
                         {
                             ordered_detail_cells.push(code_lines_detail_column_cell(
                                 column,
-                                &entry.id,
+                                &entry,
                                 selected,
                                 shell_icon_dpi,
                                 visual_column_theme,
@@ -14558,7 +14558,7 @@ impl RenderOnce for FileViewHost {
                     .flex()
                     .items_center()
                     .text_color(row_visual.text_color.to_gpui())
-                    .when(drive_view, |element| {
+                    .when(drive_view && !details_mode, |element| {
                         element.gap(px(layout.content_spacing.value()))
                     })
                     .when(spatial_metrics.stacked, |element| {
@@ -14591,7 +14591,9 @@ impl RenderOnce for FileViewHost {
                             .border(px(layout.focus_stroke.value()))
                             .border_color(colors.accent.to_gpui())
                     })
-                    .when(cut_pending, |element| element.opacity(0.55))
+                    .opacity(crate::file_view::item_opacity(
+                        &entry.display_name, &entry.metadata, cut_pending,
+                    ))
                     .when_some(activate, |element, callback| {
                         let move_callback = callback.clone();
                         let up_callback = callback.clone();
@@ -14880,18 +14882,14 @@ impl RenderOnce for FileViewHost {
                     ))
                     .child(
                         div()
-                            .w(px(
-                                if view_settings.mode == explorer_model::ViewMode::Details {
-                                    f32::from(
-                                        view_settings.details_column_width(
-                                            &explorer_model::ColumnId::Name,
-                                        ),
-                                    )
-                                } else {
-                                    item_width - layout.control_padding_horizontal.value() * 2.0
-                                },
-                            ))
+                            .w(px(file_row_name_region_width(
+                                &view_settings, drive_view, item_width, layout,
+                            )))
                             .flex_none()
+                            .when(
+                                drive_view && view_settings.mode == explorer_model::ViewMode::Content,
+                                |element| element.w_full().min_w(px(0.0)).flex_1(),
+                            )
                             .flex()
                             .items_center()
                             .when(spatial_metrics.stacked, |element| {
@@ -15116,13 +15114,8 @@ impl RenderOnce for FileViewHost {
                                 match view_settings.mode {
                                     explorer_model::ViewMode::Details => div()
                                         .id("this-pc-details-name")
-                                        .w(px(
-                                            crate::layout::feature::THIS_PC_DETAILS_NAME_WIDTH
-                                                .value()
-                                                - icon_size
-                                                - layout.content_spacing.value(),
-                                        ))
-                                        .flex_none()
+                                        .min_w(px(0.0))
+                                        .flex_1()
                                         .overflow_hidden()
                                         .whitespace_nowrap()
                                         .text_ellipsis()
@@ -15191,11 +15184,8 @@ impl RenderOnce for FileViewHost {
                                     _ => {
                                         let status = div()
                                             .id("this-pc-drive-status")
-                                            .w(px(
-                                                crate::layout::feature::THIS_PC_DRIVE_STATUS_WIDTH
-                                                    .value(),
-                                            ))
-                                            .flex_none()
+                                            .min_w(px(0.0))
+                                            .flex_1()
                                             .flex()
                                             .flex_col()
                                             .gap(px(layout.focus_stroke.value() * 2.0))
@@ -15212,10 +15202,7 @@ impl RenderOnce for FileViewHost {
                                                 self.tokens,
                                                 catalog,
                                                 drive,
-                                                Some(
-                                                    crate::layout::feature::THIS_PC_CAPACITY_BAR_WIDTH
-                                                        .value(),
-                                                ),
+                                                None,
                                             ))
                                         } else {
                                             status
@@ -15710,6 +15697,23 @@ pub(crate) fn spatial_grid_metrics_with_registry(
                 | explorer_model::ViewMode::Tiles
         ),
         stacked: is_stacked_icon_view(settings.mode),
+    }
+}
+
+fn file_row_name_region_width(
+    settings: &explorer_model::ViewSettings,
+    drive_view: bool,
+    item_width: f32,
+    layout: crate::layout::LayoutTokens,
+) -> f32 {
+    if settings.mode == explorer_model::ViewMode::Details {
+        if drive_view {
+            crate::layout::feature::THIS_PC_DETAILS_NAME_WIDTH.value()
+        } else {
+            f32::from(settings.details_column_width(&explorer_model::ColumnId::Name))
+        }
+    } else {
+        item_width - layout.control_padding_horizontal.value() * 2.0
     }
 }
 
@@ -16534,10 +16538,6 @@ fn code_lines_detail_column_cell(
 ) -> gpui::AnyElement {
     match column {
         CodeLinesDetailColumn::Ready(visuals, runtime) => {
-            if let Some(admission) = visuals.admissions.get(entry_id) {
-                host_admission_detail_cell(
-                    &visuals.config.descriptor,
-                    *admission,
             if !runtime.supports_entry(entry) {
                 return unavailable_detail_cell(
                     &visuals.config.descriptor,
@@ -16547,6 +16547,10 @@ fn code_lines_detail_column_cell(
                 );
             }
             let entry_id = &entry.id;
+            if let Some(admission) = visuals.admissions.get(entry_id) {
+                host_admission_detail_cell(
+                    &visuals.config.descriptor,
+                    *admission,
                     view_settings,
                     visible_index,
                     layout,
@@ -22132,6 +22136,32 @@ mod tests {
     }
 
     #[test]
+    fn this_pc_row_columns_ignore_the_saved_folder_name_width() {
+        let layout = crate::layout::LayoutTokens::WINDOWS_11;
+        let mut settings = explorer_model::ViewSettings::default();
+        settings.mode = explorer_model::ViewMode::Details;
+        for saved_width in [280, 560, 1_000] {
+            settings
+                .details_layout
+                .set_width(&explorer_model::ColumnId::Name, saved_width);
+            let name_width = super::file_row_name_region_width(&settings, true, 760.0, layout);
+            assert_eq!(
+                name_width,
+                crate::layout::feature::THIS_PC_DETAILS_NAME_WIDTH.value()
+            );
+            assert_eq!(
+                super::file_row_name_region_width(&settings, false, 760.0, layout),
+                f32::from(saved_width)
+            );
+            let row_columns_width = name_width
+                + crate::layout::feature::THIS_PC_DETAILS_TYPE_WIDTH.value()
+                + crate::layout::feature::THIS_PC_DETAILS_TOTAL_WIDTH.value()
+                + crate::layout::feature::THIS_PC_DETAILS_FREE_WIDTH.value();
+            assert_eq!(row_columns_width, super::this_pc_details_width());
+        }
+    }
+
+    #[test]
     fn this_pc_uses_explorer_specific_geometry_for_details_icons_and_content() {
         let layout = crate::layout::LayoutTokens::WINDOWS_11;
         let details =
@@ -22333,7 +22363,7 @@ mod tests {
     }
 
     #[test]
-    fn hidden_items_toggle_never_reveals_protected_system_items() {
+    fn hidden_items_toggle_reveals_dot_hidden_and_system_items() {
         let mut normal = sortable_entry(1, "normal", false, None, None, None);
         let mut hidden = sortable_entry(2, "hidden", false, None, None, None);
         let mut system = sortable_entry(3, "system", false, None, None, None);
@@ -22341,7 +22371,8 @@ mod tests {
         hidden.metadata.filesystem_attributes = 0x2;
         system.metadata.filesystem_attributes = 0x4;
         let mut snapshot = explorer_model::DirectorySnapshot::default();
-        for entry in [normal, hidden, system] {
+        let dot = sortable_entry(4, ".git", true, None, None, None);
+        for entry in [normal, hidden, system, dot] {
             snapshot.upsert(entry);
         }
         let sort = explorer_model::SortDescriptor::default();
@@ -22354,7 +22385,7 @@ mod tests {
             .into_iter()
             .map(|(_, entry)| entry.display_name)
             .collect::<Vec<_>>();
-        assert_eq!(revealed, ["hidden", "normal"]);
+        assert_eq!(revealed, [".git", "hidden", "normal", "system"]);
     }
 
     fn sorted_names(

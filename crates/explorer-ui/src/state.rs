@@ -17841,6 +17841,52 @@ mod tests {
     }
 
     #[test]
+    fn this_pc_keeps_drive_order_when_switching_all_views_with_saved_size_sort() {
+        use explorer_model::{
+            ColumnId, DirectorySnapshot, DirectoryState, DriveAvailability, DriveKind,
+            DriveMetadata, FileEntry, FileEntryMetadata, HistoryEntry, LocationDescriptor,
+            ShellItemId, SortDescriptor, SortDirection, ViewMode,
+        };
+        let mut state = AppViewState::with_initial_location(HistoryEntry::new(
+            LocationDescriptor::ParsingName("shell:MyComputerFolder".into()), "This PC",
+        ));
+        let mut snapshot = DirectorySnapshot::default();
+        for (letter, bytes) in [('E', 20), ('D', 30), ('C', 10)] {
+            let id = ShellItemId::from_provider_bytes([letter as u8]).unwrap();
+            std::sync::Arc::make_mut(&mut state.folder_size_sort_values).insert(id.clone(), Some(bytes));
+            snapshot.upsert(FileEntry {
+                id,
+                display_name: format!("Disk ({letter}:)"),
+                location: LocationDescriptor::file_system(format!("{letter}:\\")),
+                is_container: true,
+                metadata: FileEntryMetadata {
+                    drive: Some(DriveMetadata {
+                        kind: DriveKind::Fixed, availability: DriveAvailability::Available,
+                        volume_label: None, filesystem_name: None,
+                        total_bytes: Some(100), available_bytes: Some(bytes),
+                    }),
+                    ..Default::default()
+                },
+            });
+        }
+        state.tabs.active_tab_mut().directory = DirectoryState::Ready(snapshot);
+        state.tabs.active_tab_mut().view.settings.sort = SortDescriptor {
+            column: ColumnId::Size, direction: SortDirection::Descending,
+        };
+        for mode in [ViewMode::Details, ViewMode::ExtraLargeIcons, ViewMode::LargeIcons,
+            ViewMode::MediumIcons, ViewMode::SmallIcons, ViewMode::List,
+            ViewMode::Tiles, ViewMode::Content, ViewMode::Details]
+        {
+            state.set_view_mode(mode);
+            let presentation = state.directory_presentation().unwrap();
+            let names = (0..presentation.len())
+                .map(|index| presentation.entry(index).unwrap().1.display_name.as_str())
+                .collect::<Vec<_>>();
+            assert_eq!(names, ["Disk (C:)", "Disk (D:)", "Disk (E:)"], "{mode:?}");
+        }
+    }
+
+    #[test]
     fn selection_focus_and_range_reuse_the_shared_presentation_cache() {
         let mut state = state_with_rows();
         let first = state.directory_presentation().expect("presentation");
@@ -18549,6 +18595,7 @@ mod tests {
     #[test]
     fn folder_options_use_a_cancelable_draft_and_apply_to_the_active_tab() {
         let mut state = AppViewState::default();
+        state.tabs.active_tab_mut().view.settings.hidden_items = false;
         state.open_folder_options();
         state.update_folder_options(|settings| {
             settings.hidden_items = true;
@@ -18877,6 +18924,7 @@ mod tests {
     #[test]
     fn folder_options_apply_replaces_baseline_and_confirm_closes_only_with_a_draft() {
         let mut state = AppViewState::default();
+        state.tabs.active_tab_mut().view.settings.hidden_items = false;
         assert_eq!(
             state.confirm_folder_options(),
             FolderOptionsApplyResultV1::NoDraft
@@ -18903,6 +18951,7 @@ mod tests {
     #[test]
     fn external_applied_settings_update_only_adopts_into_a_clean_draft() {
         let mut clean = AppViewState::default();
+        clean.tabs.active_tab_mut().view.settings.hidden_items = false;
         clean.open_folder_options();
         let mut applied = clean
             .folder_options()
@@ -18916,6 +18965,7 @@ mod tests {
         assert!(!clean_draft.is_dirty());
 
         let mut dirty = AppViewState::default();
+        dirty.tabs.active_tab_mut().view.settings.hidden_items = false;
         dirty.open_folder_options();
         dirty.update_folder_options(|settings| settings.file_name_extensions = false);
         dirty.adopt_applied_folder_options(applied, 7);
@@ -23858,9 +23908,9 @@ mod tests {
             assert_eq!(actual.1, expected.1);
             assert_eq!(actual.2, expected.2);
         }
-        assert!(
+        assert!(hidden_items ||
             actual.iter().all(|row| row.1 != "system.dat"),
-            "protected system items stay hidden"
+            "system items stay hidden when hidden items are disabled"
         );
     }
 
@@ -23885,6 +23935,7 @@ mod tests {
             beta.clone(),
             "beta",
         ));
+        state.tabs.active_tab_mut().view.settings.hidden_items = false;
         state.set_drive_kind('C', explorer_model::DriveKind::Fixed);
         state.set_view_mode(explorer_model::ViewMode::Columns);
         state.ensure_column_branch();
@@ -24136,7 +24187,7 @@ mod tests {
         state.set_column_scroll(current_index, 9_000.0);
         assert_eq!(
             column_level_offset(&state, current_index),
-            5.0 * row_height - 48.0
+            6.0 * row_height - 48.0
         );
 
         let descending = explorer_model::SortDirection::Descending;
@@ -24267,6 +24318,7 @@ mod tests {
     fn cancel_escape_and_title_close_share_an_idempotent_discard_transition() {
         for _close_reason in ["cancel", "escape", "title-close"] {
             let mut state = AppViewState::default();
+            state.tabs.active_tab_mut().view.settings.hidden_items = false;
             state.open_folder_options();
             state.update_folder_options(|settings| settings.hidden_items = true);
             state.close_folder_options();
@@ -24279,6 +24331,7 @@ mod tests {
     #[test]
     fn rejected_apply_keeps_the_dirty_draft_and_typed_failure() {
         let mut state = AppViewState::default();
+        state.tabs.active_tab_mut().view.settings.hidden_items = false;
         state.open_folder_options();
         state.update_folder_options(|settings| settings.hidden_items = true);
         assert_eq!(

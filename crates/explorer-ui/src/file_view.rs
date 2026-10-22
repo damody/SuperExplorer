@@ -13,6 +13,23 @@ use explorer_model::{ColumnId, DirectorySnapshot, FileEntry, SortDescriptor, Sor
 
 pub const MAX_STANDARD_REALIZED_ITEMS: usize = 250;
 
+pub(crate) fn is_hidden_item(name: &str, metadata: &explorer_model::FileEntryMetadata) -> bool {
+    metadata.drive.is_none()
+        && (name.starts_with('.') || metadata.filesystem_attributes & (0x2 | 0x4) != 0)
+}
+
+pub(crate) fn item_opacity(
+    name: &str,
+    metadata: &explorer_model::FileEntryMetadata,
+    cut_pending: bool,
+) -> f32 {
+    if cut_pending || is_hidden_item(name, metadata) {
+        0.55
+    } else {
+        1.0
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct DetailsFilterOption {
     pub key: String,
@@ -203,10 +220,7 @@ impl DirectoryPresentation {
                 if metadata.drive.is_some() {
                     return true;
                 }
-                let attributes = metadata.filesystem_attributes;
-                let protected_system_item = attributes & 0x4 != 0;
-                let ordinary_hidden_item = attributes & 0x2 != 0;
-                !protected_system_item && (hidden_items || !ordinary_hidden_item)
+                hidden_items || !is_hidden_item(&entries[*index].display_name, metadata)
             })
             .collect::<Vec<_>>();
         ordered_indices.sort_by(|left, right| compare_file_entries(snapshot, *left, *right, &sort));
@@ -293,6 +307,10 @@ impl DirectoryPresentation {
         ordered_indices.sort_by(|left_index, right_index| {
             let left = &self.entries[*left_index];
             let right = &self.entries[*right_index];
+            let drives = compare_drive_order(left, right);
+            if drives != Ordering::Equal {
+                return drives;
+            }
             let classification = compare_entry_classification(left, right);
             if classification != Ordering::Equal {
                 return classification;
@@ -455,19 +473,9 @@ fn compare_file_entries(
 ) -> Ordering {
     let left = &snapshot.entries()[left_index];
     let right = &snapshot.entries()[right_index];
-    let drive_group = right
-        .metadata
-        .drive
-        .is_some()
-        .cmp(&left.metadata.drive.is_some());
-    if drive_group != Ordering::Equal {
-        return drive_group;
-    }
-    if sort.column == ColumnId::Name && left.metadata.drive.is_some() {
-        let drive_order = compare_optional(drive_letter(left), drive_letter(right), sort.direction);
-        if drive_order != Ordering::Equal {
-            return drive_order;
-        }
+    let drives = compare_drive_order(left, right);
+    if drives != Ordering::Equal {
+        return drives;
     }
     let classification = compare_entry_classification(left, right);
     if classification != Ordering::Equal {
@@ -537,6 +545,24 @@ fn compare_file_entries(
 /// a browsable container.
 fn compare_entry_classification(left: &FileEntry, right: &FileEntry) -> Ordering {
     is_folder_for_sorting(right).cmp(&is_folder_for_sorting(left))
+}
+
+// Drive letters are the stable device order in This PC, including when saved folder
+// settings or an extension column apply a second sort pass in a different view mode.
+fn compare_drive_order(left: &FileEntry, right: &FileEntry) -> Ordering {
+    let left_drive = left.metadata.drive.is_some();
+    let right_drive = right.metadata.drive.is_some();
+    right_drive.cmp(&left_drive).then_with(|| {
+        if left_drive && right_drive {
+            compare_optional(
+                drive_letter(left),
+                drive_letter(right),
+                SortDirection::Ascending,
+            )
+        } else {
+            Ordering::Equal
+        }
+    })
 }
 
 fn drive_letter(entry: &FileEntry) -> Option<u8> {
@@ -1167,7 +1193,7 @@ mod tests {
     }
 
     #[test]
-    fn this_pc_defaults_to_drive_letter_order_for_filesystem_and_namespace_entries() {
+    fn this_pc_keeps_drive_letter_order_across_sort_columns_directions_and_extension_passes() {
         for namespace in [false, true] {
             let mut snapshot = DirectorySnapshot::default();
             for (id, letter, label) in [(1, 'E', "Alpha"), (2, 'C', "Zeta"), (3, 'D', "Beta")] {
@@ -1191,16 +1217,62 @@ mod tests {
             let mut cloud = entry(4, "A cloud provider");
             cloud.is_container = true;
             snapshot.upsert(cloud);
-            let presentation =
-                DirectoryPresentation::build(&snapshot, false, SortDescriptor::default());
-            let names = (0..presentation.len())
-                .map(|index| presentation.entry(index).unwrap().1.display_name.as_str())
-                .collect::<Vec<_>>();
-            assert_eq!(
-                names,
-                ["Zeta (C:)", "Beta (D:)", "Alpha (E:)", "A cloud provider"]
-            );
+            let values = snapshot
+                .entries()
+                .iter()
+                .enumerate()
+                .map(|(index, entry)| (entry.id.clone(), Some(index as u64 * 10)))
+                .collect::<HashMap<_, _>>();
+            for column in ColumnId::BUILT_INS {
+                for direction in [SortDirection::Ascending, SortDirection::Descending] {
+                    let presentation = DirectoryPresentation::build(
+                        &snapshot,
+                        false,
+                        SortDescriptor {
+                            column: column.clone(),
+                            direction,
+                        },
+                    );
+                    for projected in [
+                        presentation.clone(),
+                        presentation.sorted_by_extension_bytes(&values, direction),
+                    ] {
+                        let names = (0..projected.len())
+                            .map(|index| projected.entry(index).unwrap().1.display_name.as_str())
+                            .collect::<Vec<_>>();
+                        assert_eq!(
+                            names,
+                            ["Zeta (C:)", "Beta (D:)", "Alpha (E:)", "A cloud provider"],
+                            "{column:?} {direction:?}, namespace={namespace}"
+                        );
+                    }
+                }
+            }
         }
+    }
+
+    #[test]
+    fn hidden_items_default_to_visible_and_use_single_half_opacity() {
+        assert!(explorer_model::ViewSettings::default().hidden_items);
+        assert!(explorer_model::PersistedViewSettings::default().hidden_items);
+        for (name, attributes) in [
+            (".git", 0),
+            (".gitignore", 0),
+            ("hidden.txt", 0x2),
+            ("system", 0x4),
+        ] {
+            let metadata = FileEntryMetadata {
+                filesystem_attributes: attributes,
+                ..Default::default()
+            };
+            assert!(is_hidden_item(name, &metadata));
+            assert_eq!(item_opacity(name, &metadata, false), 0.55);
+            assert_eq!(item_opacity(name, &metadata, true), 0.55);
+        }
+        let metadata = FileEntryMetadata::default();
+        assert!(!is_hidden_item("normal.txt", &metadata));
+        assert_eq!(item_opacity("normal.txt", &metadata, false), 1.0);
+        assert_eq!(item_opacity("normal.txt", &metadata, true), 0.55);
     }
 
     #[test]

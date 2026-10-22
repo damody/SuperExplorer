@@ -1944,7 +1944,7 @@ impl Default for ViewSettings {
             preview_pane: false,
             item_check_boxes: false,
             file_name_extensions: true,
-            hidden_items: false,
+            hidden_items: true,
             compact_view: false,
             always_show_icons: false,
             immersive_native_context_menus: true,
