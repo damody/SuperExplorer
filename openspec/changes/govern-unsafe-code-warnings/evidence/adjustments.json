@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "adjustments": [
+    {
+      "id": "ADJ-B-001",
+      "class": "B",
+      "timestamp": "2026-08-26T00:00:00+08:00",
+      "reason": "Implementation baseline found three unsafe_code diagnostics in dirty-tree remote_service.rs that were absent from the initial planning inventory.",
+      "scope_effect": "Governed baseline changes from 113 locations in 11 files to 116 locations in 12 files; zero-unsafe gate and public behavior remain unchanged.",
+      "invalidated_evidence": ["initial baseline.json"],
+      "replacement": "Re-captured UCG-BASE after adding remote_service.rs to owned files."
+    }
+  ]
+}

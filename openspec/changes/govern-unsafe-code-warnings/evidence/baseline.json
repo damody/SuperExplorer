@@ -1,0 +1,2353 @@
+{
+  "schema_version": 1,
+  "gate": "UCG-BASE",
+  "captured_at": "2026-08-26T11:54:57.2569478+08:00",
+  "revision": "44a9ac11a67c0630d9b0c031750d77f5901d59f6",
+  "command": "cargo check --workspace --locked --message-format=json",
+  "exit_status": 0,
+  "toolchain": {
+    "rustc": [
+      "rustc 1.97.1 (8bab26f4f 2026-07-14)",
+      "binary: rustc",
+      "commit-hash: 8bab26f4f68e0e26f0bb7960be334d5b520ea452",
+      "commit-date: 2026-07-14",
+      "host: x86_64-pc-windows-msvc",
+      "release: 1.97.1",
+      "LLVM version: 22.1.6"
+    ],
+    "cargo": "cargo 1.97.1 (c980f4866 2026-06-30)",
+    "target_triple": "x86_64-pc-windows-msvc",
+    "cargo_config_paths": [],
+    "features": "default",
+    "environment": {
+      "RUSTFLAGS": null,
+      "CARGO_TARGET_DIR": null,
+      "CARGO_BUILD_TARGET": null
+    }
+  },
+  "compiler_jsonl": "evidence/compiler-messages.jsonl",
+  "compiler_jsonl_sha256": "dea579bba2e2cf497eb7a8ec0646c27577b596a150362e2df885f2cae9335e0c",
+  "dirty_tree": [
+    " ? SuperDesktop",
+    " M crates/explorer-app/src/application.rs",
+    " M crates/explorer-app/src/mft_size_map.rs",
+    " M crates/explorer-app/src/remote_service.rs",
+    " M crates/explorer-model/src/bookmark.rs",
+    " M crates/explorer-model/src/domain.rs",
+    " M crates/explorer-model/src/lib.rs",
+    " M crates/explorer-model/src/navigation.rs",
+    " M crates/explorer-model/src/remote.rs",
+    " M crates/explorer-remote/src/adb.rs",
+    " M crates/explorer-remote/src/lib.rs",
+    " M crates/explorer-remote/src/provider.rs",
+    " M crates/explorer-remote/src/sftp.rs",
+    " M crates/explorer-ui/src/chrome.rs",
+    " M crates/explorer-ui/src/lib.rs",
+    " M crates/explorer-ui/src/navigation_pane.rs",
+    " M crates/explorer-ui/src/state.rs",
+    " M docs/superpowers/specs/2026-08-26-sftp-address-login-design.md",
+    " M docs/superpowers/specs/2026-08-26-unsafe-code-warning-governance-design.md",
+    " M openspec/changes/add-adb-sftp-file-access/specs/remote-access-ui/spec.md",
+    " M openspec/changes/add-adb-sftp-file-access/tasks.md",
+    " M openspec/changes/govern-unsafe-code-warnings/design.md",
+    " M openspec/changes/govern-unsafe-code-warnings/proposal.md",
+    " M openspec/changes/govern-unsafe-code-warnings/specs/unsafe-code-governance/spec.md",
+    " M openspec/changes/govern-unsafe-code-warnings/tasks.md",
+    "?? .cargo-home-proof-20260804/",
+    "?? .codex/agents/task_4_8_public_api_inventory.txt",
+    "?? .reasonix/",
+    "?? .tmp-cargo-home-vendor/",
+    "?? .tmp-full-meta.json",
+    "?? 1",
+    "?? build/discarded-taskbar-context-evidence/",
+    "?? build/guardian-installer-proof-20260821-1300/",
+    "?? build/installer-proof-20260821-1035/",
+    "?? build/installer-window.png",
+    "?? build/logs/",
+    "?? build/mft-resource-group-installed.png",
+    "?? build/mft-resource-group-main.png",
+    "?? build/mft-resource-group-menu.png",
+    "?? build/snip-clipboard-installer-proof-20260821-1345/",
+    "?? integrate-latest-gpui-explorer-fork/",
+    "?? libexpect_item_probe.rmeta",
+    "?? libexpect_stmt_probe.rmeta",
+    "?? openspec/changes/add-bookmark-toolbar-lua-commands/evidence/headful-2026-08-14/localappdata/",
+    "?? openspec/changes/add-sftp-address-login/",
+    "?? openspec/changes/add-toolbar-extensions-tortoisegit-refresh/evidence/headful-source-fixed/evidence/toolbar-extensions-tortoisegit-refresh/localappdata/",
+    "?? openspec/changes/add-toolbar-extensions-tortoisegit-refresh/evidence/headful/evidence/toolbar-extensions-tortoisegit-refresh/localappdata/",
+    "?? openspec/changes/detect-process-current-directory-lock-owners/evidence/headful-2026-08-14-absolute/isolated-app/",
+    "?? openspec/changes/detect-process-current-directory-lock-owners/evidence/headful-2026-08-14-absolute/profile/",
+    "?? openspec/changes/detect-process-current-directory-lock-owners/evidence/headful-2026-08-14/isolated-app/",
+    "?? openspec/changes/detect-process-current-directory-lock-owners/evidence/headful-2026-08-14/profile/",
+    "?? openspec/changes/differentiate-main-code-lines-and-reorder-columns/evidence/headful-rerun-001/isolated-app/",
+    "?? openspec/changes/differentiate-main-code-lines-and-reorder-columns/evidence/headful-rerun-001/profile/",
+    "?? openspec/changes/differentiate-main-code-lines-and-reorder-columns/evidence/headful-rerun-002/isolated-app/",
+    "?? openspec/changes/differentiate-main-code-lines-and-reorder-columns/evidence/headful-rerun-002/profile/",
+    "?? openspec/changes/differentiate-main-code-lines-and-reorder-columns/evidence/headful-rerun-003/isolated-app/",
+    "?? openspec/changes/differentiate-main-code-lines-and-reorder-columns/evidence/headful-rerun-003/profile/",
+    "?? openspec/changes/differentiate-main-code-lines-and-reorder-columns/evidence/headful-rerun-004/isolated-app/",
+    "?? openspec/changes/differentiate-main-code-lines-and-reorder-columns/evidence/headful-rerun-004/profile/",
+    "?? openspec/changes/differentiate-main-code-lines-and-reorder-columns/evidence/headful-rerun-005/isolated-app/",
+    "?? openspec/changes/differentiate-main-code-lines-and-reorder-columns/evidence/headful-rerun-005/profile/",
+    "?? openspec/changes/differentiate-main-code-lines-and-reorder-columns/evidence/headful-rerun-006/isolated-app/",
+    "?? openspec/changes/differentiate-main-code-lines-and-reorder-columns/evidence/headful-rerun-006/profile/",
+    "?? openspec/changes/differentiate-main-code-lines-and-reorder-columns/evidence/headful-rerun-007/isolated-app/",
+    "?? openspec/changes/differentiate-main-code-lines-and-reorder-columns/evidence/headful-rerun-007/profile/",
+    "?? openspec/changes/differentiate-main-code-lines-and-reorder-columns/evidence/headful-rerun-008/isolated-app/",
+    "?? openspec/changes/differentiate-main-code-lines-and-reorder-columns/evidence/headful-rerun-008/profile/",
+    "?? openspec/changes/differentiate-main-code-lines-and-reorder-columns/evidence/headful-rerun-009/isolated-app/",
+    "?? openspec/changes/differentiate-main-code-lines-and-reorder-columns/evidence/headful-rerun-009/profile/",
+    "?? openspec/changes/differentiate-main-code-lines-and-reorder-columns/evidence/headful-rerun-010/isolated-app/",
+    "?? openspec/changes/differentiate-main-code-lines-and-reorder-columns/evidence/headful-rerun-010/profile/",
+    "?? openspec/changes/differentiate-main-code-lines-and-reorder-columns/evidence/headful/isolated-app/",
+    "?? openspec/changes/differentiate-main-code-lines-and-reorder-columns/evidence/headful/profile/",
+    "?? openspec/changes/fix-bookmark-folders-and-lua-editor/evidence/headful-bookmark-editor-double-defer/bookmark-fixture/",
+    "?? openspec/changes/fix-bookmark-folders-and-lua-editor/evidence/headful-bookmark-editor-double-defer/localappdata/",
+    "?? openspec/changes/fix-bookmark-folders-and-lua-editor/evidence/headful-bookmark-editor-focus-fix/",
+    "?? openspec/changes/fix-bookmark-folders-and-lua-editor/evidence/headful-bookmark-editor-isolated-input/",
+    "?? openspec/changes/fix-bookmark-folders-and-lua-editor/evidence/headful-bookmark-editor-no-controller/",
+    "?? openspec/changes/fix-bookmark-folders-and-lua-editor/evidence/headful-bookmark-folders-2/",
+    "?? openspec/changes/fix-bookmark-folders-and-lua-editor/evidence/headful-bookmark-folders-3/",
+    "?? openspec/changes/fix-bookmark-folders-and-lua-editor/evidence/headful-bookmark-folders-4/",
+    "?? openspec/changes/fix-bookmark-folders-and-lua-editor/evidence/headful-bookmark-folders-5/",
+    "?? openspec/changes/fix-bookmark-folders-and-lua-editor/evidence/headful-bookmark-folders-6/",
+    "?? openspec/changes/fix-bookmark-folders-and-lua-editor/evidence/headful-bookmark-folders-7/bookmark-fixture/",
+    "?? openspec/changes/fix-bookmark-folders-and-lua-editor/evidence/headful-bookmark-folders-7/localappdata/",
+    "?? openspec/changes/fix-bookmark-folders-and-lua-editor/evidence/headful-bookmark-folders/",
+    "?? openspec/changes/fix-bookmark-folders-and-lua-editor/evidence/headful-readonly-context-final/",
+    "?? openspec/changes/fix-bookmark-folders-and-lua-editor/evidence/headful-readonly-context-final10/",
+    "?? openspec/changes/fix-bookmark-folders-and-lua-editor/evidence/headful-readonly-context-final2/",
+    "?? openspec/changes/fix-bookmark-folders-and-lua-editor/evidence/headful-readonly-context-final3/",
+    "?? openspec/changes/fix-bookmark-folders-and-lua-editor/evidence/headful-readonly-context-final4/",
+    "?? openspec/changes/fix-bookmark-folders-and-lua-editor/evidence/headful-readonly-context-final5/",
+    "?? openspec/changes/fix-bookmark-folders-and-lua-editor/evidence/headful-readonly-context-final6/",
+    "?? openspec/changes/fix-bookmark-folders-and-lua-editor/evidence/headful-readonly-context-final7/",
+    "?? openspec/changes/fix-bookmark-folders-and-lua-editor/evidence/headful-readonly-context-final8/",
+    "?? openspec/changes/fix-bookmark-folders-and-lua-editor/evidence/headful-readonly-context-final9/",
+    "?? openspec/changes/fix-bookmark-folders-and-lua-editor/evidence/headful-readonly-final/bookmark-fixture/",
+    "?? openspec/changes/fix-bookmark-folders-and-lua-editor/evidence/headful-readonly-final/localappdata/",
+    "?? openspec/changes/fix-icon-view-shell-thumbnail-loading/evidence/utit-clean-head-2/",
+    "?? openspec/changes/fix-icon-view-shell-thumbnail-loading/evidence/utit-clean-head-3/",
+    "?? openspec/changes/fix-icon-view-shell-thumbnail-loading/evidence/utit-clean-head/",
+    "?? openspec/changes/fix-icon-view-shell-thumbnail-loading/evidence/utit-focused-clean-10/fixture/",
+    "?? openspec/changes/fix-icon-view-shell-thumbnail-loading/evidence/utit-focused-clean-10/localappdata/",
+    "?? openspec/changes/fix-icon-view-shell-thumbnail-loading/evidence/utit-focused-clean-11/fixture/",
+    "?? openspec/changes/fix-icon-view-shell-thumbnail-loading/evidence/utit-focused-clean-11/localappdata/",
+    "?? openspec/changes/fix-icon-view-shell-thumbnail-loading/evidence/utit-focused-clean-12/fixture/",
+    "?? openspec/changes/fix-icon-view-shell-thumbnail-loading/evidence/utit-focused-clean-12/localappdata/",
+    "?? openspec/changes/fix-icon-view-shell-thumbnail-loading/evidence/utit-focused-clean-13/",
+    "?? openspec/changes/fix-icon-view-shell-thumbnail-loading/evidence/utit-focused-clean-14/",
+    "?? openspec/changes/fix-icon-view-shell-thumbnail-loading/evidence/utit-focused-clean-15/fixture/",
+    "?? openspec/changes/fix-icon-view-shell-thumbnail-loading/evidence/utit-focused-clean-15/localappdata/",
+    "?? openspec/changes/fix-icon-view-shell-thumbnail-loading/evidence/utit-focused-clean-16/fixture/",
+    "?? openspec/changes/fix-icon-view-shell-thumbnail-loading/evidence/utit-focused-clean-16/localappdata/",
+    "?? openspec/changes/fix-icon-view-shell-thumbnail-loading/evidence/utit-focused-clean-2/fixture/",
+    "?? openspec/changes/fix-icon-view-shell-thumbnail-loading/evidence/utit-focused-clean-2/localappdata/",
+    "?? openspec/changes/fix-icon-view-shell-thumbnail-loading/evidence/utit-focused-clean-3/fixture/",
+    "?? openspec/changes/fix-icon-view-shell-thumbnail-loading/evidence/utit-focused-clean-3/localappdata/",
+    "?? openspec/changes/fix-icon-view-shell-thumbnail-loading/evidence/utit-focused-clean-4/fixture/",
+    "?? openspec/changes/fix-icon-view-shell-thumbnail-loading/evidence/utit-focused-clean-4/localappdata/",
+    "?? openspec/changes/fix-icon-view-shell-thumbnail-loading/evidence/utit-focused-clean-5/fixture/",
+    "?? openspec/changes/fix-icon-view-shell-thumbnail-loading/evidence/utit-focused-clean-5/localappdata/",
+    "?? openspec/changes/fix-icon-view-shell-thumbnail-loading/evidence/utit-focused-clean-6/fixture/",
+    "?? openspec/changes/fix-icon-view-shell-thumbnail-loading/evidence/utit-focused-clean-6/localappdata/",
+    "?? openspec/changes/fix-icon-view-shell-thumbnail-loading/evidence/utit-focused-clean-7/fixture/",
+    "?? openspec/changes/fix-icon-view-shell-thumbnail-loading/evidence/utit-focused-clean-7/localappdata/",
+    "?? openspec/changes/fix-icon-view-shell-thumbnail-loading/evidence/utit-focused-clean-8/fixture/",
+    "?? openspec/changes/fix-icon-view-shell-thumbnail-loading/evidence/utit-focused-clean-8/localappdata/",
+    "?? openspec/changes/fix-icon-view-shell-thumbnail-loading/evidence/utit-focused-clean-9-console.txt",
+    "?? openspec/changes/fix-icon-view-shell-thumbnail-loading/evidence/utit-focused-clean-9/fixture/",
+    "?? openspec/changes/fix-icon-view-shell-thumbnail-loading/evidence/utit-focused-clean-9/localappdata/",
+    "?? openspec/changes/fix-icon-view-shell-thumbnail-loading/evidence/utit-focused-clean/fixture/",
+    "?? openspec/changes/fix-icon-view-shell-thumbnail-loading/evidence/utit-focused-clean/localappdata/",
+    "?? openspec/changes/fix-icon-view-shell-thumbnail-loading/evidence/utit-maximum-folder-2/",
+    "?? openspec/changes/fix-icon-view-shell-thumbnail-loading/evidence/utit-maximum-folder-3/fixture/",
+    "?? openspec/changes/fix-icon-view-shell-thumbnail-loading/evidence/utit-maximum-folder-3/localappdata/",
+    "?? openspec/changes/fix-icon-view-shell-thumbnail-loading/evidence/utit-maximum-folder/",
+    "?? openspec/changes/fix-registry-ordered-details-cells/evidence/headful-final/isolated-app/",
+    "?? openspec/changes/fix-registry-ordered-details-cells/evidence/headful-final/profile/",
+    "?? openspec/changes/fix-registry-ordered-details-cells/evidence/headful-values/isolated-app/",
+    "?? openspec/changes/fix-registry-ordered-details-cells/evidence/headful-values/profile/",
+    "?? openspec/changes/fix-registry-ordered-details-cells/evidence/headful-wide/isolated-app/",
+    "?? openspec/changes/fix-registry-ordered-details-cells/evidence/headful-wide/profile/",
+    "?? openspec/changes/fix-registry-ordered-details-cells/evidence/headful/isolated-app/",
+    "?? openspec/changes/fix-registry-ordered-details-cells/evidence/headful/profile/",
+    "?? openspec/changes/fix-shared-mft-folder-aggregate-lru/evidence/",
+    "?? openspec/changes/folder-options-dedicated-window/evidence/headful-2026-08-14-debug/",
+    "?? openspec/changes/folder-options-dedicated-window/evidence/headful-2026-08-14-final/",
+    "?? openspec/changes/folder-options-dedicated-window/evidence/headful-2026-08-14-final2/",
+    "?? openspec/changes/folder-options-dedicated-window/evidence/headful-2026-08-14-final3/",
+    "?? openspec/changes/folder-options-dedicated-window/evidence/headful-2026-08-14-final4/localappdata/",
+    "?? openspec/changes/folder-options-dedicated-window/evidence/headful-2026-08-14-retry1/",
+    "?? openspec/changes/folder-options-dedicated-window/evidence/headful-2026-08-14-retry2/",
+    "?? openspec/changes/folder-options-dedicated-window/evidence/headful-2026-08-14-retry3/",
+    "?? openspec/changes/folder-options-dedicated-window/evidence/headful-2026-08-14-retry4/",
+    "?? openspec/changes/folder-options-dedicated-window/evidence/headful-2026-08-14-retry5/",
+    "?? openspec/changes/folder-options-dedicated-window/evidence/headful-2026-08-14-retry6/",
+    "?? openspec/changes/folder-options-dedicated-window/evidence/headful-2026-08-14/",
+    "?? openspec/changes/govern-unsafe-code-warnings/evidence/",
+    "?? openspec/changes/govern-unsafe-code-warnings/scripts/",
+    "?? openspec/changes/independent-cache-max-editors/evidence/cache-budget-editors-diag/localappdata/",
+    "?? openspec/changes/independent-cache-max-editors/evidence/cache-budget-editors-final/",
+    "?? openspec/changes/independent-cache-max-editors/evidence/cache-budget-editors-final10/localappdata/",
+    "?? openspec/changes/independent-cache-max-editors/evidence/cache-budget-editors-final11/localappdata/",
+    "?? openspec/changes/independent-cache-max-editors/evidence/cache-budget-editors-final12/localappdata/",
+    "?? openspec/changes/independent-cache-max-editors/evidence/cache-budget-editors-final13/localappdata/",
+    "?? openspec/changes/independent-cache-max-editors/evidence/cache-budget-editors-final14/localappdata/",
+    "?? openspec/changes/independent-cache-max-editors/evidence/cache-budget-editors-final15/localappdata/",
+    "?? openspec/changes/independent-cache-max-editors/evidence/cache-budget-editors-final16/localappdata/",
+    "?? openspec/changes/independent-cache-max-editors/evidence/cache-budget-editors-final17/localappdata/",
+    "?? openspec/changes/independent-cache-max-editors/evidence/cache-budget-editors-final18/",
+    "?? openspec/changes/independent-cache-max-editors/evidence/cache-budget-editors-final19/localappdata/",
+    "?? openspec/changes/independent-cache-max-editors/evidence/cache-budget-editors-final2/",
+    "?? openspec/changes/independent-cache-max-editors/evidence/cache-budget-editors-final20/localappdata/",
+    "?? openspec/changes/independent-cache-max-editors/evidence/cache-budget-editors-final21/localappdata/",
+    "?? openspec/changes/independent-cache-max-editors/evidence/cache-budget-editors-final22/localappdata/",
+    "?? openspec/changes/independent-cache-max-editors/evidence/cache-budget-editors-final23/localappdata/",
+    "?? openspec/changes/independent-cache-max-editors/evidence/cache-budget-editors-final24/localappdata/",
+    "?? openspec/changes/independent-cache-max-editors/evidence/cache-budget-editors-final25/localappdata/",
+    "?? openspec/changes/independent-cache-max-editors/evidence/cache-budget-editors-final26/localappdata/",
+    "?? openspec/changes/independent-cache-max-editors/evidence/cache-budget-editors-final27/localappdata/",
+    "?? openspec/changes/independent-cache-max-editors/evidence/cache-budget-editors-final28/localappdata/",
+    "?? openspec/changes/independent-cache-max-editors/evidence/cache-budget-editors-final29/localappdata/",
+    "?? openspec/changes/independent-cache-max-editors/evidence/cache-budget-editors-final3/",
+    "?? openspec/changes/independent-cache-max-editors/evidence/cache-budget-editors-final30/localappdata/",
+    "?? openspec/changes/independent-cache-max-editors/evidence/cache-budget-editors-final4/",
+    "?? openspec/changes/independent-cache-max-editors/evidence/cache-budget-editors-final5/",
+    "?? openspec/changes/independent-cache-max-editors/evidence/cache-budget-editors-final6/localappdata/",
+    "?? openspec/changes/independent-cache-max-editors/evidence/cache-budget-editors-final7/localappdata/",
+    "?? openspec/changes/independent-cache-max-editors/evidence/cache-budget-editors-final8/localappdata/",
+    "?? openspec/changes/independent-cache-max-editors/evidence/cache-budget-editors-final9/localappdata/",
+    "?? openspec/changes/independent-cache-max-editors/evidence/cache-budget-editors-installed-final/localappdata/",
+    "?? openspec/changes/independent-cache-max-editors/evidence/cache-budget-editors-installed-partial-limit/",
+    "?? openspec/changes/independent-cache-max-editors/evidence/cache-budget-editors-installed-partial-limit2/localappdata/",
+    "?? openspec/changes/independent-cache-max-editors/evidence/cache-budget-editors-installed-representative/localappdata/",
+    "?? openspec/changes/independent-cache-max-editors/evidence/final-build/",
+    "?? openspec/changes/independent-cache-max-editors/evidence/folder-options-final-2/localappdata/",
+    "?? openspec/changes/independent-cache-max-editors/evidence/folder-options-final-2/runner.pid",
+    "?? openspec/changes/independent-cache-max-editors/evidence/folder-options-final-3/localappdata/",
+    "?? openspec/changes/independent-cache-max-editors/evidence/folder-options-final-3/runner.pid",
+    "?? openspec/changes/independent-cache-max-editors/evidence/folder-options-final-uitest/localappdata/",
+    "?? openspec/changes/independent-cache-max-editors/evidence/folder-options-final/localappdata/",
+    "?? openspec/changes/independent-cache-max-editors/evidence/folder-options-final/runner.pid",
+    "?? openspec/changes/independent-cache-max-editors/evidence/folder-options-headful-2/",
+    "?? openspec/changes/independent-cache-max-editors/evidence/folder-options-headful-3/localappdata/",
+    "?? openspec/changes/independent-cache-max-editors/evidence/folder-options-headful-3/runner.pid",
+    "?? openspec/changes/independent-cache-max-editors/evidence/folder-options-headful/",
+    "?? openspec/changes/independent-cache-max-editors/evidence/folder-options-installed-service/localappdata/",
+    "?? openspec/changes/independent-cache-max-editors/evidence/folder-options-post-mft/localappdata/",
+    "?? openspec/changes/independent-cache-max-editors/evidence/installed-partial-complete-20260814/",
+    "?? openspec/changes/independent-cache-max-editors/evidence/installed-partial-final-20260814/",
+    "?? openspec/changes/independent-cache-max-editors/evidence/installed-partial-inaccessible-20260814/",
+    "?? openspec/changes/independent-cache-max-editors/evidence/installed-partial-inaccessible-column-20260814/",
+    "?? openspec/changes/independent-cache-max-editors/evidence/installed-partial-inaccessible-dump-20260814/",
+    "?? openspec/changes/independent-cache-max-editors/evidence/installed-partial-inaccessible-parent-20260814/",
+    "?? openspec/changes/independent-cache-max-editors/evidence/installed-partial-trace-20260814/",
+    "?? openspec/changes/independent-cache-max-editors/evidence/release-partial-fixed-20260814/",
+    "?? openspec/changes/independent-cache-max-editors/evidence/release-partial-visible-20260814/aggregate-fixture/",
+    "?? openspec/changes/independent-cache-max-editors/evidence/release-partial-visible-20260814/profile/",
+    "?? openspec/changes/independent-cache-max-editors/evidence/size-map-installed-partial/profile/",
+    "?? openspec/changes/independent-cache-max-editors/evidence/size-map-installed-partial2/profile/",
+    "?? openspec/changes/refine-cache-telemetry-availability/evidence/folder-options/localappdata/",
+    "?? openspec/changes/refine-cache-telemetry-availability/evidence/installed/localappdata/",
+    "?? openspec/changes/refine-cache-telemetry-availability/evidence/telemetry/localappdata/",
+    "?? openspec/changes/separate-lua-rust-code-lines-columns/evidence/headful-final/isolated-app/",
+    "?? openspec/changes/separate-lua-rust-code-lines-columns/evidence/headful-final/profile/",
+    "?? openspec/changes/separate-lua-rust-code-lines-columns/evidence/headful-pass2/isolated-app/",
+    "?? openspec/changes/separate-lua-rust-code-lines-columns/evidence/headful-pass2/profile/",
+    "?? openspec/changes/separate-lua-rust-code-lines-columns/evidence/headful-pass3/isolated-app/",
+    "?? openspec/changes/separate-lua-rust-code-lines-columns/evidence/headful-pass3/profile/",
+    "?? openspec/changes/separate-lua-rust-code-lines-columns/evidence/headful/isolated-app/",
+    "?? openspec/changes/separate-lua-rust-code-lines-columns/evidence/headful/profile/",
+    "?? openspec/changes/support-remote-soft-link-navigation/",
+    "?? sdk/fixtures/lua-bulk-folder-generator/dist/",
+    "?? sdk/fixtures/lua-tokei-code-lines-column/dist/",
+    "?? sdk/fixtures/rust-7z-virtual-folder/dist/",
+    "?? sdk/fixtures/rust-exif-rename-command/dist/",
+    "?? sdk/fixtures/rust-folder-size-map-view/dist/",
+    "?? sdk/fixtures/rust-folder-size-visual-column/dist/",
+    "?? sdk/fixtures/rust-lock-owner-column/dist/",
+    "?? sdk/fixtures/rust-tokei-code-lines-column/dist/"
+  ],
+  "canonical_unsafe_count": 116,
+  "emitted_unsafe_count": 215,
+  "unsafe_locations": [
+    {
+      "id": "UCG-0001",
+      "file": "crates/explorer-app/src/application.rs",
+      "line": 2744,
+      "column": 5,
+      "message": "usage of an `unsafe extern` block",
+      "targets": [
+        "explorer_app"
+      ],
+      "diagnostic_count": 1,
+      "disposition": "expected-reviewed",
+      "expectation_reason": "Concrete boundary-specific reason is recorded in the adjacent source expectation",
+      "safety_review": "passed: pointer, buffer, handle, ownership, error, and ABI invariants reviewed as applicable"
+    },
+    {
+      "id": "UCG-0002",
+      "file": "crates/explorer-app/src/application.rs",
+      "line": 2757,
+      "column": 8,
+      "message": "usage of an `unsafe` block",
+      "targets": [
+        "explorer_app"
+      ],
+      "diagnostic_count": 1,
+      "disposition": "expected-reviewed",
+      "expectation_reason": "Concrete boundary-specific reason is recorded in the adjacent source expectation",
+      "safety_review": "passed: pointer, buffer, handle, ownership, error, and ABI invariants reviewed as applicable"
+    },
+    {
+      "id": "UCG-0003",
+      "file": "crates/explorer-app/src/application.rs",
+      "line": 3922,
+      "column": 5,
+      "message": "usage of an `unsafe` block",
+      "targets": [
+        "explorer_app"
+      ],
+      "diagnostic_count": 1,
+      "disposition": "expected-reviewed",
+      "expectation_reason": "Concrete boundary-specific reason is recorded in the adjacent source expectation",
+      "safety_review": "passed: pointer, buffer, handle, ownership, error, and ABI invariants reviewed as applicable"
+    },
+    {
+      "id": "UCG-0004",
+      "file": "crates/explorer-app/src/bin/mft_service.rs",
+      "line": 164,
+      "column": 21,
+      "message": "usage of an `unsafe` block",
+      "targets": [
+        "superexplorer-mft-service"
+      ],
+      "diagnostic_count": 1,
+      "disposition": "expected-reviewed",
+      "expectation_reason": "Concrete boundary-specific reason is recorded in the adjacent source expectation",
+      "safety_review": "passed: pointer, buffer, handle, ownership, error, and ABI invariants reviewed as applicable"
+    },
+    {
+      "id": "UCG-0005",
+      "file": "crates/explorer-app/src/bin/mft_service.rs",
+      "line": 178,
+      "column": 5,
+      "message": "usage of an `unsafe` block",
+      "targets": [
+        "superexplorer-mft-service"
+      ],
+      "diagnostic_count": 1,
+      "disposition": "expected-reviewed",
+      "expectation_reason": "Concrete boundary-specific reason is recorded in the adjacent source expectation",
+      "safety_review": "passed: pointer, buffer, handle, ownership, error, and ABI invariants reviewed as applicable"
+    },
+    {
+      "id": "UCG-0006",
+      "file": "crates/explorer-app/src/bin/mft_service.rs",
+      "line": 204,
+      "column": 9,
+      "message": "usage of an `unsafe` block",
+      "targets": [
+        "superexplorer-mft-service"
+      ],
+      "diagnostic_count": 1,
+      "disposition": "expected-reviewed",
+      "expectation_reason": "Concrete boundary-specific reason is recorded in the adjacent source expectation",
+      "safety_review": "passed: pointer, buffer, handle, ownership, error, and ABI invariants reviewed as applicable"
+    },
+    {
+      "id": "UCG-0007",
+      "file": "crates/explorer-app/src/bin/mft_service.rs",
+      "line": 219,
+      "column": 13,
+      "message": "usage of an `unsafe` block",
+      "targets": [
+        "superexplorer-mft-service"
+      ],
+      "diagnostic_count": 1,
+      "disposition": "expected-reviewed",
+      "expectation_reason": "Concrete boundary-specific reason is recorded in the adjacent source expectation",
+      "safety_review": "passed: pointer, buffer, handle, ownership, error, and ABI invariants reviewed as applicable"
+    },
+    {
+      "id": "UCG-0008",
+      "file": "crates/explorer-app/src/bin/mft_service.rs",
+      "line": 224,
+      "column": 5,
+      "message": "usage of an `unsafe` block",
+      "targets": [
+        "superexplorer-mft-service"
+      ],
+      "diagnostic_count": 1,
+      "disposition": "expected-reviewed",
+      "expectation_reason": "Concrete boundary-specific reason is recorded in the adjacent source expectation",
+      "safety_review": "passed: pointer, buffer, handle, ownership, error, and ABI invariants reviewed as applicable"
+    },
+    {
+      "id": "UCG-0009",
+      "file": "crates/explorer-app/src/bin/mft_service.rs",
+      "line": 239,
+      "column": 5,
+      "message": "usage of an `unsafe` block",
+      "targets": [
+        "superexplorer-mft-service"
+      ],
+      "diagnostic_count": 1,
+      "disposition": "expected-reviewed",
+      "expectation_reason": "Concrete boundary-specific reason is recorded in the adjacent source expectation",
+      "safety_review": "passed: pointer, buffer, handle, ownership, error, and ABI invariants reviewed as applicable"
+    },
+    {
+      "id": "UCG-0010",
+      "file": "crates/explorer-app/src/bin/mft_service.rs",
+      "line": 241,
+      "column": 19,
+      "message": "usage of an `unsafe` block",
+      "targets": [
+        "superexplorer-mft-service"
+      ],
+      "diagnostic_count": 1,
+      "disposition": "expected-reviewed",
+      "expectation_reason": "Concrete boundary-specific reason is recorded in the adjacent source expectation",
+      "safety_review": "passed: pointer, buffer, handle, ownership, error, and ABI invariants reviewed as applicable"
+    },
+    {
+      "id": "UCG-0011",
+      "file": "crates/explorer-app/src/bin/mft_service.rs",
+      "line": 247,
+      "column": 5,
+      "message": "usage of an `unsafe` block",
+      "targets": [
+        "superexplorer-mft-service"
+      ],
+      "diagnostic_count": 1,
+      "disposition": "expected-reviewed",
+      "expectation_reason": "Concrete boundary-specific reason is recorded in the adjacent source expectation",
+      "safety_review": "passed: pointer, buffer, handle, ownership, error, and ABI invariants reviewed as applicable"
+    },
+    {
+      "id": "UCG-0012",
+      "file": "crates/explorer-app/src/bin/mft_service.rs",
+      "line": 248,
+      "column": 26,
+      "message": "usage of an `unsafe` block",
+      "targets": [
+        "superexplorer-mft-service"
+      ],
+      "diagnostic_count": 1,
+      "disposition": "expected-reviewed",
+      "expectation_reason": "Concrete boundary-specific reason is recorded in the adjacent source expectation",
+      "safety_review": "passed: pointer, buffer, handle, ownership, error, and ABI invariants reviewed as applicable"
+    },
+    {
+      "id": "UCG-0013",
+      "file": "crates/explorer-app/src/bin/mft_service.rs",
+      "line": 254,
+      "column": 5,
+      "message": "usage of an `unsafe` block",
+      "targets": [
+        "superexplorer-mft-service"
+      ],
+      "diagnostic_count": 1,
+      "disposition": "expected-reviewed",
+      "expectation_reason": "Concrete boundary-specific reason is recorded in the adjacent source expectation",
+      "safety_review": "passed: pointer, buffer, handle, ownership, error, and ABI invariants reviewed as applicable"
+    },
+    {
+      "id": "UCG-0014",
+      "file": "crates/explorer-app/src/bin/mft_service.rs",
+      "line": 258,
+      "column": 5,
+      "message": "usage of an `unsafe` block",
+      "targets": [
+        "superexplorer-mft-service"
+      ],
+      "diagnostic_count": 1,
+      "disposition": "expected-reviewed",
+      "expectation_reason": "Concrete boundary-specific reason is recorded in the adjacent source expectation",
+      "safety_review": "passed: pointer, buffer, handle, ownership, error, and ABI invariants reviewed as applicable"
+    },
+    {
+      "id": "UCG-0015",
+      "file": "crates/explorer-app/src/bin/mft_service.rs",
+      "line": 263,
+      "column": 23,
+      "message": "usage of an `unsafe` block",
+      "targets": [
+        "superexplorer-mft-service"
+      ],
+      "diagnostic_count": 1,
+      "disposition": "expected-reviewed",
+      "expectation_reason": "Concrete boundary-specific reason is recorded in the adjacent source expectation",
+      "safety_review": "passed: pointer, buffer, handle, ownership, error, and ABI invariants reviewed as applicable"
+    },
+    {
+      "id": "UCG-0016",
+      "file": "crates/explorer-app/src/bin/mft_service.rs",
+      "line": 264,
+      "column": 23,
+      "message": "usage of an `unsafe` block",
+      "targets": [
+        "superexplorer-mft-service"
+      ],
+      "diagnostic_count": 1,
+      "disposition": "expected-reviewed",
+      "expectation_reason": "Concrete boundary-specific reason is recorded in the adjacent source expectation",
+      "safety_review": "passed: pointer, buffer, handle, ownership, error, and ABI invariants reviewed as applicable"
+    },
+    {
+      "id": "UCG-0017",
+      "file": "crates/explorer-app/src/bin/mft_service.rs",
+      "line": 265,
+      "column": 5,
+      "message": "usage of an `unsafe` block",
+      "targets": [
+        "superexplorer-mft-service"
+      ],
+      "diagnostic_count": 1,
+      "disposition": "expected-reviewed",
+      "expectation_reason": "Concrete boundary-specific reason is recorded in the adjacent source expectation",
+      "safety_review": "passed: pointer, buffer, handle, ownership, error, and ABI invariants reviewed as applicable"
+    },
+    {
+      "id": "UCG-0018",
+      "file": "crates/explorer-app/src/bin/mft_service.rs",
+      "line": 270,
+      "column": 5,
+      "message": "usage of an `unsafe` block",
+      "targets": [
+        "superexplorer-mft-service"
+      ],
+      "diagnostic_count": 1,
+      "disposition": "expected-reviewed",
+      "expectation_reason": "Concrete boundary-specific reason is recorded in the adjacent source expectation",
+      "safety_review": "passed: pointer, buffer, handle, ownership, error, and ABI invariants reviewed as applicable"
+    },
+    {
+      "id": "UCG-0019",
+      "file": "crates/explorer-app/src/bin/mft_service.rs",
+      "line": 329,
+      "column": 1,
+      "message": "usage of an `unsafe extern` block",
+      "targets": [
+        "superexplorer-mft-service"
+      ],
+      "diagnostic_count": 1,
+      "disposition": "expected-reviewed",
+      "expectation_reason": "Concrete boundary-specific reason is recorded in the adjacent source expectation",
+      "safety_review": "passed: pointer, buffer, handle, ownership, error, and ABI invariants reviewed as applicable"
+    },
+    {
+      "id": "UCG-0020",
+      "file": "crates/explorer-app/src/bin/mft_service.rs",
+      "line": 342,
+      "column": 1,
+      "message": "declaration of an `unsafe` function",
+      "targets": [
+        "superexplorer-mft-service"
+      ],
+      "diagnostic_count": 1,
+      "disposition": "expected-reviewed",
+      "expectation_reason": "Concrete boundary-specific reason is recorded in the adjacent source expectation",
+      "safety_review": "passed: pointer, buffer, handle, ownership, error, and ABI invariants reviewed as applicable"
+    },
+    {
+      "id": "UCG-0021",
+      "file": "crates/explorer-app/src/bin/mft_service.rs",
+      "line": 349,
+      "column": 1,
+      "message": "declaration of an `unsafe` function",
+      "targets": [
+        "superexplorer-mft-service"
+      ],
+      "diagnostic_count": 1,
+      "disposition": "expected-reviewed",
+      "expectation_reason": "Concrete boundary-specific reason is recorded in the adjacent source expectation",
+      "safety_review": "passed: pointer, buffer, handle, ownership, error, and ABI invariants reviewed as applicable"
+    },
+    {
+      "id": "UCG-0022",
+      "file": "crates/explorer-app/src/bin/mft_service.rs",
+      "line": 352,
+      "column": 18,
+      "message": "usage of an `unsafe` block",
+      "targets": [
+        "superexplorer-mft-service"
+      ],
+      "diagnostic_count": 1,
+      "disposition": "expected-reviewed",
+      "expectation_reason": "Concrete boundary-specific reason is recorded in the adjacent source expectation",
+      "safety_review": "passed: pointer, buffer, handle, ownership, error, and ABI invariants reviewed as applicable"
+    },
+    {
+      "id": "UCG-0023",
+      "file": "crates/explorer-app/src/bin/mft_service.rs",
+      "line": 377,
+      "column": 13,
+      "message": "usage of an `unsafe` block",
+      "targets": [
+        "superexplorer-mft-service"
+      ],
+      "diagnostic_count": 1,
+      "disposition": "expected-reviewed",
+      "expectation_reason": "Concrete boundary-specific reason is recorded in the adjacent source expectation",
+      "safety_review": "passed: pointer, buffer, handle, ownership, error, and ABI invariants reviewed as applicable"
+    },
+    {
+      "id": "UCG-0024",
+      "file": "crates/explorer-app/src/bin/mft_service.rs",
+      "line": 1320,
+      "column": 34,
+      "message": "usage of an `unsafe` block",
+      "targets": [
+        "superexplorer-mft-service"
+      ],
+      "diagnostic_count": 1,
+      "disposition": "expected-reviewed",
+      "expectation_reason": "Concrete boundary-specific reason is recorded in the adjacent source expectation",
+      "safety_review": "passed: pointer, buffer, handle, ownership, error, and ABI invariants reviewed as applicable"
+    },
+    {
+      "id": "UCG-0025",
+      "file": "crates/explorer-app/src/bin/mft_service.rs",
+      "line": 1323,
+      "column": 35,
+      "message": "usage of an `unsafe` block",
+      "targets": [
+        "superexplorer-mft-service"
+      ],
+      "diagnostic_count": 1,
+      "disposition": "expected-reviewed",
+      "expectation_reason": "Concrete boundary-specific reason is recorded in the adjacent source expectation",
+      "safety_review": "passed: pointer, buffer, handle, ownership, error, and ABI invariants reviewed as applicable"
+    },
+    {
+      "id": "UCG-0026",
+      "file": "crates/explorer-app/src/bin/mft_service.rs",
+      "line": 2880,
+      "column": 5,
+      "message": "usage of an `unsafe` block",
+      "targets": [
+        "superexplorer-mft-service"
+      ],
+      "diagnostic_count": 1,
+      "disposition": "expected-reviewed",
+      "expectation_reason": "Concrete boundary-specific reason is recorded in the adjacent source expectation",
+      "safety_review": "passed: pointer, buffer, handle, ownership, error, and ABI invariants reviewed as applicable"
+    },
+    {
+      "id": "UCG-0027",
+      "file": "crates/explorer-app/src/bin/mft_service.rs",
+      "line": 5937,
+      "column": 8,
+      "message": "usage of an `unsafe` block",
+      "targets": [
+        "superexplorer-mft-service"
+      ],
+      "diagnostic_count": 1,
+      "disposition": "expected-reviewed",
+      "expectation_reason": "Concrete boundary-specific reason is recorded in the adjacent source expectation",
+      "safety_review": "passed: pointer, buffer, handle, ownership, error, and ABI invariants reviewed as applicable"
+    },
+    {
+      "id": "UCG-0028",
+      "file": "crates/explorer-app/src/brokered_service.rs",
+      "line": 296,
+      "column": 18,
+      "message": "usage of an `unsafe` block",
+      "targets": [
+        "explorer_app"
+      ],
+      "diagnostic_count": 1,
+      "disposition": "expected-reviewed",
+      "expectation_reason": "Concrete boundary-specific reason is recorded in the adjacent source expectation",
+      "safety_review": "passed: pointer, buffer, handle, ownership, error, and ABI invariants reviewed as applicable"
+    },
+    {
+      "id": "UCG-0029",
+      "file": "crates/explorer-app/src/main.rs",
+      "line": 26,
+      "column": 1,
+      "message": "usage of an `unsafe extern` block",
+      "targets": [
+        "SuperExplorer"
+      ],
+      "diagnostic_count": 1,
+      "disposition": "expected-reviewed",
+      "expectation_reason": "Concrete boundary-specific reason is recorded in the adjacent source expectation",
+      "safety_review": "passed: pointer, buffer, handle, ownership, error, and ABI invariants reviewed as applicable"
+    },
+    {
+      "id": "UCG-0030",
+      "file": "crates/explorer-app/src/main.rs",
+      "line": 36,
+      "column": 17,
+      "message": "usage of an `unsafe` block",
+      "targets": [
+        "SuperExplorer"
+      ],
+      "diagnostic_count": 1,
+      "disposition": "expected-reviewed",
+      "expectation_reason": "Concrete boundary-specific reason is recorded in the adjacent source expectation",
+      "safety_review": "passed: pointer, buffer, handle, ownership, error, and ABI invariants reviewed as applicable"
+    },
+    {
+      "id": "UCG-0031",
+      "file": "crates/explorer-app/src/mft_focus.rs",
+      "line": 149,
+      "column": 1,
+      "message": "usage of an `unsafe extern` block",
+      "targets": [
+        "explorer_app",
+        "superexplorer-mft-service"
+      ],
+      "diagnostic_count": 2,
+      "disposition": "expected-reviewed",
+      "expectation_reason": "Concrete boundary-specific reason is recorded in the adjacent source expectation",
+      "safety_review": "passed: pointer, buffer, handle, ownership, error, and ABI invariants reviewed as applicable"
+    },
+    {
+      "id": "UCG-0032",
+      "file": "crates/explorer-app/src/mft_focus.rs",
+      "line": 310,
+      "column": 13,
+      "message": "usage of an `unsafe` block",
+      "targets": [
+        "explorer_app",
+        "superexplorer-mft-service"
+      ],
+      "diagnostic_count": 2,
+      "disposition": "expected-reviewed",
+      "expectation_reason": "Concrete boundary-specific reason is recorded in the adjacent source expectation",
+      "safety_review": "passed: pointer, buffer, handle, ownership, error, and ABI invariants reviewed as applicable"
+    },
+    {
+      "id": "UCG-0033",
+      "file": "crates/explorer-app/src/mft_focus.rs",
+      "line": 311,
+      "column": 18,
+      "message": "usage of an `unsafe` block",
+      "targets": [
+        "explorer_app",
+        "superexplorer-mft-service"
+      ],
+      "diagnostic_count": 2,
+      "disposition": "expected-reviewed",
+      "expectation_reason": "Concrete boundary-specific reason is recorded in the adjacent source expectation",
+      "safety_review": "passed: pointer, buffer, handle, ownership, error, and ABI invariants reviewed as applicable"
+    },
+    {
+      "id": "UCG-0034",
+      "file": "crates/explorer-app/src/mft_focus.rs",
+      "line": 324,
+      "column": 65,
+      "message": "usage of an `unsafe` block",
+      "targets": [
+        "explorer_app",
+        "superexplorer-mft-service"
+      ],
+      "diagnostic_count": 2,
+      "disposition": "expected-reviewed",
+      "expectation_reason": "Concrete boundary-specific reason is recorded in the adjacent source expectation",
+      "safety_review": "passed: pointer, buffer, handle, ownership, error, and ABI invariants reviewed as applicable"
+    },
+    {
+      "id": "UCG-0035",
+      "file": "crates/explorer-app/src/mft_focus.rs",
+      "line": 344,
+      "column": 1,
+      "message": "usage of an `unsafe extern` block",
+      "targets": [
+        "explorer_app",
+        "superexplorer-mft-service"
+      ],
+      "diagnostic_count": 2,
+      "disposition": "expected-reviewed",
+      "expectation_reason": "Concrete boundary-specific reason is recorded in the adjacent source expectation",
+      "safety_review": "passed: pointer, buffer, handle, ownership, error, and ABI invariants reviewed as applicable"
+    },
+    {
+      "id": "UCG-0036",
+      "file": "crates/explorer-app/src/mft_focus.rs",
+      "line": 355,
+      "column": 1,
+      "message": "usage of an `unsafe extern` block",
+      "targets": [
+        "explorer_app",
+        "superexplorer-mft-service"
+      ],
+      "diagnostic_count": 2,
+      "disposition": "expected-reviewed",
+      "expectation_reason": "Concrete boundary-specific reason is recorded in the adjacent source expectation",
+      "safety_review": "passed: pointer, buffer, handle, ownership, error, and ABI invariants reviewed as applicable"
+    },
+    {
+      "id": "UCG-0037",
+      "file": "crates/explorer-app/src/mft_focus.rs",
+      "line": 366,
+      "column": 21,
+      "message": "usage of an `unsafe` block",
+      "targets": [
+        "explorer_app",
+        "superexplorer-mft-service"
+      ],
+      "diagnostic_count": 2,
+      "disposition": "expected-reviewed",
+      "expectation_reason": "Concrete boundary-specific reason is recorded in the adjacent source expectation",
+      "safety_review": "passed: pointer, buffer, handle, ownership, error, and ABI invariants reviewed as applicable"
+    },
+    {
+      "id": "UCG-0038",
+      "file": "crates/explorer-app/src/mft_focus.rs",
+      "line": 378,
+      "column": 21,
+      "message": "usage of an `unsafe` block",
+      "targets": [
+        "explorer_app",
+        "superexplorer-mft-service"
+      ],
+      "diagnostic_count": 2,
+      "disposition": "expected-reviewed",
+      "expectation_reason": "Concrete boundary-specific reason is recorded in the adjacent source expectation",
+      "safety_review": "passed: pointer, buffer, handle, ownership, error, and ABI invariants reviewed as applicable"
+    },
+    {
+      "id": "UCG-0039",
+      "file": "crates/explorer-app/src/mft_focus.rs",
+      "line": 402,
+      "column": 8,
+      "message": "usage of an `unsafe` block",
+      "targets": [
+        "explorer_app",
+        "superexplorer-mft-service"
+      ],
+      "diagnostic_count": 2,
+      "disposition": "expected-reviewed",
+      "expectation_reason": "Concrete boundary-specific reason is recorded in the adjacent source expectation",
+      "safety_review": "passed: pointer, buffer, handle, ownership, error, and ABI invariants reviewed as applicable"
+    },
+    {
+      "id": "UCG-0040",
+      "file": "crates/explorer-app/src/mft_focus.rs",
+      "line": 434,
+      "column": 19,
+      "message": "usage of an `unsafe` block",
+      "targets": [
+        "explorer_app",
+        "superexplorer-mft-service"
+      ],
+      "diagnostic_count": 2,
+      "disposition": "expected-reviewed",
+      "expectation_reason": "Concrete boundary-specific reason is recorded in the adjacent source expectation",
+      "safety_review": "passed: pointer, buffer, handle, ownership, error, and ABI invariants reviewed as applicable"
+    },
+    {
+      "id": "UCG-0041",
+      "file": "crates/explorer-app/src/mft_focus.rs",
+      "line": 481,
+      "column": 17,
+      "message": "usage of an `unsafe` block",
+      "targets": [
+        "explorer_app",
+        "superexplorer-mft-service"
+      ],
+      "diagnostic_count": 2,
+      "disposition": "expected-reviewed",
+      "expectation_reason": "Concrete boundary-specific reason is recorded in the adjacent source expectation",
+      "safety_review": "passed: pointer, buffer, handle, ownership, error, and ABI invariants reviewed as applicable"
+    },
+    {
+      "id": "UCG-0042",
+      "file": "crates/explorer-app/src/mft_focus.rs",
+      "line": 516,
+      "column": 13,
+      "message": "usage of an `unsafe` block",
+      "targets": [
+        "explorer_app",
+        "superexplorer-mft-service"
+      ],
+      "diagnostic_count": 2,
+      "disposition": "expected-reviewed",
+      "expectation_reason": "Concrete boundary-specific reason is recorded in the adjacent source expectation",
+      "safety_review": "passed: pointer, buffer, handle, ownership, error, and ABI invariants reviewed as applicable"
+    },
+    {
+      "id": "UCG-0043",
+      "file": "crates/explorer-app/src/mft_focus.rs",
+      "line": 535,
+      "column": 39,
+      "message": "usage of an `unsafe` block",
+      "targets": [
+        "explorer_app",
+        "superexplorer-mft-service"
+      ],
+      "diagnostic_count": 2,
+      "disposition": "expected-reviewed",
+      "expectation_reason": "Concrete boundary-specific reason is recorded in the adjacent source expectation",
+      "safety_review": "passed: pointer, buffer, handle, ownership, error, and ABI invariants reviewed as applicable"
+    },
+    {
+      "id": "UCG-0044",
+      "file": "crates/explorer-app/src/mft_focus.rs",
+      "line": 561,
+      "column": 39,
+      "message": "usage of an `unsafe` block",
+      "targets": [
+        "explorer_app",
+        "superexplorer-mft-service"
+      ],
+      "diagnostic_count": 2,
+      "disposition": "expected-reviewed",
+      "expectation_reason": "Concrete boundary-specific reason is recorded in the adjacent source expectation",
+      "safety_review": "passed: pointer, buffer, handle, ownership, error, and ABI invariants reviewed as applicable"
+    },
+    {
+      "id": "UCG-0045",
+      "file": "crates/explorer-app/src/mft_focus.rs",
+      "line": 582,
+      "column": 9,
+      "message": "usage of an `unsafe` block",
+      "targets": [
+        "explorer_app",
+        "superexplorer-mft-service"
+      ],
+      "diagnostic_count": 2,
+      "disposition": "expected-reviewed",
+      "expectation_reason": "Concrete boundary-specific reason is recorded in the adjacent source expectation",
+      "safety_review": "passed: pointer, buffer, handle, ownership, error, and ABI invariants reviewed as applicable"
+    },
+    {
+      "id": "UCG-0046",
+      "file": "crates/explorer-app/src/mft_focus.rs",
+      "line": 588,
+      "column": 14,
+      "message": "usage of an `unsafe` block",
+      "targets": [
+        "explorer_app",
+        "superexplorer-mft-service"
+      ],
+      "diagnostic_count": 2,
+      "disposition": "expected-reviewed",
+      "expectation_reason": "Concrete boundary-specific reason is recorded in the adjacent source expectation",
+      "safety_review": "passed: pointer, buffer, handle, ownership, error, and ABI invariants reviewed as applicable"
+    },
+    {
+      "id": "UCG-0047",
+      "file": "crates/explorer-app/src/mft_focus.rs",
+      "line": 592,
+      "column": 17,
+      "message": "usage of an `unsafe` block",
+      "targets": [
+        "explorer_app",
+        "superexplorer-mft-service"
+      ],
+      "diagnostic_count": 2,
+      "disposition": "expected-reviewed",
+      "expectation_reason": "Concrete boundary-specific reason is recorded in the adjacent source expectation",
+      "safety_review": "passed: pointer, buffer, handle, ownership, error, and ABI invariants reviewed as applicable"
+    },
+    {
+      "id": "UCG-0048",
+      "file": "crates/explorer-app/src/mft_focus.rs",
+      "line": 614,
+      "column": 17,
+      "message": "usage of an `unsafe` block",
+      "targets": [
+        "explorer_app",
+        "superexplorer-mft-service"
+      ],
+      "diagnostic_count": 2,
+      "disposition": "expected-reviewed",
+      "expectation_reason": "Concrete boundary-specific reason is recorded in the adjacent source expectation",
+      "safety_review": "passed: pointer, buffer, handle, ownership, error, and ABI invariants reviewed as applicable"
+    },
+    {
+      "id": "UCG-0049",
+      "file": "crates/explorer-app/src/mft_focus.rs",
+      "line": 626,
+      "column": 9,
+      "message": "usage of an `unsafe` block",
+      "targets": [
+        "explorer_app",
+        "superexplorer-mft-service"
+      ],
+      "diagnostic_count": 2,
+      "disposition": "expected-reviewed",
+      "expectation_reason": "Concrete boundary-specific reason is recorded in the adjacent source expectation",
+      "safety_review": "passed: pointer, buffer, handle, ownership, error, and ABI invariants reviewed as applicable"
+    },
+    {
+      "id": "UCG-0050",
+      "file": "crates/explorer-app/src/mft_focus.rs",
+      "line": 637,
+      "column": 17,
+      "message": "usage of an `unsafe` block",
+      "targets": [
+        "explorer_app",
+        "superexplorer-mft-service"
+      ],
+      "diagnostic_count": 2,
+      "disposition": "expected-reviewed",
+      "expectation_reason": "Concrete boundary-specific reason is recorded in the adjacent source expectation",
+      "safety_review": "passed: pointer, buffer, handle, ownership, error, and ABI invariants reviewed as applicable"
+    },
+    {
+      "id": "UCG-0051",
+      "file": "crates/explorer-app/src/mft_focus.rs",
+      "line": 654,
+      "column": 17,
+      "message": "usage of an `unsafe` block",
+      "targets": [
+        "explorer_app",
+        "superexplorer-mft-service"
+      ],
+      "diagnostic_count": 2,
+      "disposition": "expected-reviewed",
+      "expectation_reason": "Concrete boundary-specific reason is recorded in the adjacent source expectation",
+      "safety_review": "passed: pointer, buffer, handle, ownership, error, and ABI invariants reviewed as applicable"
+    },
+    {
+      "id": "UCG-0052",
+      "file": "crates/explorer-app/src/mft_focus.rs",
+      "line": 656,
+      "column": 21,
+      "message": "usage of an `unsafe` block",
+      "targets": [
+        "explorer_app",
+        "superexplorer-mft-service"
+      ],
+      "diagnostic_count": 2,
+      "disposition": "expected-reviewed",
+      "expectation_reason": "Concrete boundary-specific reason is recorded in the adjacent source expectation",
+      "safety_review": "passed: pointer, buffer, handle, ownership, error, and ABI invariants reviewed as applicable"
+    },
+    {
+      "id": "UCG-0053",
+      "file": "crates/explorer-app/src/mft_focus.rs",
+      "line": 666,
+      "column": 12,
+      "message": "usage of an `unsafe` block",
+      "targets": [
+        "explorer_app",
+        "superexplorer-mft-service"
+      ],
+      "diagnostic_count": 2,
+      "disposition": "expected-reviewed",
+      "expectation_reason": "Concrete boundary-specific reason is recorded in the adjacent source expectation",
+      "safety_review": "passed: pointer, buffer, handle, ownership, error, and ABI invariants reviewed as applicable"
+    },
+    {
+      "id": "UCG-0054",
+      "file": "crates/explorer-app/src/mft_focus.rs",
+      "line": 668,
+      "column": 13,
+      "message": "usage of an `unsafe` block",
+      "targets": [
+        "explorer_app",
+        "superexplorer-mft-service"
+      ],
+      "diagnostic_count": 2,
+      "disposition": "expected-reviewed",
+      "expectation_reason": "Concrete boundary-specific reason is recorded in the adjacent source expectation",
+      "safety_review": "passed: pointer, buffer, handle, ownership, error, and ABI invariants reviewed as applicable"
+    },
+    {
+      "id": "UCG-0055",
+      "file": "crates/explorer-app/src/mft_journal.rs",
+      "line": 185,
+      "column": 17,
+      "message": "usage of an `unsafe` block",
+      "targets": [
+        "explorer_app",
+        "superexplorer-mft-helper",
+        "superexplorer-mft-service"
+      ],
+      "diagnostic_count": 3,
+      "disposition": "expected-reviewed",
+      "expectation_reason": "Concrete boundary-specific reason is recorded in the adjacent source expectation",
+      "safety_review": "passed: pointer, buffer, handle, ownership, error, and ABI invariants reviewed as applicable"
+    },
+    {
+      "id": "UCG-0056",
+      "file": "crates/explorer-app/src/mft_journal.rs",
+      "line": 196,
+      "column": 18,
+      "message": "usage of an `unsafe` block",
+      "targets": [
+        "explorer_app",
+        "superexplorer-mft-helper",
+        "superexplorer-mft-service"
+      ],
+      "diagnostic_count": 3,
+      "disposition": "expected-reviewed",
+      "expectation_reason": "Concrete boundary-specific reason is recorded in the adjacent source expectation",
+      "safety_review": "passed: pointer, buffer, handle, ownership, error, and ABI invariants reviewed as applicable"
+    },
+    {
+      "id": "UCG-0057",
+      "file": "crates/explorer-app/src/mft_journal.rs",
+      "line": 220,
+      "column": 5,
+      "message": "usage of an `unsafe` block",
+      "targets": [
+        "explorer_app",
+        "superexplorer-mft-helper",
+        "superexplorer-mft-service"
+      ],
+      "diagnostic_count": 3,
+      "disposition": "expected-reviewed",
+      "expectation_reason": "Concrete boundary-specific reason is recorded in the adjacent source expectation",
+      "safety_review": "passed: pointer, buffer, handle, ownership, error, and ABI invariants reviewed as applicable"
+    },
+    {
+      "id": "UCG-0058",
+      "file": "crates/explorer-app/src/mft_journal.rs",
+      "line": 259,
+      "column": 17,
+      "message": "usage of an `unsafe` block",
+      "targets": [
+        "explorer_app",
+        "superexplorer-mft-helper",
+        "superexplorer-mft-service"
+      ],
+      "diagnostic_count": 3,
+      "disposition": "expected-reviewed",
+      "expectation_reason": "Concrete boundary-specific reason is recorded in the adjacent source expectation",
+      "safety_review": "passed: pointer, buffer, handle, ownership, error, and ABI invariants reviewed as applicable"
+    },
+    {
+      "id": "UCG-0059",
+      "file": "crates/explorer-app/src/mft_journal.rs",
+      "line": 265,
+      "column": 21,
+      "message": "usage of an `unsafe` block",
+      "targets": [
+        "explorer_app",
+        "superexplorer-mft-helper",
+        "superexplorer-mft-service"
+      ],
+      "diagnostic_count": 3,
+      "disposition": "expected-reviewed",
+      "expectation_reason": "Concrete boundary-specific reason is recorded in the adjacent source expectation",
+      "safety_review": "passed: pointer, buffer, handle, ownership, error, and ABI invariants reviewed as applicable"
+    },
+    {
+      "id": "UCG-0060",
+      "file": "crates/explorer-app/src/mft_journal.rs",
+      "line": 282,
+      "column": 21,
+      "message": "usage of an `unsafe` block",
+      "targets": [
+        "explorer_app",
+        "superexplorer-mft-helper",
+        "superexplorer-mft-service"
+      ],
+      "diagnostic_count": 3,
+      "disposition": "expected-reviewed",
+      "expectation_reason": "Concrete boundary-specific reason is recorded in the adjacent source expectation",
+      "safety_review": "passed: pointer, buffer, handle, ownership, error, and ABI invariants reviewed as applicable"
+    },
+    {
+      "id": "UCG-0061",
+      "file": "crates/explorer-app/src/mft_journal.rs",
+      "line": 293,
+      "column": 17,
+      "message": "usage of an `unsafe` block",
+      "targets": [
+        "explorer_app",
+        "superexplorer-mft-helper",
+        "superexplorer-mft-service"
+      ],
+      "diagnostic_count": 3,
+      "disposition": "expected-reviewed",
+      "expectation_reason": "Concrete boundary-specific reason is recorded in the adjacent source expectation",
+      "safety_review": "passed: pointer, buffer, handle, ownership, error, and ABI invariants reviewed as applicable"
+    },
+    {
+      "id": "UCG-0062",
+      "file": "crates/explorer-app/src/mft_journal.rs",
+      "line": 294,
+      "column": 17,
+      "message": "usage of an `unsafe` block",
+      "targets": [
+        "explorer_app",
+        "superexplorer-mft-helper",
+        "superexplorer-mft-service"
+      ],
+      "diagnostic_count": 3,
+      "disposition": "expected-reviewed",
+      "expectation_reason": "Concrete boundary-specific reason is recorded in the adjacent source expectation",
+      "safety_review": "passed: pointer, buffer, handle, ownership, error, and ABI invariants reviewed as applicable"
+    },
+    {
+      "id": "UCG-0063",
+      "file": "crates/explorer-app/src/mft_migration.rs",
+      "line": 456,
+      "column": 5,
+      "message": "usage of an `unsafe extern` block",
+      "targets": [
+        "explorer_app",
+        "superexplorer-mft-service"
+      ],
+      "diagnostic_count": 2,
+      "disposition": "expected-reviewed",
+      "expectation_reason": "Concrete boundary-specific reason is recorded in the adjacent source expectation",
+      "safety_review": "passed: pointer, buffer, handle, ownership, error, and ABI invariants reviewed as applicable"
+    },
+    {
+      "id": "UCG-0064",
+      "file": "crates/explorer-app/src/mft_migration.rs",
+      "line": 463,
+      "column": 8,
+      "message": "usage of an `unsafe` block",
+      "targets": [
+        "explorer_app",
+        "superexplorer-mft-service"
+      ],
+      "diagnostic_count": 2,
+      "disposition": "expected-reviewed",
+      "expectation_reason": "Concrete boundary-specific reason is recorded in the adjacent source expectation",
+      "safety_review": "passed: pointer, buffer, handle, ownership, error, and ABI invariants reviewed as applicable"
+    },
+    {
+      "id": "UCG-0065",
+      "file": "crates/explorer-app/src/mft_migration.rs",
+      "line": 497,
+      "column": 5,
+      "message": "usage of an `unsafe extern` block",
+      "targets": [
+        "explorer_app",
+        "superexplorer-mft-service"
+      ],
+      "diagnostic_count": 2,
+      "disposition": "expected-reviewed",
+      "expectation_reason": "Concrete boundary-specific reason is recorded in the adjacent source expectation",
+      "safety_review": "passed: pointer, buffer, handle, ownership, error, and ABI invariants reviewed as applicable"
+    },
+    {
+      "id": "UCG-0066",
+      "file": "crates/explorer-app/src/mft_migration.rs",
+      "line": 506,
+      "column": 8,
+      "message": "usage of an `unsafe` block",
+      "targets": [
+        "explorer_app",
+        "superexplorer-mft-service"
+      ],
+      "diagnostic_count": 2,
+      "disposition": "expected-reviewed",
+      "expectation_reason": "Concrete boundary-specific reason is recorded in the adjacent source expectation",
+      "safety_review": "passed: pointer, buffer, handle, ownership, error, and ABI invariants reviewed as applicable"
+    },
+    {
+      "id": "UCG-0067",
+      "file": "crates/explorer-app/src/mft_migration.rs",
+      "line": 531,
+      "column": 5,
+      "message": "usage of an `unsafe extern` block",
+      "targets": [
+        "explorer_app",
+        "superexplorer-mft-service"
+      ],
+      "diagnostic_count": 2,
+      "disposition": "expected-reviewed",
+      "expectation_reason": "Concrete boundary-specific reason is recorded in the adjacent source expectation",
+      "safety_review": "passed: pointer, buffer, handle, ownership, error, and ABI invariants reviewed as applicable"
+    },
+    {
+      "id": "UCG-0068",
+      "file": "crates/explorer-app/src/mft_migration.rs",
+      "line": 557,
+      "column": 5,
+      "message": "usage of an `unsafe` block",
+      "targets": [
+        "explorer_app",
+        "superexplorer-mft-service"
+      ],
+      "diagnostic_count": 2,
+      "disposition": "expected-reviewed",
+      "expectation_reason": "Concrete boundary-specific reason is recorded in the adjacent source expectation",
+      "safety_review": "passed: pointer, buffer, handle, ownership, error, and ABI invariants reviewed as applicable"
+    },
+    {
+      "id": "UCG-0069",
+      "file": "crates/explorer-app/src/mft_migration.rs",
+      "line": 578,
+      "column": 8,
+      "message": "usage of an `unsafe` block",
+      "targets": [
+        "explorer_app",
+        "superexplorer-mft-service"
+      ],
+      "diagnostic_count": 2,
+      "disposition": "expected-reviewed",
+      "expectation_reason": "Concrete boundary-specific reason is recorded in the adjacent source expectation",
+      "safety_review": "passed: pointer, buffer, handle, ownership, error, and ABI invariants reviewed as applicable"
+    },
+    {
+      "id": "UCG-0070",
+      "file": "crates/explorer-app/src/mft_migration.rs",
+      "line": 600,
+      "column": 5,
+      "message": "usage of an `unsafe extern` block",
+      "targets": [
+        "explorer_app",
+        "superexplorer-mft-service"
+      ],
+      "diagnostic_count": 2,
+      "disposition": "expected-reviewed",
+      "expectation_reason": "Concrete boundary-specific reason is recorded in the adjacent source expectation",
+      "safety_review": "passed: pointer, buffer, handle, ownership, error, and ABI invariants reviewed as applicable"
+    },
+    {
+      "id": "UCG-0071",
+      "file": "crates/explorer-app/src/mft_migration.rs",
+      "line": 619,
+      "column": 8,
+      "message": "usage of an `unsafe` block",
+      "targets": [
+        "explorer_app",
+        "superexplorer-mft-service"
+      ],
+      "diagnostic_count": 2,
+      "disposition": "expected-reviewed",
+      "expectation_reason": "Concrete boundary-specific reason is recorded in the adjacent source expectation",
+      "safety_review": "passed: pointer, buffer, handle, ownership, error, and ABI invariants reviewed as applicable"
+    },
+    {
+      "id": "UCG-0072",
+      "file": "crates/explorer-app/src/mft_migration.rs",
+      "line": 703,
+      "column": 9,
+      "message": "usage of an `unsafe` block",
+      "targets": [
+        "explorer_app",
+        "superexplorer-mft-service"
+      ],
+      "diagnostic_count": 2,
+      "disposition": "expected-reviewed",
+      "expectation_reason": "Concrete boundary-specific reason is recorded in the adjacent source expectation",
+      "safety_review": "passed: pointer, buffer, handle, ownership, error, and ABI invariants reviewed as applicable"
+    },
+    {
+      "id": "UCG-0073",
+      "file": "crates/explorer-app/src/mft_query.rs",
+      "line": 167,
+      "column": 1,
+      "message": "usage of an `unsafe extern` block",
+      "targets": [
+        "explorer_app",
+        "superexplorer-mft-service"
+      ],
+      "diagnostic_count": 2,
+      "disposition": "expected-reviewed",
+      "expectation_reason": "Concrete boundary-specific reason is recorded in the adjacent source expectation",
+      "safety_review": "passed: pointer, buffer, handle, ownership, error, and ABI invariants reviewed as applicable"
+    },
+    {
+      "id": "UCG-0074",
+      "file": "crates/explorer-app/src/mft_query.rs",
+      "line": 218,
+      "column": 1,
+      "message": "usage of an `unsafe extern` block",
+      "targets": [
+        "explorer_app",
+        "superexplorer-mft-service"
+      ],
+      "diagnostic_count": 2,
+      "disposition": "expected-reviewed",
+      "expectation_reason": "Concrete boundary-specific reason is recorded in the adjacent source expectation",
+      "safety_review": "passed: pointer, buffer, handle, ownership, error, and ABI invariants reviewed as applicable"
+    },
+    {
+      "id": "UCG-0075",
+      "file": "crates/explorer-app/src/mft_query.rs",
+      "line": 231,
+      "column": 21,
+      "message": "usage of an `unsafe` block",
+      "targets": [
+        "explorer_app",
+        "superexplorer-mft-service"
+      ],
+      "diagnostic_count": 2,
+      "disposition": "expected-reviewed",
+      "expectation_reason": "Concrete boundary-specific reason is recorded in the adjacent source expectation",
+      "safety_review": "passed: pointer, buffer, handle, ownership, error, and ABI invariants reviewed as applicable"
+    },
+    {
+      "id": "UCG-0076",
+      "file": "crates/explorer-app/src/mft_query.rs",
+      "line": 240,
+      "column": 21,
+      "message": "usage of an `unsafe` block",
+      "targets": [
+        "explorer_app",
+        "superexplorer-mft-service"
+      ],
+      "diagnostic_count": 2,
+      "disposition": "expected-reviewed",
+      "expectation_reason": "Concrete boundary-specific reason is recorded in the adjacent source expectation",
+      "safety_review": "passed: pointer, buffer, handle, ownership, error, and ABI invariants reviewed as applicable"
+    },
+    {
+      "id": "UCG-0077",
+      "file": "crates/explorer-app/src/mft_query.rs",
+      "line": 822,
+      "column": 17,
+      "message": "usage of an `unsafe` block",
+      "targets": [
+        "explorer_app",
+        "superexplorer-mft-service"
+      ],
+      "diagnostic_count": 2,
+      "disposition": "expected-reviewed",
+      "expectation_reason": "Concrete boundary-specific reason is recorded in the adjacent source expectation",
+      "safety_review": "passed: pointer, buffer, handle, ownership, error, and ABI invariants reviewed as applicable"
+    },
+    {
+      "id": "UCG-0078",
+      "file": "crates/explorer-app/src/mft_query.rs",
+      "line": 823,
+      "column": 20,
+      "message": "usage of an `unsafe` block",
+      "targets": [
+        "explorer_app",
+        "superexplorer-mft-service"
+      ],
+      "diagnostic_count": 2,
+      "disposition": "expected-reviewed",
+      "expectation_reason": "Concrete boundary-specific reason is recorded in the adjacent source expectation",
+      "safety_review": "passed: pointer, buffer, handle, ownership, error, and ABI invariants reviewed as applicable"
+    },
+    {
+      "id": "UCG-0079",
+      "file": "crates/explorer-app/src/mft_query.rs",
+      "line": 838,
+      "column": 67,
+      "message": "usage of an `unsafe` block",
+      "targets": [
+        "explorer_app",
+        "superexplorer-mft-service"
+      ],
+      "diagnostic_count": 2,
+      "disposition": "expected-reviewed",
+      "expectation_reason": "Concrete boundary-specific reason is recorded in the adjacent source expectation",
+      "safety_review": "passed: pointer, buffer, handle, ownership, error, and ABI invariants reviewed as applicable"
+    },
+    {
+      "id": "UCG-0080",
+      "file": "crates/explorer-app/src/mft_query.rs",
+      "line": 880,
+      "column": 8,
+      "message": "usage of an `unsafe` block",
+      "targets": [
+        "explorer_app",
+        "superexplorer-mft-service"
+      ],
+      "diagnostic_count": 2,
+      "disposition": "expected-reviewed",
+      "expectation_reason": "Concrete boundary-specific reason is recorded in the adjacent source expectation",
+      "safety_review": "passed: pointer, buffer, handle, ownership, error, and ABI invariants reviewed as applicable"
+    },
+    {
+      "id": "UCG-0081",
+      "file": "crates/explorer-app/src/mft_query.rs",
+      "line": 898,
+      "column": 20,
+      "message": "usage of an `unsafe` block",
+      "targets": [
+        "explorer_app",
+        "superexplorer-mft-service"
+      ],
+      "diagnostic_count": 2,
+      "disposition": "expected-reviewed",
+      "expectation_reason": "Concrete boundary-specific reason is recorded in the adjacent source expectation",
+      "safety_review": "passed: pointer, buffer, handle, ownership, error, and ABI invariants reviewed as applicable"
+    },
+    {
+      "id": "UCG-0082",
+      "file": "crates/explorer-app/src/mft_query.rs",
+      "line": 919,
+      "column": 29,
+      "message": "usage of an `unsafe` block",
+      "targets": [
+        "explorer_app",
+        "superexplorer-mft-service"
+      ],
+      "diagnostic_count": 2,
+      "disposition": "expected-reviewed",
+      "expectation_reason": "Concrete boundary-specific reason is recorded in the adjacent source expectation",
+      "safety_review": "passed: pointer, buffer, handle, ownership, error, and ABI invariants reviewed as applicable"
+    },
+    {
+      "id": "UCG-0083",
+      "file": "crates/explorer-app/src/mft_query.rs",
+      "line": 920,
+      "column": 25,
+      "message": "usage of an `unsafe` block",
+      "targets": [
+        "explorer_app",
+        "superexplorer-mft-service"
+      ],
+      "diagnostic_count": 2,
+      "disposition": "expected-reviewed",
+      "expectation_reason": "Concrete boundary-specific reason is recorded in the adjacent source expectation",
+      "safety_review": "passed: pointer, buffer, handle, ownership, error, and ABI invariants reviewed as applicable"
+    },
+    {
+      "id": "UCG-0084",
+      "file": "crates/explorer-app/src/mft_query.rs",
+      "line": 962,
+      "column": 25,
+      "message": "usage of an `unsafe` block",
+      "targets": [
+        "explorer_app",
+        "superexplorer-mft-service"
+      ],
+      "diagnostic_count": 2,
+      "disposition": "expected-reviewed",
+      "expectation_reason": "Concrete boundary-specific reason is recorded in the adjacent source expectation",
+      "safety_review": "passed: pointer, buffer, handle, ownership, error, and ABI invariants reviewed as applicable"
+    },
+    {
+      "id": "UCG-0085",
+      "file": "crates/explorer-app/src/mft_query.rs",
+      "line": 969,
+      "column": 25,
+      "message": "usage of an `unsafe` block",
+      "targets": [
+        "explorer_app",
+        "superexplorer-mft-service"
+      ],
+      "diagnostic_count": 2,
+      "disposition": "expected-reviewed",
+      "expectation_reason": "Concrete boundary-specific reason is recorded in the adjacent source expectation",
+      "safety_review": "passed: pointer, buffer, handle, ownership, error, and ABI invariants reviewed as applicable"
+    },
+    {
+      "id": "UCG-0086",
+      "file": "crates/explorer-app/src/mft_query.rs",
+      "line": 976,
+      "column": 25,
+      "message": "usage of an `unsafe` block",
+      "targets": [
+        "explorer_app",
+        "superexplorer-mft-service"
+      ],
+      "diagnostic_count": 2,
+      "disposition": "expected-reviewed",
+      "expectation_reason": "Concrete boundary-specific reason is recorded in the adjacent source expectation",
+      "safety_review": "passed: pointer, buffer, handle, ownership, error, and ABI invariants reviewed as applicable"
+    },
+    {
+      "id": "UCG-0087",
+      "file": "crates/explorer-app/src/mft_query.rs",
+      "line": 983,
+      "column": 25,
+      "message": "usage of an `unsafe` block",
+      "targets": [
+        "explorer_app",
+        "superexplorer-mft-service"
+      ],
+      "diagnostic_count": 2,
+      "disposition": "expected-reviewed",
+      "expectation_reason": "Concrete boundary-specific reason is recorded in the adjacent source expectation",
+      "safety_review": "passed: pointer, buffer, handle, ownership, error, and ABI invariants reviewed as applicable"
+    },
+    {
+      "id": "UCG-0088",
+      "file": "crates/explorer-app/src/mft_query.rs",
+      "line": 1020,
+      "column": 25,
+      "message": "usage of an `unsafe` block",
+      "targets": [
+        "explorer_app",
+        "superexplorer-mft-service"
+      ],
+      "diagnostic_count": 2,
+      "disposition": "expected-reviewed",
+      "expectation_reason": "Concrete boundary-specific reason is recorded in the adjacent source expectation",
+      "safety_review": "passed: pointer, buffer, handle, ownership, error, and ABI invariants reviewed as applicable"
+    },
+    {
+      "id": "UCG-0089",
+      "file": "crates/explorer-app/src/mft_query.rs",
+      "line": 1039,
+      "column": 25,
+      "message": "usage of an `unsafe` block",
+      "targets": [
+        "explorer_app",
+        "superexplorer-mft-service"
+      ],
+      "diagnostic_count": 2,
+      "disposition": "expected-reviewed",
+      "expectation_reason": "Concrete boundary-specific reason is recorded in the adjacent source expectation",
+      "safety_review": "passed: pointer, buffer, handle, ownership, error, and ABI invariants reviewed as applicable"
+    },
+    {
+      "id": "UCG-0090",
+      "file": "crates/explorer-app/src/mft_query.rs",
+      "line": 1063,
+      "column": 17,
+      "message": "usage of an `unsafe` block",
+      "targets": [
+        "explorer_app",
+        "superexplorer-mft-service"
+      ],
+      "diagnostic_count": 2,
+      "disposition": "expected-reviewed",
+      "expectation_reason": "Concrete boundary-specific reason is recorded in the adjacent source expectation",
+      "safety_review": "passed: pointer, buffer, handle, ownership, error, and ABI invariants reviewed as applicable"
+    },
+    {
+      "id": "UCG-0091",
+      "file": "crates/explorer-app/src/mft_query.rs",
+      "line": 1246,
+      "column": 25,
+      "message": "usage of an `unsafe` block",
+      "targets": [
+        "explorer_app",
+        "superexplorer-mft-service"
+      ],
+      "diagnostic_count": 2,
+      "disposition": "expected-reviewed",
+      "expectation_reason": "Concrete boundary-specific reason is recorded in the adjacent source expectation",
+      "safety_review": "passed: pointer, buffer, handle, ownership, error, and ABI invariants reviewed as applicable"
+    },
+    {
+      "id": "UCG-0092",
+      "file": "crates/explorer-app/src/mft_query.rs",
+      "line": 1473,
+      "column": 18,
+      "message": "usage of an `unsafe` block",
+      "targets": [
+        "explorer_app",
+        "superexplorer-mft-service"
+      ],
+      "diagnostic_count": 2,
+      "disposition": "expected-reviewed",
+      "expectation_reason": "Concrete boundary-specific reason is recorded in the adjacent source expectation",
+      "safety_review": "passed: pointer, buffer, handle, ownership, error, and ABI invariants reviewed as applicable"
+    },
+    {
+      "id": "UCG-0093",
+      "file": "crates/explorer-app/src/mft_query.rs",
+      "line": 1482,
+      "column": 39,
+      "message": "usage of an `unsafe` block",
+      "targets": [
+        "explorer_app",
+        "superexplorer-mft-service"
+      ],
+      "diagnostic_count": 2,
+      "disposition": "expected-reviewed",
+      "expectation_reason": "Concrete boundary-specific reason is recorded in the adjacent source expectation",
+      "safety_review": "passed: pointer, buffer, handle, ownership, error, and ABI invariants reviewed as applicable"
+    },
+    {
+      "id": "UCG-0094",
+      "file": "crates/explorer-app/src/mft_query.rs",
+      "line": 1486,
+      "column": 49,
+      "message": "usage of an `unsafe` block",
+      "targets": [
+        "explorer_app",
+        "superexplorer-mft-service"
+      ],
+      "diagnostic_count": 2,
+      "disposition": "expected-reviewed",
+      "expectation_reason": "Concrete boundary-specific reason is recorded in the adjacent source expectation",
+      "safety_review": "passed: pointer, buffer, handle, ownership, error, and ABI invariants reviewed as applicable"
+    },
+    {
+      "id": "UCG-0095",
+      "file": "crates/explorer-app/src/mft_query.rs",
+      "line": 1505,
+      "column": 18,
+      "message": "usage of an `unsafe` block",
+      "targets": [
+        "explorer_app",
+        "superexplorer-mft-service"
+      ],
+      "diagnostic_count": 2,
+      "disposition": "expected-reviewed",
+      "expectation_reason": "Concrete boundary-specific reason is recorded in the adjacent source expectation",
+      "safety_review": "passed: pointer, buffer, handle, ownership, error, and ABI invariants reviewed as applicable"
+    },
+    {
+      "id": "UCG-0096",
+      "file": "crates/explorer-app/src/mft_query.rs",
+      "line": 1515,
+      "column": 63,
+      "message": "usage of an `unsafe` block",
+      "targets": [
+        "explorer_app",
+        "superexplorer-mft-service"
+      ],
+      "diagnostic_count": 2,
+      "disposition": "expected-reviewed",
+      "expectation_reason": "Concrete boundary-specific reason is recorded in the adjacent source expectation",
+      "safety_review": "passed: pointer, buffer, handle, ownership, error, and ABI invariants reviewed as applicable"
+    },
+    {
+      "id": "UCG-0097",
+      "file": "crates/explorer-app/src/mft_query.rs",
+      "line": 1533,
+      "column": 18,
+      "message": "usage of an `unsafe` block",
+      "targets": [
+        "explorer_app",
+        "superexplorer-mft-service"
+      ],
+      "diagnostic_count": 2,
+      "disposition": "expected-reviewed",
+      "expectation_reason": "Concrete boundary-specific reason is recorded in the adjacent source expectation",
+      "safety_review": "passed: pointer, buffer, handle, ownership, error, and ABI invariants reviewed as applicable"
+    },
+    {
+      "id": "UCG-0098",
+      "file": "crates/explorer-app/src/mft_query.rs",
+      "line": 1546,
+      "column": 21,
+      "message": "usage of an `unsafe` block",
+      "targets": [
+        "explorer_app",
+        "superexplorer-mft-service"
+      ],
+      "diagnostic_count": 2,
+      "disposition": "expected-reviewed",
+      "expectation_reason": "Concrete boundary-specific reason is recorded in the adjacent source expectation",
+      "safety_review": "passed: pointer, buffer, handle, ownership, error, and ABI invariants reviewed as applicable"
+    },
+    {
+      "id": "UCG-0099",
+      "file": "crates/explorer-app/src/mft_size_map.rs",
+      "line": 812,
+      "column": 17,
+      "message": "usage of an `unsafe` block",
+      "targets": [
+        "explorer_app",
+        "superexplorer-mft-helper",
+        "superexplorer-mft-service"
+      ],
+      "diagnostic_count": 3,
+      "disposition": "expected-reviewed",
+      "expectation_reason": "Concrete boundary-specific reason is recorded in the adjacent source expectation",
+      "safety_review": "passed: pointer, buffer, handle, ownership, error, and ABI invariants reviewed as applicable"
+    },
+    {
+      "id": "UCG-0100",
+      "file": "crates/explorer-app/src/mft_size_map.rs",
+      "line": 841,
+      "column": 18,
+      "message": "usage of an `unsafe` block",
+      "targets": [
+        "explorer_app",
+        "superexplorer-mft-helper",
+        "superexplorer-mft-service"
+      ],
+      "diagnostic_count": 3,
+      "disposition": "expected-reviewed",
+      "expectation_reason": "Concrete boundary-specific reason is recorded in the adjacent source expectation",
+      "safety_review": "passed: pointer, buffer, handle, ownership, error, and ABI invariants reviewed as applicable"
+    },
+    {
+      "id": "UCG-0101",
+      "file": "crates/explorer-app/src/mft_size_map.rs",
+      "line": 856,
+      "column": 5,
+      "message": "usage of an `unsafe` block",
+      "targets": [
+        "explorer_app",
+        "superexplorer-mft-helper",
+        "superexplorer-mft-service"
+      ],
+      "diagnostic_count": 3,
+      "disposition": "expected-reviewed",
+      "expectation_reason": "Concrete boundary-specific reason is recorded in the adjacent source expectation",
+      "safety_review": "passed: pointer, buffer, handle, ownership, error, and ABI invariants reviewed as applicable"
+    },
+    {
+      "id": "UCG-0102",
+      "file": "crates/explorer-app/src/mft_size_map.rs",
+      "line": 884,
+      "column": 18,
+      "message": "usage of an `unsafe` block",
+      "targets": [
+        "explorer_app",
+        "superexplorer-mft-helper",
+        "superexplorer-mft-service"
+      ],
+      "diagnostic_count": 3,
+      "disposition": "expected-reviewed",
+      "expectation_reason": "Concrete boundary-specific reason is recorded in the adjacent source expectation",
+      "safety_review": "passed: pointer, buffer, handle, ownership, error, and ABI invariants reviewed as applicable"
+    },
+    {
+      "id": "UCG-0103",
+      "file": "crates/explorer-app/src/mft_size_map.rs",
+      "line": 914,
+      "column": 22,
+      "message": "usage of an `unsafe` block",
+      "targets": [
+        "explorer_app",
+        "superexplorer-mft-helper",
+        "superexplorer-mft-service"
+      ],
+      "diagnostic_count": 3,
+      "disposition": "expected-reviewed",
+      "expectation_reason": "Concrete boundary-specific reason is recorded in the adjacent source expectation",
+      "safety_review": "passed: pointer, buffer, handle, ownership, error, and ABI invariants reviewed as applicable"
+    },
+    {
+      "id": "UCG-0104",
+      "file": "crates/explorer-app/src/mft_size_map.rs",
+      "line": 1067,
+      "column": 5,
+      "message": "usage of an `unsafe` block",
+      "targets": [
+        "explorer_app",
+        "superexplorer-mft-helper",
+        "superexplorer-mft-service"
+      ],
+      "diagnostic_count": 3,
+      "disposition": "expected-reviewed",
+      "expectation_reason": "Concrete boundary-specific reason is recorded in the adjacent source expectation",
+      "safety_review": "passed: pointer, buffer, handle, ownership, error, and ABI invariants reviewed as applicable"
+    },
+    {
+      "id": "UCG-0105",
+      "file": "crates/explorer-app/src/mft_size_map.rs",
+      "line": 1078,
+      "column": 21,
+      "message": "usage of an `unsafe` block",
+      "targets": [
+        "explorer_app",
+        "superexplorer-mft-helper",
+        "superexplorer-mft-service"
+      ],
+      "diagnostic_count": 3,
+      "disposition": "expected-reviewed",
+      "expectation_reason": "Concrete boundary-specific reason is recorded in the adjacent source expectation",
+      "safety_review": "passed: pointer, buffer, handle, ownership, error, and ABI invariants reviewed as applicable"
+    },
+    {
+      "id": "UCG-0106",
+      "file": "crates/explorer-app/src/mft_size_map.rs",
+      "line": 1087,
+      "column": 15,
+      "message": "usage of an `unsafe` block",
+      "targets": [
+        "explorer_app",
+        "superexplorer-mft-helper",
+        "superexplorer-mft-service"
+      ],
+      "diagnostic_count": 3,
+      "disposition": "expected-reviewed",
+      "expectation_reason": "Concrete boundary-specific reason is recorded in the adjacent source expectation",
+      "safety_review": "passed: pointer, buffer, handle, ownership, error, and ABI invariants reviewed as applicable"
+    },
+    {
+      "id": "UCG-0107",
+      "file": "crates/explorer-app/src/mft_size_map.rs",
+      "line": 1106,
+      "column": 5,
+      "message": "usage of an `unsafe` block",
+      "targets": [
+        "explorer_app",
+        "superexplorer-mft-helper",
+        "superexplorer-mft-service"
+      ],
+      "diagnostic_count": 3,
+      "disposition": "expected-reviewed",
+      "expectation_reason": "Concrete boundary-specific reason is recorded in the adjacent source expectation",
+      "safety_review": "passed: pointer, buffer, handle, ownership, error, and ABI invariants reviewed as applicable"
+    },
+    {
+      "id": "UCG-0108",
+      "file": "crates/explorer-app/src/mft_size_map.rs",
+      "line": 1184,
+      "column": 18,
+      "message": "usage of an `unsafe` block",
+      "targets": [
+        "explorer_app",
+        "superexplorer-mft-helper",
+        "superexplorer-mft-service"
+      ],
+      "diagnostic_count": 3,
+      "disposition": "expected-reviewed",
+      "expectation_reason": "Concrete boundary-specific reason is recorded in the adjacent source expectation",
+      "safety_review": "passed: pointer, buffer, handle, ownership, error, and ABI invariants reviewed as applicable"
+    },
+    {
+      "id": "UCG-0109",
+      "file": "crates/explorer-app/src/mft_sqlite.rs",
+      "line": 1293,
+      "column": 5,
+      "message": "usage of an `unsafe extern` block",
+      "targets": [
+        "explorer_app",
+        "superexplorer-mft-service"
+      ],
+      "diagnostic_count": 2,
+      "disposition": "expected-reviewed",
+      "expectation_reason": "Concrete boundary-specific reason is recorded in the adjacent source expectation",
+      "safety_review": "passed: pointer, buffer, handle, ownership, error, and ABI invariants reviewed as applicable"
+    },
+    {
+      "id": "UCG-0110",
+      "file": "crates/explorer-app/src/mft_sqlite.rs",
+      "line": 1318,
+      "column": 8,
+      "message": "usage of an `unsafe` block",
+      "targets": [
+        "explorer_app",
+        "superexplorer-mft-service"
+      ],
+      "diagnostic_count": 2,
+      "disposition": "expected-reviewed",
+      "expectation_reason": "Concrete boundary-specific reason is recorded in the adjacent source expectation",
+      "safety_review": "passed: pointer, buffer, handle, ownership, error, and ABI invariants reviewed as applicable"
+    },
+    {
+      "id": "UCG-0111",
+      "file": "crates/explorer-app/src/mft_sqlite.rs",
+      "line": 1690,
+      "column": 18,
+      "message": "usage of an `unsafe` block",
+      "targets": [
+        "explorer_app",
+        "superexplorer-mft-service"
+      ],
+      "diagnostic_count": 2,
+      "disposition": "expected-reviewed",
+      "expectation_reason": "Concrete boundary-specific reason is recorded in the adjacent source expectation",
+      "safety_review": "passed: pointer, buffer, handle, ownership, error, and ABI invariants reviewed as applicable"
+    },
+    {
+      "id": "UCG-0112",
+      "file": "crates/explorer-app/src/remote_service.rs",
+      "line": 220,
+      "column": 5,
+      "message": "usage of an `unsafe extern` block",
+      "targets": [
+        "explorer_app"
+      ],
+      "diagnostic_count": 1,
+      "disposition": "expected-reviewed",
+      "expectation_reason": "Concrete boundary-specific reason is recorded in the adjacent source expectation",
+      "safety_review": "passed: pointer, buffer, handle, ownership, error, and ABI invariants reviewed as applicable"
+    },
+    {
+      "id": "UCG-0113",
+      "file": "crates/explorer-app/src/remote_service.rs",
+      "line": 233,
+      "column": 8,
+      "message": "usage of an `unsafe` block",
+      "targets": [
+        "explorer_app"
+      ],
+      "diagnostic_count": 1,
+      "disposition": "expected-reviewed",
+      "expectation_reason": "Concrete boundary-specific reason is recorded in the adjacent source expectation",
+      "safety_review": "passed: pointer, buffer, handle, ownership, error, and ABI invariants reviewed as applicable"
+    },
+    {
+      "id": "UCG-0114",
+      "file": "crates/explorer-app/src/remote_service.rs",
+      "line": 275,
+      "column": 18,
+      "message": "usage of an `unsafe` block",
+      "targets": [
+        "explorer_app"
+      ],
+      "diagnostic_count": 1,
+      "disposition": "expected-reviewed",
+      "expectation_reason": "Concrete boundary-specific reason is recorded in the adjacent source expectation",
+      "safety_review": "passed: pointer, buffer, handle, ownership, error, and ABI invariants reviewed as applicable"
+    },
+    {
+      "id": "UCG-0115",
+      "file": "crates/explorer-extension-host/src/virtual_container_mutation.rs",
+      "line": 190,
+      "column": 5,
+      "message": "usage of an `unsafe extern` block",
+      "targets": [
+        "explorer_extension_host"
+      ],
+      "diagnostic_count": 1,
+      "disposition": "expected-reviewed",
+      "expectation_reason": "Concrete boundary-specific reason is recorded in the adjacent source expectation",
+      "safety_review": "passed: pointer, buffer, handle, ownership, error, and ABI invariants reviewed as applicable"
+    },
+    {
+      "id": "UCG-0116",
+      "file": "crates/explorer-extension-host/src/virtual_container_mutation.rs",
+      "line": 209,
+      "column": 8,
+      "message": "usage of an `unsafe` block",
+      "targets": [
+        "explorer_extension_host"
+      ],
+      "diagnostic_count": 1,
+      "disposition": "expected-reviewed",
+      "expectation_reason": "Concrete boundary-specific reason is recorded in the adjacent source expectation",
+      "safety_review": "passed: pointer, buffer, handle, ownership, error, and ABI invariants reviewed as applicable"
+    }
+  ],
+  "non_unsafe_warning_counts": {
+    "dead_code": 417,
+    "unused_imports": 1,
+    "unused_mut": 1,
+    "unused_qualifications": 19,
+    "unused_variables": 5
+  },
+  "owned_file_snapshots": [
+    {
+      "path": "crates/explorer-app/src/main.rs",
+      "sha256": "4e1eff5a374f15a55b263ed190968bf98f290351d6401b9add5fff2c40185705",
+      "scoped_diff_path": "evidence/prechange-diffs/crates__explorer-app__src__main.rs.patch",
+      "scoped_diff_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "dirty": false
+    },
+    {
+      "path": "crates/explorer-app/src/application.rs",
+      "sha256": "c70e52072cd36cf241531f4877110b83f684fd7fb0ea58a54439c127fc830559",
+      "scoped_diff_path": "evidence/prechange-diffs/crates__explorer-app__src__application.rs.patch",
+      "scoped_diff_sha256": "4e1fe2feb512f5f44c6a04cdff26f5e0d7dc88fc2fc304cbfd78ad4ea9878072",
+      "dirty": true
+    },
+    {
+      "path": "crates/explorer-app/src/brokered_service.rs",
+      "sha256": "4eb8bb38f4501422f1304fa3a3d9348121a8289a6b91aa54afc1ca03585088d1",
+      "scoped_diff_path": "evidence/prechange-diffs/crates__explorer-app__src__brokered_service.rs.patch",
+      "scoped_diff_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "dirty": false
+    },
+    {
+      "path": "crates/explorer-app/src/remote_service.rs",
+      "sha256": "bd42d81e9c7e19539fb6088dc9f423d6aa2f3e3ae3111726d4076d50a48a1830",
+      "scoped_diff_path": "evidence/prechange-diffs/crates__explorer-app__src__remote_service.rs.patch",
+      "scoped_diff_sha256": "280a6db42b27ea459fb2e905e2eadda54b5e27dbf8a99ae5821817b9ec76740d",
+      "dirty": true
+    },
+    {
+      "path": "crates/explorer-extension-host/src/virtual_container_mutation.rs",
+      "sha256": "cbde4dd147173b3172070603a5e2d4c161141176337e518731def6c6f5f32395",
+      "scoped_diff_path": "evidence/prechange-diffs/crates__explorer-extension-host__src__virtual_container_mutation.rs.patch",
+      "scoped_diff_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "dirty": false
+    },
+    {
+      "path": "crates/explorer-app/src/mft_focus.rs",
+      "sha256": "90164580b8805437bff2ac525470f682e252e9fb67b13bfd1e70abe8ed05a37a",
+      "scoped_diff_path": "evidence/prechange-diffs/crates__explorer-app__src__mft_focus.rs.patch",
+      "scoped_diff_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "dirty": false
+    },
+    {
+      "path": "crates/explorer-app/src/mft_journal.rs",
+      "sha256": "4e5e511c1135b925049b10ad4f480c241495420b08276bbad4bf60501de70004",
+      "scoped_diff_path": "evidence/prechange-diffs/crates__explorer-app__src__mft_journal.rs.patch",
+      "scoped_diff_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "dirty": false
+    },
+    {
+      "path": "crates/explorer-app/src/mft_migration.rs",
+      "sha256": "0ddd99b829f8ddacb246e0ffcd59393137c9ff76ea9c1c8629d4e583bd48abb5",
+      "scoped_diff_path": "evidence/prechange-diffs/crates__explorer-app__src__mft_migration.rs.patch",
+      "scoped_diff_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "dirty": false
+    },
+    {
+      "path": "crates/explorer-app/src/mft_size_map.rs",
+      "sha256": "f8eabfdf8c3a24aa7f95c35719fdb379224d487038dd1982461370ea0854ed82",
+      "scoped_diff_path": "evidence/prechange-diffs/crates__explorer-app__src__mft_size_map.rs.patch",
+      "scoped_diff_sha256": "80be0ba586272610f8263932ae6668fad5e2dae01d8f66386f8b5ebd58e64813",
+      "dirty": true
+    },
+    {
+      "path": "crates/explorer-app/src/mft_sqlite.rs",
+      "sha256": "6abf6de196c5204157f059ce5717a177d1c4b1fd4ba6dfbd168fab23c20907e6",
+      "scoped_diff_path": "evidence/prechange-diffs/crates__explorer-app__src__mft_sqlite.rs.patch",
+      "scoped_diff_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "dirty": false
+    },
+    {
+      "path": "crates/explorer-app/src/mft_query.rs",
+      "sha256": "696826ce9064ec89c9258fb9719a03ae8659f6d59f44a825e794240649648558",
+      "scoped_diff_path": "evidence/prechange-diffs/crates__explorer-app__src__mft_query.rs.patch",
+      "scoped_diff_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "dirty": false
+    },
+    {
+      "path": "crates/explorer-app/src/bin/mft_service.rs",
+      "sha256": "fb1677597795c9c5e4950785860ed7af3cb8cb289fb392b31abb3cd4d73f2f93",
+      "scoped_diff_path": "evidence/prechange-diffs/crates__explorer-app__src__bin__mft_service.rs.patch",
+      "scoped_diff_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "dirty": false
+    }
+  ],
+  "deferred_suppressions": [
+    {
+      "path": "crates/explorer-extension-host/src/bundled_tool.rs",
+      "line": 1,
+      "scope": "module-or-crate",
+      "text": "#![allow(unsafe_code)]",
+      "disposition": "deferred-residual-risk"
+    },
+    {
+      "path": "crates/explorer-extension-host/src/operation_plan.rs",
+      "line": 1140,
+      "scope": "item",
+      "text": "#[allow(unsafe_code)]",
+      "disposition": "deferred-residual-risk"
+    },
+    {
+      "path": "crates/explorer-common/src/process.rs",
+      "line": 31,
+      "scope": "item",
+      "text": "#[allow(unsafe_code)]",
+      "disposition": "deferred-residual-risk"
+    },
+    {
+      "path": "crates/explorer-common/src/process.rs",
+      "line": 38,
+      "scope": "item",
+      "text": "#[allow(unsafe_code)]",
+      "disposition": "deferred-residual-risk"
+    },
+    {
+      "path": "crates/explorer-extension-host/src/feature_state.rs",
+      "line": 24,
+      "scope": "item",
+      "text": "#[allow(unsafe_code)]",
+      "disposition": "deferred-residual-risk"
+    },
+    {
+      "path": "crates/explorer-extension-host/src/feature_state.rs",
+      "line": 934,
+      "scope": "item",
+      "text": "#[allow(unsafe_code)]",
+      "disposition": "deferred-residual-risk"
+    },
+    {
+      "path": "crates/explorer-extension-host/src/sepack_import.rs",
+      "line": 992,
+      "scope": "item",
+      "text": "#[allow(unsafe_code, reason = \"Windows has no safe process-liveness API\")]",
+      "disposition": "deferred-residual-risk"
+    },
+    {
+      "path": "crates/explorer-extension-host/src/sepack_import.rs",
+      "line": 1011,
+      "scope": "item",
+      "text": "#[allow(unsafe_code, reason = \"Windows process handles require direct FFI\")]",
+      "disposition": "deferred-residual-risk"
+    },
+    {
+      "path": "crates/explorer-extension-host/src/sepack_import.rs",
+      "line": 1245,
+      "scope": "item",
+      "text": "#[allow(unsafe_code)]",
+      "disposition": "deferred-residual-risk"
+    },
+    {
+      "path": "crates/explorer-extension-host/src/sepack_import.rs",
+      "line": 1290,
+      "scope": "item",
+      "text": "#[allow(unsafe_code)]",
+      "disposition": "deferred-residual-risk"
+    },
+    {
+      "path": "crates/explorer-extension-host/src/sepack_import.rs",
+      "line": 1431,
+      "scope": "item",
+      "text": "#[allow(unsafe_code)]",
+      "disposition": "deferred-residual-risk"
+    },
+    {
+      "path": "crates/explorer-extension-host/src/sepack_import.rs",
+      "line": 1481,
+      "scope": "item",
+      "text": "#[allow(unsafe_code)]",
+      "disposition": "deferred-residual-risk"
+    },
+    {
+      "path": "crates/explorer-extension-host/src/sepack_import.rs",
+      "line": 1503,
+      "scope": "item",
+      "text": "#[allow(unsafe_code)]",
+      "disposition": "deferred-residual-risk"
+    },
+    {
+      "path": "crates/explorer-extension-host/src/package_validation.rs",
+      "line": 695,
+      "scope": "item",
+      "text": "#[allow(unsafe_code)]",
+      "disposition": "deferred-residual-risk"
+    },
+    {
+      "path": "crates/explorer-extension-host/src/package_validation.rs",
+      "line": 765,
+      "scope": "item",
+      "text": "#[allow(unsafe_code)]",
+      "disposition": "deferred-residual-risk"
+    },
+    {
+      "path": "crates/explorer-extension-host/src/package_validation.rs",
+      "line": 778,
+      "scope": "item",
+      "text": "#[allow(unsafe_code)]",
+      "disposition": "deferred-residual-risk"
+    },
+    {
+      "path": "crates/explorer-extension-host/src/package_validation.rs",
+      "line": 818,
+      "scope": "item",
+      "text": "#[allow(unsafe_code)]",
+      "disposition": "deferred-residual-risk"
+    },
+    {
+      "path": "crates/explorer-extension-host/src/package_validation.rs",
+      "line": 868,
+      "scope": "item",
+      "text": "#[allow(unsafe_code)]",
+      "disposition": "deferred-residual-risk"
+    },
+    {
+      "path": "crates/explorer-extension-host/src/package_validation.rs",
+      "line": 883,
+      "scope": "item",
+      "text": "#[allow(unsafe_code)]",
+      "disposition": "deferred-residual-risk"
+    },
+    {
+      "path": "crates/explorer-extension-host/src/package_validation.rs",
+      "line": 1022,
+      "scope": "item",
+      "text": "#[allow(unsafe_code)]",
+      "disposition": "deferred-residual-risk"
+    },
+    {
+      "path": "crates/explorer-extension-host/src/package_validation.rs",
+      "line": 1044,
+      "scope": "item",
+      "text": "#[allow(unsafe_code)]",
+      "disposition": "deferred-residual-risk"
+    },
+    {
+      "path": "crates/explorer-extension-host/src/package_validation.rs",
+      "line": 1618,
+      "scope": "item",
+      "text": "#[allow(unsafe_code)]",
+      "disposition": "deferred-residual-risk"
+    },
+    {
+      "path": "crates/explorer-extension-host/src/package_validation.rs",
+      "line": 1638,
+      "scope": "item",
+      "text": "#[allow(unsafe_code)]",
+      "disposition": "deferred-residual-risk"
+    },
+    {
+      "path": "crates/explorer-extension-host/src/package_validation.rs",
+      "line": 2761,
+      "scope": "item",
+      "text": "#[allow(unsafe_code)]",
+      "disposition": "deferred-residual-risk"
+    },
+    {
+      "path": "crates/explorer-extension-host/src/package_validation.rs",
+      "line": 3029,
+      "scope": "item",
+      "text": "#[allow(unsafe_code)]",
+      "disposition": "deferred-residual-risk"
+    },
+    {
+      "path": "crates/explorer-extension-host/src/package_validation.rs",
+      "line": 3061,
+      "scope": "item",
+      "text": "#[allow(unsafe_code)]",
+      "disposition": "deferred-residual-risk"
+    },
+    {
+      "path": "crates/explorer-extension-host/src/plugin_call_guard.rs",
+      "line": 883,
+      "scope": "item",
+      "text": "#[allow(unsafe_code)]",
+      "disposition": "deferred-residual-risk"
+    },
+    {
+      "path": "crates/explorer-extension-host/src/plugin_call_guard.rs",
+      "line": 893,
+      "scope": "item",
+      "text": "#[allow(unsafe_code)]",
+      "disposition": "deferred-residual-risk"
+    },
+    {
+      "path": "crates/explorer-extension-host/src/plugin_call_guard.rs",
+      "line": 1107,
+      "scope": "item",
+      "text": "#[allow(unsafe_code)]",
+      "disposition": "deferred-residual-risk"
+    },
+    {
+      "path": "crates/explorer-extension-host/src/plugin_call_guard.rs",
+      "line": 1306,
+      "scope": "item",
+      "text": "#[allow(unsafe_code)]",
+      "disposition": "deferred-residual-risk"
+    },
+    {
+      "path": "crates/explorer-extension-host/src/plugin_call_guard.rs",
+      "line": 1405,
+      "scope": "item",
+      "text": "#[allow(unsafe_code)]",
+      "disposition": "deferred-residual-risk"
+    },
+    {
+      "path": "crates/explorer-automation-win/src/credential.rs",
+      "line": 3,
+      "scope": "module-or-crate",
+      "text": "#![allow(unsafe_code)]",
+      "disposition": "deferred-residual-risk"
+    },
+    {
+      "path": "crates/explorer-automation-win/src/clipboard.rs",
+      "line": 3,
+      "scope": "module-or-crate",
+      "text": "#![allow(unsafe_code)]",
+      "disposition": "deferred-residual-risk"
+    },
+    {
+      "path": "crates/explorer-automation-win/src/process.rs",
+      "line": 3,
+      "scope": "module-or-crate",
+      "text": "#![allow(unsafe_code)]",
+      "disposition": "deferred-residual-risk"
+    },
+    {
+      "path": "crates/explorer-automation-win/src/input_hook.rs",
+      "line": 3,
+      "scope": "module-or-crate",
+      "text": "#![allow(unsafe_code)]",
+      "disposition": "deferred-residual-risk"
+    },
+    {
+      "path": "crates/explorer-automation-win/src/win_event.rs",
+      "line": 3,
+      "scope": "module-or-crate",
+      "text": "#![allow(unsafe_code)]",
+      "disposition": "deferred-residual-risk"
+    },
+    {
+      "path": "crates/explorer-automation-win/src/system_events.rs",
+      "line": 3,
+      "scope": "module-or-crate",
+      "text": "#![allow(unsafe_code)]",
+      "disposition": "deferred-residual-risk"
+    }
+  ]
+}

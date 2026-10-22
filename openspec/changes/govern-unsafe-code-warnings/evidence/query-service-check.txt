@@ -1,0 +1,484 @@
+crates\explorer-extension-host\src\runtime_authority.rs:111:19: warning: methods `revoke` and `replace_current` are never used
+warning: unnecessary qualification
+    --> crates\explorer-ui\src\lib.rs:6857:9
+     |
+6857 |         gpui::RenderImage::new_bc7_srgb(gpui::CompressedRaster {
+     |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+     = note: requested on the command line with `-W unused-qualifications`
+help: remove the unnecessary path segments
+     |
+6857 -         gpui::RenderImage::new_bc7_srgb(gpui::CompressedRaster {
+6857 +         RenderImage::new_bc7_srgb(gpui::CompressedRaster {
+     |
+
+warning: variable does not need to be mutable
+     --> crates\explorer-ui\src\chrome.rs:11392:13
+      |
+11392 |         let mut status = if presentation.selected_count > 0 {
+      |             ----^^^^^^
+      |             |
+      |             help: remove this `mut`
+      |
+      = note: `#[warn(unused_mut)]` (part of `#[warn(unused)]`) on by default
+
+warning: function `cache_usage_section` is never used
+    --> crates\explorer-ui\src\chrome.rs:3119:4
+     |
+3119 | fn cache_usage_section(
+     |    ^^^^^^^^^^^^^^^^^^^
+     |
+     = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: function `view_item_width` is never used
+    --> crates\explorer-ui\src\chrome.rs:9643:15
+     |
+9643 | pub(crate) fn view_item_width(settings: &explorer_model::ViewSettings) -> f32 {
+     |               ^^^^^^^^^^^^^^^
+
+warning: function `details_horizontal_maximum` is never used
+    --> crates\explorer-ui\src\chrome.rs:9670:15
+     |
+9670 | pub(crate) fn details_horizontal_maximum(
+     |               ^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: method `add_bookmark` is never used
+   --> crates\explorer-ui\src\state.rs:988:19
+    |
+723 | impl AppViewState {
+    | ----------------- method in this implementation
+...
+988 |     pub(crate) fn add_bookmark(
+    |                   ^^^^^^^^^^^^
+
+warning: `explorer-extension-host` (lib) generated 1 warning
+warning: `explorer-ui` (lib) generated 6 warnings (run `cargo fix --lib -p explorer-ui` to apply 2 suggestions)
+    Checking explorer-app v0.1.0 (D:\SuperExplorer\crates\explorer-app)
+crates\explorer-app\src\application.rs:5:37: warning: unused import: `VecDeque`
+crates\explorer-app\src\application.rs:2955:25: warning: unnecessary qualification
+crates\explorer-app\src\application.rs:3092:39: warning: unnecessary qualification
+crates\explorer-app\src\brokered_service.rs:77:23: warning: unnecessary qualification
+crates\explorer-app\src\brokered_service.rs:280:17: warning: unnecessary qualification
+crates\explorer-app\src\folder_size_service.rs:935:37: warning: unnecessary qualification
+crates\explorer-app\src\mft_focus.rs:457:17: warning: unnecessary qualification
+crates\explorer-app\src\mft_migration.rs:523:13: warning: unnecessary qualification
+crates\explorer-app\src\mft_migration.rs:571:22: warning: unnecessary qualification
+crates\explorer-app\src\mft_query.rs:927:17: warning: unnecessary qualification
+crates\explorer-app\src\mft_size_map.rs:590:27: warning: unnecessary qualification
+crates\explorer-app\src\remote_service.rs:273:17: warning: unnecessary qualification
+crates\explorer-app\src\mft_focus.rs:649:9: warning: unused variable: `event_guard`: help: if this is intentional, prefix it with an underscore: `_event_guard`
+crates\explorer-app\src\mft_focus.rs:705:9: warning: unused variable: `event_guard`: help: if this is intentional, prefix it with an underscore: `_event_guard`
+crates\explorer-app\src\remote_service.rs:629:21: warning: unused variable: `error`: help: if this is intentional, prefix it with an underscore: `_error`
+crates\explorer-app\src\application.rs:48:7: warning: constant `CODE_LINES_DIRECTORY_CACHE_SCHEMA_V1` is never used
+crates\explorer-app\src\application.rs:49:7: warning: constant `CODE_LINES_DIRECTORY_CACHE_MAX_RECORD_BYTES_V1` is never used
+crates\explorer-app\src\application.rs:50:7: warning: constant `CODE_LINES_DIRECTORY_CACHE_MAX_FILES_V1` is never used
+crates\explorer-app\src\application.rs:1045:8: warning: methods `with_ttl` and `set_ttl_seconds` are never used
+crates\explorer-app\src\application.rs:1322:8: warning: struct `FolderSizeCachedValueV1` is never constructed
+crates\explorer-app\src\application.rs:1348:4: warning: function `partition_folder_size_cache_hits` is never used
+crates\explorer-app\src\application.rs:1387:4: warning: function `exact_directory_facts` is never used
+crates\explorer-app\src\application.rs:1414:7: warning: constant `FOLDER_SIZE_QUERY_DEADLINE_V1` is never used
+crates\explorer-app\src\application.rs:1416:4: warning: function `query_folder_size_with_deadline_v1` is never used
+crates\explorer-app\src\application.rs:1432:4: warning: function `receive_folder_size_query_v1` is never used
+crates\explorer-app\src\application.rs:1488:4: warning: function `take_folder_size_requests` is never used
+crates\explorer-app\src\application.rs:1501:4: warning: function `take_folder_size_request` is never used
+crates\explorer-app\src\application.rs:2537:4: warning: function `is_code_lines_directory_row` is never used
+crates\explorer-app\src\application.rs:2569:8: warning: struct `CodeLinesDirectoryCacheKeyV1` is never constructed
+crates\explorer-app\src\application.rs:2575:4: warning: function `code_lines_directory_cache_directory` is never used
+crates\explorer-app\src\application.rs:2592:4: warning: function `code_lines_directory_cache_key` is never used
+crates\explorer-app\src\application.rs:2609:4: warning: function `persistent_code_lines_hash_v1` is never used
+crates\explorer-app\src\application.rs:2618:4: warning: function `code_lines_directory_cache_path` is never used
+crates\explorer-app\src\application.rs:2628:4: warning: function `read_code_lines_directory_cache` is never used
+crates\explorer-app\src\application.rs:2666:4: warning: function `prune_code_lines_directory_cache` is never used
+crates\explorer-app\src\application.rs:2698:4: warning: function `store_code_lines_directory_cache` is never used
+crates\explorer-app\src\application.rs:2745:4: warning: function `replace_code_lines_cache_file` is never used
+crates\explorer-app\src\application.rs:2779:4: warning: function `measure_code_lines_directory` is never used
+crates\explorer-app\src\application.rs:2785:4: warning: function `measure_all_code_lines_directory` is never used
+crates\explorer-app\src\application.rs:2816:4: warning: function `measure_code_lines_directory_with_cache` is never used
+crates\explorer-app\src\application.rs:3807:6: warning: enum `SizeMapHardLinkPolicyV1` is never used
+crates\explorer-app\src\application.rs:3826:8: warning: struct `PendingSizeMapTreeNodeV1` is never constructed
+crates\explorer-app\src\application.rs:3915:4: warning: function `filesystem_file_identity_v1` is never used
+crates\explorer-app\src\application.rs:2751:12: warning: function `MoveFileExW` is never used
+crates\explorer-app\src\folder_size_service.rs:102:5: warning: variant `Remove` is never constructed
+crates\explorer-app\src\folder_size_service.rs:133:15: warning: function `encode_snapshot_bounded` is never used
+crates\explorer-app\src\folder_size_service.rs:144:15: warning: function `decode_snapshot_bounded` is never used
+crates\explorer-app\src\folder_size_service.rs:575:19: warning: multiple methods are never used
+crates\explorer-app\src\folder_size_service.rs:1337:4: warning: function `canonicalize_existing_ancestor` is never used
+crates\explorer-app\src\folder_size_service.rs:1571:4: warning: function `service_mft_cache_root` is never used
+crates\explorer-app\src\folder_size_service.rs:1580:4: warning: function `volume_root` is never used
+crates\explorer-app\src\folder_size_service.rs:1587:4: warning: function `fresh_service_mft_index` is never used
+crates\explorer-app\src\mft_focus.rs:33:18: warning: constant `MAX_FOCUS_CONNECTIONS` is never used
+crates\explorer-app\src\mft_focus.rs:35:7: warning: constant `FOCUS_LEASE_TTL` is never used
+crates\explorer-app\src\mft_focus.rs:64:19: warning: associated function `decode` is never used
+crates\explorer-app\src\mft_focus.rs:96:19: warning: struct `FocusClientIdentityV1` is never constructed
+crates\explorer-app\src\mft_focus.rs:105:15: warning: function `authorize_focus_client` is never used
+crates\explorer-app\src\mft_focus.rs:129:7: warning: constant `ERROR_PIPE_CONNECTED` is never used
+crates\explorer-app\src\mft_focus.rs:131:7: warning: constant `ERROR_PIPE_LISTENING` is never used
+crates\explorer-app\src\mft_focus.rs:133:7: warning: constant `ERROR_NO_DATA` is never used
+crates\explorer-app\src\mft_focus.rs:402:8: warning: struct `LocalMemory` is never constructed
+crates\explorer-app\src\mft_focus.rs:431:15: warning: function `serve_focus_leases` is never used
+crates\explorer-app\src\mft_focus.rs:521:4: warning: function `handle_focus_connection` is never used
+crates\explorer-app\src\mft_focus.rs:646:4: warning: function `connect_overlapped` is never used
+crates\explorer-app\src\mft_focus.rs:156:8: warning: function `CreateNamedPipeW` is never used
+crates\explorer-app\src\mft_focus.rs:166:8: warning: function `ConnectNamedPipe` is never used
+crates\explorer-app\src\mft_focus.rs:167:8: warning: function `DisconnectNamedPipe` is never used
+crates\explorer-app\src\mft_focus.rs:363:8: warning: function `ConvertStringSecurityDescriptorToSecurityDescriptorW` is never used
+crates\explorer-app\src\mft_focus.rs:380:8: warning: function `LocalFree` is never used
+crates\explorer-app\src\mft_journal.rs:41:7: warning: constant `CHECKPOINT_MAGIC` is never used
+crates\explorer-app\src\mft_journal.rs:42:7: warning: constant `DELTA_MAGIC` is never used
+crates\explorer-app\src\mft_journal.rs:43:7: warning: constant `STATUS_MAGIC` is never used
+crates\explorer-app\src\mft_journal.rs:44:7: warning: constant `COMMIT_MARKER` is never used
+crates\explorer-app\src\mft_journal.rs:45:7: warning: constant `SCHEMA_V2` is never used
+crates\explorer-app\src\mft_journal.rs:46:7: warning: constant `MAX_RECORD_BYTES` is never used
+crates\explorer-app\src\mft_journal.rs:47:7: warning: constant `MAX_CHANGES` is never used
+crates\explorer-app\src\mft_journal.rs:48:7: warning: constant `MAX_NAME_BYTES` is never used
+crates\explorer-app\src\mft_journal.rs:49:18: warning: constant `JOURNAL_BUFFER_BYTES` is never used
+crates\explorer-app\src\mft_journal.rs:50:18: warning: constant `PENDING_CHANGE_LIMIT` is never used
+crates\explorer-app\src\mft_journal.rs:51:18: warning: constant `PENDING_BYTE_LIMIT` is never used
+crates\explorer-app\src\mft_journal.rs:53:18: warning: constant `RELEVANT_REASON_MASK` is never used
+crates\explorer-app\src\mft_journal.rs:72:19: warning: struct `JournalMetadataV2` is never constructed
+crates\explorer-app\src\mft_journal.rs:89:19: warning: associated items `new` and `compatible_with` are never used
+crates\explorer-app\src\mft_journal.rs:119:17: warning: enum `MftChangeKindV2` is never used
+crates\explorer-app\src\mft_journal.rs:126:19: warning: struct `MftChangeV2` is never constructed
+crates\explorer-app\src\mft_journal.rs:138:19: warning: struct `MftDeltaV2` is never constructed
+crates\explorer-app\src\mft_journal.rs:150:17: warning: enum `MftServiceModeV2` is never used
+crates\explorer-app\src\mft_journal.rs:158:19: warning: struct `MftServiceStatusV2` is never constructed
+crates\explorer-app\src\mft_journal.rs:171:19: warning: struct `UsnEventV2` is never constructed
+crates\explorer-app\src\mft_journal.rs:180:8: warning: struct `HandleGuard` is never constructed
+crates\explorer-app\src\mft_journal.rs:197:4: warning: function `open_volume` is never used
+crates\explorer-app\src\mft_journal.rs:227:15: warning: function `query_journal` is never used
+crates\explorer-app\src\mft_journal.rs:263:15: warning: function `read_journal_once` is never used
+crates\explorer-app\src\mft_journal.rs:363:15: warning: function `normalize_event` is never used
+crates\explorer-app\src\mft_journal.rs:393:15: warning: function `coalesce_events` is never used
+crates\explorer-app\src\mft_journal.rs:414:15: warning: function `coalesced_bytes` is never used
+crates\explorer-app\src\mft_journal.rs:421:15: warning: function `publication_due` is never used
+crates\explorer-app\src\mft_journal.rs:431:15: warning: function `checkpoint_path` is never used
+crates\explorer-app\src\mft_journal.rs:435:15: warning: function `delta_path` is never used
+crates\explorer-app\src\mft_journal.rs:439:15: warning: function `status_path` is never used
+crates\explorer-app\src\mft_journal.rs:443:15: warning: function `latest_checkpoint` is never used
+crates\explorer-app\src\mft_journal.rs:465:15: warning: function `publish_delta_and_checkpoint` is never used
+crates\explorer-app\src\mft_journal.rs:484:15: warning: function `publish_initial_checkpoint` is never used
+crates\explorer-app\src\mft_journal.rs:495:15: warning: function `write_status` is never used
+crates\explorer-app\src\mft_journal.rs:503:15: warning: function `read_checkpoint` is never used
+crates\explorer-app\src\mft_journal.rs:508:15: warning: function `read_delta` is never used
+crates\explorer-app\src\mft_journal.rs:513:15: warning: function `read_status` is never used
+crates\explorer-app\src\mft_journal.rs:518:15: warning: function `deltas_after` is never used
+crates\explorer-app\src\mft_journal.rs:534:15: warning: function `validate_delta_after` is never used
+crates\explorer-app\src\mft_journal.rs:554:15: warning: function `remove_volume_sidecars` is never used
+crates\explorer-app\src\mft_journal.rs:570:4: warning: function `atomic_create` is never used
+crates\explorer-app\src\mft_journal.rs:595:4: warning: function `atomic_replace` is never used
+crates\explorer-app\src\mft_journal.rs:602:4: warning: function `write_synced` is never used
+crates\explorer-app\src\mft_journal.rs:608:4: warning: function `read_bounded` is never used
+crates\explorer-app\src\mft_journal.rs:625:4: warning: function `encode_checkpoint` is never used
+crates\explorer-app\src\mft_journal.rs:636:4: warning: function `decode_checkpoint` is never used
+crates\explorer-app\src\mft_journal.rs:654:4: warning: function `encode_delta` is never used
+crates\explorer-app\src\mft_journal.rs:689:4: warning: function `decode_delta` is never used
+crates\explorer-app\src\mft_journal.rs:754:4: warning: function `encode_status` is never used
+crates\explorer-app\src\mft_journal.rs:775:4: warning: function `decode_status` is never used
+crates\explorer-app\src\mft_journal.rs:819:4: warning: function `finish_record` is never used
+crates\explorer-app\src\mft_journal.rs:826:4: warning: function `verify_record` is never used
+crates\explorer-app\src\mft_journal.rs:842:4: warning: function `checksum` is never used
+crates\explorer-app\src\mft_journal.rs:848:15: warning: function `normalize_reference` is never used
+crates\explorer-app\src\mft_journal.rs:852:4: warning: function `push_u32` is never used
+crates\explorer-app\src\mft_journal.rs:856:4: warning: function `push_u64` is never used
+crates\explorer-app\src\mft_journal.rs:860:4: warning: function `push_i64` is never used
+crates\explorer-app\src\mft_journal.rs:864:4: warning: function `read_u16_at` is never used
+crates\explorer-app\src\mft_journal.rs:870:4: warning: function `read_u32_at` is never used
+crates\explorer-app\src\mft_journal.rs:876:4: warning: function `read_u64_at` is never used
+crates\explorer-app\src\mft_journal.rs:882:4: warning: function `read_i64_at` is never used
+crates\explorer-app\src\mft_journal.rs:888:8: warning: struct `Cursor` is never constructed
+crates\explorer-app\src\mft_journal.rs:894:8: warning: multiple associated items are never used
+crates\explorer-app\src\mft_migration.rs:18:7: warning: constant `MANIFEST_VERSION` is never used
+crates\explorer-app\src\mft_migration.rs:21:19: warning: struct `InventoryEntryV1` is never constructed
+crates\explorer-app\src\mft_migration.rs:32:8: warning: struct `MaintenanceManifestV1` is never constructed
+crates\explorer-app\src\mft_migration.rs:41:15: warning: function `inventory_legacy` is never used
+crates\explorer-app\src\mft_migration.rs:56:15: warning: function `cleanup_legacy_after_promotion` is never used
+crates\explorer-app\src\mft_migration.rs:64:15: warning: function `cleanup_legacy_after_promotion_guarded` is never used
+crates\explorer-app\src\mft_migration.rs:73:15: warning: function `cleanup_legacy_after_promotion_linearized` is never used
+crates\explorer-app\src\mft_migration.rs:89:4: warning: function `cleanup_legacy_after_promotion_impl` is never used
+crates\explorer-app\src\mft_migration.rs:151:15: warning: function `quarantine_canonical` is never used
+crates\explorer-app\src\mft_migration.rs:160:15: warning: function `quarantine_canonical_guarded` is never used
+crates\explorer-app\src\mft_migration.rs:177:15: warning: function `quarantine_canonical_linearized` is never used
+crates\explorer-app\src\mft_migration.rs:195:4: warning: function `quarantine_canonical_impl` is never used
+crates\explorer-app\src\mft_migration.rs:316:4: warning: function `inventory_canonical` is never used
+crates\explorer-app\src\mft_migration.rs:338:4: warning: function `find_incomplete_quarantine` is never used
+crates\explorer-app\src\mft_migration.rs:356:4: warning: function `recognized_legacy_name` is never used
+crates\explorer-app\src\mft_migration.rs:374:4: warning: function `inventory_file` is never used
+crates\explorer-app\src\mft_migration.rs:379:4: warning: function `inventory_file_from_handle` is never used
+crates\explorer-app\src\mft_migration.rs:406:4: warning: function `verify_inventory_match` is never used
+crates\explorer-app\src\mft_migration.rs:419:4: warning: function `open_inventory_handle` is never used
+crates\explorer-app\src\mft_migration.rs:446:4: warning: function `file_identity` is never used
+crates\explorer-app\src\mft_migration.rs:484:4: warning: function `open_verified_inventory_handle` is never used
+crates\explorer-app\src\mft_migration.rs:503:4: warning: function `delete_file_handle` is never used
+crates\explorer-app\src\mft_migration.rs:540:4: warning: function `rename_file_handle` is never used
+crates\explorer-app\src\mft_migration.rs:618:4: warning: function `hardlink_and_unlink_exclusive_handle` is never used
+crates\explorer-app\src\mft_migration.rs:649:4: warning: function `maintenance_write` is never used
+crates\explorer-app\src\mft_migration.rs:667:4: warning: function `resolved_directory` is never used
+crates\explorer-app\src\mft_migration.rs:675:4: warning: function `validate_manifest` is never used
+crates\explorer-app\src\mft_migration.rs:697:4: warning: function `read_manifest` is never used
+crates\explorer-app\src\mft_migration.rs:702:4: warning: function `write_synced_json` is never used
+crates\explorer-app\src\mft_migration.rs:747:4: warning: function `sha256_file` is never used
+crates\explorer-app\src\mft_migration.rs:752:4: warning: function `sha256_open_file` is never used
+crates\explorer-app\src\mft_migration.rs:771:8: warning: struct `Sha256` is never constructed
+crates\explorer-app\src\mft_migration.rs:777:8: warning: associated items `new`, `update`, `finish`, and `compress` are never used
+crates\explorer-app\src\mft_migration.rs:463:12: warning: function `GetFileInformationByHandle` is never used
+crates\explorer-app\src\mft_migration.rs:510:12: warning: function `SetFileInformationByHandle` is never used
+crates\explorer-app\src\mft_migration.rs:550:12: warning: function `SetFileInformationByHandle` is never used
+crates\explorer-app\src\mft_migration.rs:625:12: warning: function `CreateHardLinkW` is never used
+crates\explorer-app\src\mft_persistence.rs:8:18: warning: constant `PERSISTENCE_INTERVAL` is never used
+crates\explorer-app\src\mft_persistence.rs:10:7: warning: constant `LIFECYCLE_OPEN` is never used
+crates\explorer-app\src\mft_persistence.rs:11:7: warning: constant `LIFECYCLE_INVOKING` is never used
+crates\explorer-app\src\mft_persistence.rs:12:7: warning: constant `LIFECYCLE_CLOSED` is never used
+crates\explorer-app\src\mft_persistence.rs:19:19: warning: struct `LifecycleBarrierV1` is never constructed
+crates\explorer-app\src\mft_persistence.rs:24:25: warning: associated items `new`, `is_open`, `close`, and `invoke` are never used
+crates\explorer-app\src\mft_persistence.rs:69:19: warning: struct `MonotonicMillis` is never constructed
+crates\explorer-app\src\mft_persistence.rs:72:14: warning: methods `elapsed_since` and `saturating_add` are never used
+crates\explorer-app\src\mft_persistence.rs:85:19: warning: struct `JournalCursorV1` is never constructed
+crates\explorer-app\src\mft_persistence.rs:92:17: warning: enum `RecoveryReasonV1` is never used
+crates\explorer-app\src\mft_persistence.rs:102:17: warning: enum `MigrationStateV1` is never used
+crates\explorer-app\src\mft_persistence.rs:110:19: warning: struct `PendingBatchV1` is never constructed
+crates\explorer-app\src\mft_persistence.rs:118:19: warning: associated function `capture` is never used
+crates\explorer-app\src\mft_persistence.rs:141:15: warning: function `capture_coalesced_batch` is never used
+crates\explorer-app\src\mft_persistence.rs:155:17: warning: enum `PersistenceDecisionV1` is never used
+crates\explorer-app\src\mft_persistence.rs:166:19: warning: struct `PersistenceScheduleV1` is never constructed
+crates\explorer-app\src\mft_persistence.rs:175:25: warning: multiple associated items are never used
+crates\explorer-app\src\mft_persistence.rs:249:17: warning: type alias `LeaseIdV1` is never used
+crates\explorer-app\src\mft_persistence.rs:250:17: warning: type alias `LeaseOwnerV1` is never used
+crates\explorer-app\src\mft_persistence.rs:253:8: warning: struct `FocusLeaseV1` is never constructed
+crates\explorer-app\src\mft_persistence.rs:259:19: warning: struct `FocusLeaseRegistryV1` is never constructed
+crates\explorer-app\src\mft_persistence.rs:264:19: warning: multiple methods are never used
+crates\explorer-app\src\mft_query.rs:6:7: warning: constant `PIPE_SECURITY_SDDL` is never used
+crates\explorer-app\src\mft_query.rs:7:7: warning: constant `PIPE_TYPE_MESSAGE_READMODE_REJECT_REMOTE` is never used
+crates\explorer-app\src\mft_query.rs:26:7: warning: constant `REQUEST_KIND_FOLDER` is never used
+crates\explorer-app\src\mft_query.rs:30:7: warning: constant `REQUEST_KIND_HIERARCHY` is never used
+crates\explorer-app\src\mft_query.rs:43:7: warning: constant `FOLDER_BATCH_PARALLELISM` is never used
+crates\explorer-app\src\mft_query.rs:47:7: warning: constant `ERROR_PIPE_CONNECTED` is never used
+crates\explorer-app\src\mft_query.rs:48:7: warning: constant `ERROR_PIPE_LISTENING` is never used
+crates\explorer-app\src\mft_query.rs:253:8: warning: struct `LocalMemory` is never constructed
+crates\explorer-app\src\mft_query.rs:875:15: warning: function `serve_folder_queries` is never used
+crates\explorer-app\src\mft_query.rs:895:15: warning: function `serve_queries` is never used
+crates\explorer-app\src\mft_query.rs:1102:8: warning: struct `ServiceFolderBatchItemV1` is never constructed
+crates\explorer-app\src\mft_query.rs:1109:4: warning: function `serve_folder_batch` is never used
+crates\explorer-app\src\mft_query.rs:1176:4: warning: function `decode_folder_batch_payload` is never used
+crates\explorer-app\src\mft_query.rs:1230:4: warning: function `encode_folder_batch_response` is never used
+crates\explorer-app\src\mft_query.rs:1268:4: warning: function `encode_folder_batch_end` is never used
+crates\explorer-app\src\mft_query.rs:1283:4: warning: function `wait_for_client_close` is never used
+crates\explorer-app\src\mft_query.rs:1303:4: warning: function `encode_hierarchy_response` is never used
+crates\explorer-app\src\mft_query.rs:1347:4: warning: function `encode_durability_diagnostics_response` is never used
+crates\explorer-app\src\mft_query.rs:1409:4: warning: function `encode_diagnostics_breakdown_response` is never used
+crates\explorer-app\src\mft_query.rs:1436:4: warning: function `encode_diagnostics_response` is never used
+crates\explorer-app\src\mft_query.rs:1460:4: warning: function `encode_response` is never used
+crates\explorer-app\src\mft_query.rs:1491:4: warning: function `bounded_error_detail` is never used
+crates\explorer-app\src\mft_query.rs:174:8: warning: function `CreateNamedPipeW` is never used
+crates\explorer-app\src\mft_query.rs:184:8: warning: function `ConnectNamedPipe` is never used
+crates\explorer-app\src\mft_query.rs:185:8: warning: function `DisconnectNamedPipe` is never used
+crates\explorer-app\src\mft_query.rs:210:8: warning: function `PeekNamedPipe` is never used
+crates\explorer-app\src\mft_query.rs:220:8: warning: function `LocalFree` is never used
+crates\explorer-app\src\mft_query.rs:231:8: warning: function `ConvertStringSecurityDescriptorToSecurityDescriptorW` is never used
+crates\explorer-app\src\mft_runtime.rs:10:19: warning: struct `VolumeMemoryRuntimeV1` is never constructed
+crates\explorer-app\src\mft_runtime.rs:20:19: warning: multiple associated items are never used
+crates\explorer-app\src\mft_size_map.rs:83:5: warning: field `worker_count` is never read
+crates\explorer-app\src\mft_size_map.rs:165:19: warning: methods `estimated_resident_bytes` and `trim_to_bytes` are never used
+crates\explorer-app\src\mft_size_map.rs:273:19: warning: multiple associated items are never used
+crates\explorer-app\src\mft_size_map.rs:643:15: warning: function `write_index` is never used
+crates\explorer-app\src\mft_size_map.rs:648:15: warning: function `write_service_index` is never used
+crates\explorer-app\src\mft_size_map.rs:666:4: warning: function `write_index_record` is never used
+crates\explorer-app\src\mft_size_map.rs:705:4: warning: function `validate_helper_output_path` is never used
+crates\explorer-app\src\mft_size_map.rs:834:15: warning: function `file_link_count` is never used
+crates\explorer-app\src\mft_size_map.rs:1192:15: warning: function `volume_serial_number` is never used
+crates\explorer-app\src\mft_size_map.rs:1200:15: warning: function `current_entry` is never used
+crates\explorer-app\src\mft_sqlite.rs:19:7: warning: constant `SCHEMA_VERSION` is never used
+crates\explorer-app\src\mft_sqlite.rs:20:7: warning: constant `BUSY_TIMEOUT` is never used
+crates\explorer-app\src\mft_sqlite.rs:21:18: warning: constant `WAL_MAINTENANCE_THRESHOLD_BYTES` is never used
+crates\explorer-app\src\mft_sqlite.rs:22:18: warning: constant `MAX_PENDING_BATCH_BYTES` is never used
+crates\explorer-app\src\mft_sqlite.rs:25:7: warning: constant `WAL_FRAME_OVERHEAD_MULTIPLIER` is never used
+crates\explorer-app\src\mft_sqlite.rs:26:7: warning: constant `SQLITE_PAGE_BYTES` is never used
+crates\explorer-app\src\mft_sqlite.rs:27:7: warning: constant `MIN_SQLITE_STORE_PAGES` is never used
+crates\explorer-app\src\mft_sqlite.rs:28:7: warning: constant `SQLITE_TEMP_TRANSACTION_OVERHEAD_BYTES` is never used
+crates\explorer-app\src\mft_sqlite.rs:32:7: warning: constant `SQLITE_WRITER_COMPANION_RESERVE_BYTES` is never used
+crates\explorer-app\src\mft_sqlite.rs:33:7: warning: constant `WAL_FRAME_HEADER_BYTES` is never used
+crates\explorer-app\src\mft_sqlite.rs:37:7: warning: constant `MAX_SCATTERED_WAL_GROWTH_BYTES` is never used
+crates\explorer-app\src\mft_sqlite.rs:40:7: warning: constant `MAX_INDEX_ENTRIES` is never used
+crates\explorer-app\src\mft_sqlite.rs:41:7: warning: constant `MAX_ENTRY_NAME_BYTES` is never used
+crates\explorer-app\src\mft_sqlite.rs:42:7: warning: constant `SQLITE_LENGTH_LIMIT_BYTES` is never used
+crates\explorer-app\src\mft_sqlite.rs:43:7: warning: constant `MAX_INDEX_DECODED_BYTES` is never used
+crates\explorer-app\src\mft_sqlite.rs:46:19: warning: struct `StoreIdentityV1` is never constructed
+crates\explorer-app\src\mft_sqlite.rs:53:19: warning: struct `StoreTelemetryV1` is never constructed
+crates\explorer-app\src\mft_sqlite.rs:65:17: warning: enum `CommitFailurePointV1` is never used
+crates\explorer-app\src\mft_sqlite.rs:73:6: warning: enum `MigrationFailurePointV1` is never used
+crates\explorer-app\src\mft_sqlite.rs:85:19: warning: struct `MftSqliteStoreV1` is never constructed
+crates\explorer-app\src\mft_sqlite.rs:93:25: warning: multiple associated items are never used
+crates\explorer-app\src\mft_sqlite.rs:1169:4: warning: function `validate_migration_temp_path` is never used
+crates\explorer-app\src\mft_sqlite.rs:1201:4: warning: function `install_migration_entries_guarded` is never used
+crates\explorer-app\src\mft_sqlite.rs:1239:4: warning: function `sync_file` is never used
+crates\explorer-app\src\mft_sqlite.rs:1248:4: warning: function `run_cancellable_vacuum_into` is never used
+crates\explorer-app\src\mft_sqlite.rs:1293:4: warning: function `atomic_replace_file` is never used
+crates\explorer-app\src\mft_sqlite.rs:1352:4: warning: function `load_index_from_connection` is never used
+crates\explorer-app\src\mft_sqlite.rs:1402:4: warning: function `load_index_from_connection_bounded` is never used
+crates\explorer-app\src\mft_sqlite.rs:1470:4: warning: function `never_cancelled` is never used
+crates\explorer-app\src\mft_sqlite.rs:1478:19: warning: multiple methods are never used
+crates\explorer-app\src\mft_sqlite.rs:1609:4: warning: function `run_truncate_checkpoint` is never used
+crates\explorer-app\src\mft_sqlite.rs:1621:4: warning: function `install_snapshot_transaction` is never used
+crates\explorer-app\src\mft_sqlite.rs:1661:4: warning: function `configure` is never used
+crates\explorer-app\src\mft_sqlite.rs:1696:4: warning: function `enable_persistent_wal_files` is never used
+crates\explorer-app\src\mft_sqlite.rs:1714:10: warning: function `checkpoint_eligible` is never used
+crates\explorer-app\src\mft_sqlite.rs:1718:10: warning: function `wal_admission` is never used
+crates\explorer-app\src\mft_sqlite.rs:1729:21: warning: function `maximum_wal_batch_growth_bytes` is never used
+crates\explorer-app\src\mft_sqlite.rs:1745:4: warning: function `initialize_schema` is never used
+crates\explorer-app\src\mft_sqlite.rs:1789:4: warning: function `commit_transaction` is never used
+crates\explorer-app\src\mft_sqlite.rs:1824:4: warning: function `apply_changes` is never used
+crates\explorer-app\src\mft_sqlite.rs:1866:4: warning: function `read_identity` is never used
+crates\explorer-app\src\mft_sqlite.rs:1895:4: warning: function `verify_integrity` is never used
+crates\explorer-app\src\mft_sqlite.rs:1906:4: warning: function `configure_page_size` is never used
+crates\explorer-app\src\mft_sqlite.rs:1913:4: warning: function `verify_page_size` is never used
+crates\explorer-app\src\mft_sqlite.rs:1925:4: warning: function `validate_cursor` is never used
+crates\explorer-app\src\mft_sqlite.rs:1932:10: warning: function `encode_u64` is never used
+crates\explorer-app\src\mft_sqlite.rs:1936:10: warning: function `decode_u64` is never used
+crates\explorer-app\src\mft_sqlite.rs:1940:4: warning: function `validate_store_path` is never used
+crates\explorer-app\src\mft_sqlite.rs:1984:4: warning: function `validate_replacement_backup_path` is never used
+crates\explorer-app\src\mft_sqlite.rs:2012:4: warning: function `wal_path` is never used
+crates\explorer-app\src\mft_sqlite.rs:2016:4: warning: function `file_bytes` is never used
+crates\explorer-app\src\mft_sqlite.rs:1300:12: warning: function `ReplaceFileW` is never used
+warning: `explorer-app` (lib) generated 284 warnings (run `cargo fix --lib -p explorer-app` to apply 15 suggestions)
+crates\explorer-app\src\bin\..\mft_size_map.rs:590:27: warning: unnecessary qualification
+crates\explorer-app\src\bin\..\mft_journal.rs:41:7: warning: constant `CHECKPOINT_MAGIC` is never used
+crates\explorer-app\src\bin\..\mft_journal.rs:42:7: warning: constant `DELTA_MAGIC` is never used
+crates\explorer-app\src\bin\..\mft_journal.rs:43:7: warning: constant `STATUS_MAGIC` is never used
+crates\explorer-app\src\bin\..\mft_journal.rs:44:7: warning: constant `COMMIT_MARKER` is never used
+crates\explorer-app\src\bin\..\mft_journal.rs:45:7: warning: constant `SCHEMA_V2` is never used
+crates\explorer-app\src\bin\..\mft_journal.rs:46:7: warning: constant `MAX_RECORD_BYTES` is never used
+crates\explorer-app\src\bin\..\mft_journal.rs:47:7: warning: constant `MAX_CHANGES` is never used
+crates\explorer-app\src\bin\..\mft_journal.rs:48:7: warning: constant `MAX_NAME_BYTES` is never used
+crates\explorer-app\src\bin\..\mft_journal.rs:49:18: warning: constant `JOURNAL_BUFFER_BYTES` is never used
+crates\explorer-app\src\bin\..\mft_journal.rs:50:18: warning: constant `PENDING_CHANGE_LIMIT` is never used
+crates\explorer-app\src\bin\..\mft_journal.rs:51:18: warning: constant `PENDING_BYTE_LIMIT` is never used
+crates\explorer-app\src\bin\..\mft_journal.rs:53:18: warning: constant `RELEVANT_REASON_MASK` is never used
+crates\explorer-app\src\bin\..\mft_journal.rs:67:19: warning: struct `VolumeIdentityV2` is never constructed
+crates\explorer-app\src\bin\..\mft_journal.rs:72:19: warning: struct `JournalMetadataV2` is never constructed
+crates\explorer-app\src\bin\..\mft_journal.rs:80:19: warning: struct `MftCheckpointV2` is never constructed
+crates\explorer-app\src\bin\..\mft_journal.rs:89:19: warning: associated items `new` and `compatible_with` are never used
+crates\explorer-app\src\bin\..\mft_journal.rs:119:17: warning: enum `MftChangeKindV2` is never used
+crates\explorer-app\src\bin\..\mft_journal.rs:126:19: warning: struct `MftChangeV2` is never constructed
+crates\explorer-app\src\bin\..\mft_journal.rs:138:19: warning: struct `MftDeltaV2` is never constructed
+crates\explorer-app\src\bin\..\mft_journal.rs:150:17: warning: enum `MftServiceModeV2` is never used
+crates\explorer-app\src\bin\..\mft_journal.rs:158:19: warning: struct `MftServiceStatusV2` is never constructed
+crates\explorer-app\src\bin\..\mft_journal.rs:171:19: warning: struct `UsnEventV2` is never constructed
+crates\explorer-app\src\bin\..\mft_journal.rs:180:8: warning: struct `HandleGuard` is never constructed
+crates\explorer-app\src\bin\..\mft_journal.rs:197:4: warning: function `open_volume` is never used
+crates\explorer-app\src\bin\..\mft_journal.rs:227:15: warning: function `query_journal` is never used
+crates\explorer-app\src\bin\..\mft_journal.rs:263:15: warning: function `read_journal_once` is never used
+crates\explorer-app\src\bin\..\mft_journal.rs:363:15: warning: function `normalize_event` is never used
+crates\explorer-app\src\bin\..\mft_journal.rs:393:15: warning: function `coalesce_events` is never used
+crates\explorer-app\src\bin\..\mft_journal.rs:414:15: warning: function `coalesced_bytes` is never used
+crates\explorer-app\src\bin\..\mft_journal.rs:421:15: warning: function `publication_due` is never used
+crates\explorer-app\src\bin\..\mft_journal.rs:431:15: warning: function `checkpoint_path` is never used
+crates\explorer-app\src\bin\..\mft_journal.rs:435:15: warning: function `delta_path` is never used
+crates\explorer-app\src\bin\..\mft_journal.rs:439:15: warning: function `status_path` is never used
+crates\explorer-app\src\bin\..\mft_journal.rs:443:15: warning: function `latest_checkpoint` is never used
+crates\explorer-app\src\bin\..\mft_journal.rs:465:15: warning: function `publish_delta_and_checkpoint` is never used
+crates\explorer-app\src\bin\..\mft_journal.rs:484:15: warning: function `publish_initial_checkpoint` is never used
+crates\explorer-app\src\bin\..\mft_journal.rs:495:15: warning: function `write_status` is never used
+crates\explorer-app\src\bin\..\mft_journal.rs:503:15: warning: function `read_checkpoint` is never used
+crates\explorer-app\src\bin\..\mft_journal.rs:508:15: warning: function `read_delta` is never used
+crates\explorer-app\src\bin\..\mft_journal.rs:513:15: warning: function `read_status` is never used
+crates\explorer-app\src\bin\..\mft_journal.rs:518:15: warning: function `deltas_after` is never used
+crates\explorer-app\src\bin\..\mft_journal.rs:534:15: warning: function `validate_delta_after` is never used
+crates\explorer-app\src\bin\..\mft_journal.rs:554:15: warning: function `remove_volume_sidecars` is never used
+crates\explorer-app\src\bin\..\mft_journal.rs:570:4: warning: function `atomic_create` is never used
+crates\explorer-app\src\bin\..\mft_journal.rs:595:4: warning: function `atomic_replace` is never used
+crates\explorer-app\src\bin\..\mft_journal.rs:602:4: warning: function `write_synced` is never used
+crates\explorer-app\src\bin\..\mft_journal.rs:608:4: warning: function `read_bounded` is never used
+crates\explorer-app\src\bin\..\mft_journal.rs:625:4: warning: function `encode_checkpoint` is never used
+crates\explorer-app\src\bin\..\mft_journal.rs:636:4: warning: function `decode_checkpoint` is never used
+crates\explorer-app\src\bin\..\mft_journal.rs:654:4: warning: function `encode_delta` is never used
+crates\explorer-app\src\bin\..\mft_journal.rs:689:4: warning: function `decode_delta` is never used
+crates\explorer-app\src\bin\..\mft_journal.rs:754:4: warning: function `encode_status` is never used
+crates\explorer-app\src\bin\..\mft_journal.rs:775:4: warning: function `decode_status` is never used
+crates\explorer-app\src\bin\..\mft_journal.rs:819:4: warning: function `finish_record` is never used
+crates\explorer-app\src\bin\..\mft_journal.rs:826:4: warning: function `verify_record` is never used
+crates\explorer-app\src\bin\..\mft_journal.rs:842:4: warning: function `checksum` is never used
+crates\explorer-app\src\bin\..\mft_journal.rs:848:15: warning: function `normalize_reference` is never used
+crates\explorer-app\src\bin\..\mft_journal.rs:852:4: warning: function `push_u32` is never used
+crates\explorer-app\src\bin\..\mft_journal.rs:856:4: warning: function `push_u64` is never used
+crates\explorer-app\src\bin\..\mft_journal.rs:860:4: warning: function `push_i64` is never used
+crates\explorer-app\src\bin\..\mft_journal.rs:864:4: warning: function `read_u16_at` is never used
+crates\explorer-app\src\bin\..\mft_journal.rs:870:4: warning: function `read_u32_at` is never used
+crates\explorer-app\src\bin\..\mft_journal.rs:876:4: warning: function `read_u64_at` is never used
+crates\explorer-app\src\bin\..\mft_journal.rs:882:4: warning: function `read_i64_at` is never used
+crates\explorer-app\src\bin\..\mft_journal.rs:888:8: warning: struct `Cursor` is never constructed
+crates\explorer-app\src\bin\..\mft_journal.rs:894:8: warning: multiple associated items are never used
+crates\explorer-app\src\bin\..\mft_size_map.rs:49:19: warning: struct `MftProjectedNodeV1` is never constructed
+crates\explorer-app\src\bin\..\mft_size_map.rs:59:19: warning: struct `MftAggregateV1` is never constructed
+crates\explorer-app\src\bin\..\mft_size_map.rs:81:19: warning: struct `MftAggregateIndexV1` is never constructed
+crates\explorer-app\src\bin\..\mft_size_map.rs:87:19: warning: associated items `build`, `build_cancelled`, `get`, `estimated_resident_bytes`, and `trim_to_bytes` are never used
+crates\explorer-app\src\bin\..\mft_size_map.rs:189:4: warning: function `aggregate_component` is never used
+crates\explorer-app\src\bin\..\mft_size_map.rs:228:4: warning: function `direct_aggregate` is never used
+crates\explorer-app\src\bin\..\mft_size_map.rs:237:4: warning: function `add_aggregate` is never used
+crates\explorer-app\src\bin\..\mft_size_map.rs:249:19: warning: multiple associated items are never used
+crates\explorer-app\src\bin\..\mft_size_map.rs:648:15: warning: function `write_service_index` is never used
+crates\explorer-app\src\bin\..\mft_size_map.rs:720:15: warning: function `read_index` is never used
+crates\explorer-app\src\bin\..\mft_size_map.rs:724:15: warning: function `read_index_bounded` is never used
+crates\explorer-app\src\bin\..\mft_size_map.rs:799:4: warning: function `read_stream_u64` is never used
+crates\explorer-app\src\bin\..\mft_size_map.rs:820:15: warning: function `file_reference_number` is never used
+crates\explorer-app\src\bin\..\mft_size_map.rs:834:15: warning: function `file_link_count` is never used
+crates\explorer-app\src\bin\..\mft_size_map.rs:842:4: warning: function `file_information` is never used
+crates\explorer-app\src\bin\..\mft_size_map.rs:1044:15: warning: function `read_volume_index_with_helper` is never used
+crates\explorer-app\src\bin\..\mft_size_map.rs:1192:15: warning: function `volume_serial_number` is never used
+crates\explorer-app\src\bin\..\mft_size_map.rs:1200:15: warning: function `current_entry` is never used
+crates\explorer-app\src\bin\..\mft_focus.rs:457:17: warning: unnecessary qualification
+crates\explorer-app\src\bin\..\mft_migration.rs:523:13: warning: unnecessary qualification
+crates\explorer-app\src\bin\..\mft_migration.rs:571:22: warning: unnecessary qualification
+crates\explorer-app\src\bin\..\mft_query.rs:927:17: warning: unnecessary qualification
+warning: `explorer-app` (bin "superexplorer-mft-helper") generated 85 warnings (run `cargo fix --bin "superexplorer-mft-helper" -p explorer-app` to apply 1 suggestion)
+crates\explorer-app\src\bin\mft_service.rs:241:17: warning: unnecessary qualification
+crates\explorer-app\src\bin\..\mft_focus.rs:649:9: warning: unused variable: `event_guard`: help: if this is intentional, prefix it with an underscore: `_event_guard`
+crates\explorer-app\src\bin\..\mft_focus.rs:705:9: warning: unused variable: `event_guard`: help: if this is intentional, prefix it with an underscore: `_event_guard`
+crates\explorer-app\src\bin\mft_service.rs:93:4: warning: function `with_lifecycle_permit` is never used
+crates\explorer-app\src\bin\mft_service.rs:1606:5: warning: field `checkpoint` is never read
+crates\explorer-app\src\bin\mft_service.rs:1995:4: warning: function `query_fallback_scan_exhausted` is never used
+crates\explorer-app\src\bin\mft_service.rs:2027:8: warning: methods `query_live`, `query`, `query_inner`, and `refresh_volume` are never used
+crates\explorer-app\src\bin\mft_service.rs:2634:4: warning: function `enforce_persisted_limit` is never used
+crates\explorer-app\src\bin\mft_service.rs:4539:4: warning: function `watch_volume` is never used
+crates\explorer-app\src\bin\mft_service.rs:4723:4: warning: function `publish_pending` is never used
+crates\explorer-app\src\bin\..\mft_focus.rs:54:19: warning: method `encode` is never used
+crates\explorer-app\src\bin\..\mft_focus.rs:131:7: warning: constant `ERROR_PIPE_LISTENING` is never used
+crates\explorer-app\src\bin\..\mft_focus.rs:133:7: warning: constant `ERROR_NO_DATA` is never used
+crates\explorer-app\src\bin\..\mft_focus.rs:197:6: warning: enum `ReporterCommandV1` is never used
+crates\explorer-app\src\bin\..\mft_focus.rs:202:8: warning: static `REPORTER` is never used
+crates\explorer-app\src\bin\..\mft_focus.rs:204:8: warning: static `NEXT_LEASE` is never used
+crates\explorer-app\src\bin\..\mft_focus.rs:207:19: warning: struct `FocusWindowReporterV1` is never constructed
+crates\explorer-app\src\bin\..\mft_focus.rs:214:19: warning: associated items `new` and `set_focused` are never used
+crates\explorer-app\src\bin\..\mft_focus.rs:244:4: warning: function `focus_reporter_worker` is never used
+crates\explorer-app\src\bin\..\mft_focus.rs:320:4: warning: function `connect_focus_pipe` is never used
+crates\explorer-app\src\bin\..\mft_focus.rs:344:4: warning: function `send_focus_frame` is never used
+crates\explorer-app\src\bin\..\mft_focus.rs:184:8: warning: function `CreateFileW` is never used
+crates\explorer-app\src\bin\..\mft_focus.rs:193:8: warning: function `WaitNamedPipeW` is never used
+crates\explorer-app\src\bin\..\mft_journal.rs:154:5: warning: variant `Error` is never constructed
+crates\explorer-app\src\bin\..\mft_migration.rs:56:15: warning: function `cleanup_legacy_after_promotion` is never used
+crates\explorer-app\src\bin\..\mft_migration.rs:64:15: warning: function `cleanup_legacy_after_promotion_guarded` is never used
+crates\explorer-app\src\bin\..\mft_migration.rs:151:15: warning: function `quarantine_canonical` is never used
+crates\explorer-app\src\bin\..\mft_migration.rs:160:15: warning: function `quarantine_canonical_guarded` is never used
+crates\explorer-app\src\bin\..\mft_migration.rs:747:4: warning: function `sha256_file` is never used
+crates\explorer-app\src\bin\..\mft_persistence.rs:92:17: warning: enum `RecoveryReasonV1` is never used
+crates\explorer-app\src\bin\..\mft_persistence.rs:102:17: warning: enum `MigrationStateV1` is never used
+crates\explorer-app\src\bin\..\mft_query.rs:70:19: warning: struct `FolderBatchRequestV1` is never constructed
+crates\explorer-app\src\bin\..\mft_query.rs:76:19: warning: struct `FolderBatchResultV1` is never constructed
+crates\explorer-app\src\bin\..\mft_query.rs:82:8: warning: struct `PreparedFolderBatchItemV1` is never constructed
+crates\explorer-app\src\bin\..\mft_query.rs:324:15: warning: function `query_folders_batch` is never used
+crates\explorer-app\src\bin\..\mft_query.rs:447:4: warning: function `prepare_folder_batch_item` is never used
+crates\explorer-app\src\bin\..\mft_query.rs:497:4: warning: function `decode_batch_folder_response` is never used
+crates\explorer-app\src\bin\..\mft_query.rs:770:15: warning: function `set_cache_budgets` is never used
+crates\explorer-app\src\bin\..\mft_query.rs:794:4: warning: function `decode_cache_budget_response` is never used
+crates\explorer-app\src\bin\..\mft_query.rs:875:15: warning: function `serve_folder_queries` is never used
+crates\explorer-app\src\bin\..\mft_query.rs:1582:4: warning: function `write_all_until` is never used
+crates\explorer-app\src\bin\..\mft_size_map.rs:83:5: warning: field `worker_count` is never read
+crates\explorer-app\src\bin\..\mft_size_map.rs:87:19: warning: associated function `build` is never used
+crates\explorer-app\src\bin\..\mft_size_map.rs:395:19: warning: methods `estimated_resident_bytes` and `path_for_reference` are never used
+crates\explorer-app\src\bin\..\mft_size_map.rs:643:15: warning: function `write_index` is never used
+crates\explorer-app\src\bin\..\mft_size_map.rs:705:4: warning: function `validate_helper_output_path` is never used
+crates\explorer-app\src\bin\..\mft_sqlite.rs:65:17: warning: enum `CommitFailurePointV1` is never used
+crates\explorer-app\src\bin\..\mft_sqlite.rs:104:19: warning: multiple associated items are never used
+crates\explorer-app\src\bin\..\mft_sqlite.rs:1478:19: warning: methods `install_snapshot`, `truncate_wal`, `truncate_wal_guarded`, `truncate_wal_linearized`, and `truncate_wal_focused_linearized` are never used
+crates\explorer-app\src\bin\..\mft_sqlite.rs:1621:4: warning: function `install_snapshot_transaction` is never used
+crates\explorer-app\src\bin\..\mft_sqlite.rs:1789:4: warning: function `commit_transaction` is never used
+warning: `explorer-app` (bin "superexplorer-mft-service") generated 67 warnings (12 duplicates) (run `cargo fix --bin "superexplorer-mft-service" -p explorer-app` to apply 7 suggestions)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 14.58s

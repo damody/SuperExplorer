@@ -1,0 +1,37 @@
+{
+  "schema_version": 1,
+  "gate": "UCG-FOCUS-JOURNAL",
+  "captured_at": "2026-08-26T12:00:11.2120305+08:00",
+  "preimage_check": "passed before each file patch",
+  "location_id_ranges": {
+    "mft_focus.rs": ["UCG-0031", "UCG-0054"],
+    "mft_journal.rs": ["UCG-0055", "UCG-0062"]
+  },
+  "disposition": "expected-reviewed",
+  "reviewed_invariants": [
+    "named-pipe UTF-16 names and buffer extents",
+    "security descriptor allocator pairing",
+    "unique handle and event ownership",
+    "OVERLAPPED storage lifetime, cancellation, and drain",
+    "USN output byte bounds before record parsing"
+  ],
+  "targeted_check": {
+    "command": "cargo check -p explorer-app --lib --bins --locked --message-format=short",
+    "exit_status": 0,
+    "focus_journal_unsafe_diagnostics": 0,
+    "unfulfilled_expectations": 0
+  },
+  "workspace_warning_counts": {
+    "dead_code": 417,
+    "unsafe_code": 132,
+    "unused_imports": 1,
+    "unused_mut": 1,
+    "unused_qualifications": 19,
+    "unused_variables": 5
+  },
+  "non_unsafe_regression": false,
+  "post_edit_hashes": {
+    "crates/explorer-app/src/mft_focus.rs": "d2e44c8bf19f37d81123b7081c6de04c4448fd6be9982578b2c39724bdeec02b",
+    "crates/explorer-app/src/mft_journal.rs": "3a046471fbabfe1d8a874aaa744c7ab1e0198069e96082cfd1cc285045f13c35"
+  }
+}

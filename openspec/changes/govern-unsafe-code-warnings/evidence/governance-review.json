@@ -1,0 +1,31 @@
+{
+  "schema_version": 1,
+  "gate": "UCG-POLICY",
+  "captured_at": "2026-08-26T11:55:06.9511110+08:00",
+  "baseline_reference": "baseline.json",
+  "procedure": {
+    "new_broad_suppression": "Reject newly added inner allow/expect attributes and any item expectation whose span covers unrelated unsafe boundaries.",
+    "reason_quality": "Require a concrete ABI, handle, pointer, callback, or operating-system contract; reject generic FFI-only wording.",
+    "safety_invariant": "Require adjacent SAFETY documentation for pointer extent, initialization, ownership, lifecycle, thread/apartment, panic/non-unwind, result validation, and cleanup when applicable.",
+    "write_attribution": "Compare expected SHA-256 and relevant preimage before every patch; verify intended hunks and record the new hash immediately after each patch.",
+    "stale_expectations": "Treat every unfulfilled_lint_expectations diagnostic as blocking and remove or relocate the expectation."
+  },
+  "baseline_result": {
+    "expected_unsafe_code_failures": 116,
+    "module_or_crate_suppressions_deferred": 7,
+    "item_suppressions_deferred": 30,
+    "new_broad_suppressions_introduced": 0,
+    "unrelated_warning_policy_changes": 0
+  },
+  "evidence_schema": {
+    "path": "schema.json",
+    "sha256": "64b551f499943d6d66821c73e4ce41e7cc5013b5e0251fda360de28d32eb8a89"
+  },
+  "validator": {
+    "path": "../scripts/Test-UnsafeEvidence.ps1",
+    "sha256": "f61e72f154602fb5d7ab2aa5d9edb7ceb55c3953662802c3196c1dbddd62b9a3",
+    "self_test_command": "powershell -File scripts/Test-UnsafeEvidence.ps1 -SelfTest",
+    "self_test_exit_status": 0,
+    "self_test_result": "PASS: evidence validator fixtures"
+  }
+}

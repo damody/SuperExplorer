@@ -1,0 +1,40 @@
+{
+  "schema_version": 1,
+  "gate": "UCG-STORAGE-INDEX",
+  "captured_at": "2026-08-26T12:02:51.7300747+08:00",
+  "preimage_check": "passed before each file patch",
+  "location_id_ranges": {
+    "mft_migration.rs": ["UCG-0063", "UCG-0072"],
+    "mft_size_map.rs": ["UCG-0099", "UCG-0108"],
+    "mft_sqlite.rs": ["UCG-0109", "UCG-0111"]
+  },
+  "disposition": "expected-reviewed",
+  "reviewed_invariants": [
+    "exclusive file handle identity, rename, disposition, and hard-link calls",
+    "volume handle and DeviceIoControl buffer extents",
+    "elevated helper process ownership, termination, and wait",
+    "SQLite raw connection lifetime and file-control argument storage",
+    "atomic ReplaceFileW UTF-16 path lifetime"
+  ],
+  "targeted_check": {
+    "command": "cargo check -p explorer-app --lib --bins --locked --message-format=short",
+    "exit_status": 0,
+    "storage_index_unsafe_diagnostics": 0,
+    "unfulfilled_expectations": 0
+  },
+  "workspace_warning_counts": {
+    "dead_code": 417,
+    "unsafe_code": 76,
+    "unused_imports": 1,
+    "unused_mut": 1,
+    "unused_qualifications": 19,
+    "unused_variables": 5
+  },
+  "non_unsafe_regression": false,
+  "post_edit_hashes": {
+    "crates/explorer-app/src/mft_migration.rs": "0051d0451d0efbd713d2cfd00ddd4bad654431523a4036888167b37de4ebb6af",
+    "crates/explorer-app/src/mft_size_map.rs": "5fde574f24ca9b2bf01c05bbb398bb668fc34ea437c6fd5c083392398769ed45",
+    "crates/explorer-app/src/mft_sqlite.rs": "c14c081ef3c542be28c165509e9b464848580ea17ad233f26bcf577ac884fd70"
+  },
+  "dirty_tree_preservation": "The pre-existing mft_size_map.rs architecture-check comment remains unchanged; added hunks are limited to expectation and safety documentation."
+}

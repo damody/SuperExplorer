@@ -1,0 +1,24 @@
+{
+  "schema_version": 1,
+  "gate": "UCG-ALL-TARGET-STATUS",
+  "captured_at": "2026-08-26T12:08:14.3608409+08:00",
+  "command": "cargo check --workspace --all-targets --locked --offline --message-format=json",
+  "exit_status": 101,
+  "classification": "pre-existing-out-of-scope",
+  "unsafe_code_diagnostics": 0,
+  "errors": [
+    {
+      "code": "E0063",
+      "message": "missing field `folder_admission` in initializer of `contribution_gate::ContributionRegistrationV1`",
+      "file": "crates/explorer-extension-host/src/contribution_gate.rs",
+      "line": 178
+    },
+    {
+      "code": "E0063",
+      "message": "missing field `folder_admission` in initializer of `contribution_gate::ContributionRegistrationV1`",
+      "file": "crates/explorer-extension-host/src/contribution_gate.rs",
+      "line": 196
+    }
+  ],
+  "scope_note": "The failing test initializers are outside the twelve governed files and are unrelated to unsafe-code warning governance."
+}

@@ -1,0 +1,38 @@
+{
+  "schema_version": 1,
+  "gate": "UCG-QUERY-SERVICE",
+  "captured_at": "2026-08-26T12:08:14.3608409+08:00",
+  "preimage_check": "passed before each file patch",
+  "location_id_ranges": {
+    "mft_query.rs": ["UCG-0073", "UCG-0098"],
+    "mft_service.rs": ["UCG-0004", "UCG-0027"]
+  },
+  "disposition": "expected-reviewed",
+  "reviewed_invariants": [
+    "named-pipe handle ownership, synchronous buffer extent, and immediate last-error inspection",
+    "security descriptor allocation and LocalFree ownership",
+    "SCM callback ABI, ignored foreign argv, and non-unwind boundary",
+    "process, token, session, SID, and image-buffer lifetime checks",
+    "service table, callback, status, and atomic cache replacement pointer lifetimes"
+  ],
+  "targeted_check": {
+    "command": "cargo check -p explorer-app --lib --bins --locked --message-format=short",
+    "exit_status": 0,
+    "query_service_unsafe_diagnostics": 0,
+    "unfulfilled_expectations": 0
+  },
+  "workspace_warning_counts": {
+    "dead_code": 417,
+    "unsafe_code": 0,
+    "unused_imports": 1,
+    "unused_mut": 1,
+    "unused_qualifications": 19,
+    "unused_variables": 5
+  },
+  "non_unsafe_regression": false,
+  "post_edit_hashes": {
+    "crates/explorer-app/src/mft_query.rs": "6e7c1b057e81057963daadc3dae9383beb439722dbf0a012a5f91441d5f0a76c",
+    "crates/explorer-app/src/bin/mft_service.rs": "e9cd7bccd79356056cf41b67e50b7d62afed06401405e99405617154b4e49e8b"
+  },
+  "dirty_tree_preservation": "Edits are limited to lint expectations and adjacent safety documentation; service and query behavior is unchanged."
+}

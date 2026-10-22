@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Unsafe code governance evidence",
+  "type": "object",
+  "required": ["schema_version", "tasks", "current_files"],
+  "properties": {
+    "schema_version": { "const": 1 },
+    "tasks": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["task_id", "status", "current", "procedure", "expected", "actual", "gate", "timestamp", "source_hashes"],
+        "properties": {
+          "task_id": { "type": "string", "pattern": "^[1-9][0-9]*\\.[1-9][0-9]*\\.[1-9][0-9]*$" },
+          "status": { "enum": ["passed", "not-applicable", "superseded", "stale"] },
+          "current": { "type": "boolean" },
+          "replacement_task_id": { "type": ["string", "null"] },
+          "source_hashes": {
+            "type": "object",
+            "additionalProperties": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
+          }
+        }
+      }
+    },
+    "current_files": {
+      "type": "object",
+      "additionalProperties": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
+    }
+  }
+}

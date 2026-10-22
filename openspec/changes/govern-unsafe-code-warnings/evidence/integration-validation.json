@@ -1,0 +1,54 @@
+{
+  "schema_version": 1,
+  "gate": "UCG-INTEGRATION",
+  "captured_at": "2026-08-26T12:08:14.3608409+08:00",
+  "format": {
+    "command": "cargo fmt --all --check",
+    "exit_status": 0,
+    "repository_writes": false
+  },
+  "policy_review": {
+    "expect_attributes": 61,
+    "new_unsafe_allow_attributes": 0,
+    "generic_reasons": 0,
+    "missing_safety_invariants": 0,
+    "unfulfilled_expectations": 0,
+    "deferred_suppressions_unchanged": true,
+    "manual_callback_non_unwind_review": "passed"
+  },
+  "targeted_checks": [
+    {
+      "command": "cargo check -p explorer-extension-host --locked --offline --message-format=short",
+      "exit_status": 0
+    },
+    {
+      "command": "cargo check -p explorer-app --lib --bins --locked --offline --message-format=short",
+      "exit_status": 0
+    }
+  ],
+  "workspace_lib_bins": {
+    "command": "cargo check --workspace --lib --bins --locked --offline --message-format=json",
+    "exit_status": 0,
+    "warning_counts": {
+      "dead_code": 417,
+      "unsafe_code": 0,
+      "unused_imports": 1,
+      "unused_mut": 1,
+      "unused_qualifications": 19,
+      "unused_variables": 5
+    }
+  },
+  "workspace_normal": {
+    "command": "cargo check --workspace --locked --offline --message-format=json",
+    "exit_status": 0,
+    "warning_counts": {
+      "dead_code": 417,
+      "unsafe_code": 0,
+      "unused_imports": 1,
+      "unused_mut": 1,
+      "unused_qualifications": 19,
+      "unused_variables": 5
+    }
+  },
+  "non_unsafe_regression": false
+}

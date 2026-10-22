@@ -1,0 +1,59 @@
+{
+  "schema_version": 1,
+  "gate": "UCG-FINAL",
+  "captured_at": "2026-08-26T12:10:08.9614753+08:00",
+  "revision": "44a9ac11a67c0630d9b0c031750d77f5901d59f6",
+  "toolchain": {
+    "rustc": "rustc 1.97.1 (8bab26f4f 2026-07-14)",
+    "cargo": "cargo 1.97.1 (c980f4866 2026-06-30)",
+    "host": "x86_64-pc-windows-msvc",
+    "dependencies": "locked",
+    "network": "offline for final Cargo gates"
+  },
+  "result": {
+    "baseline_canonical_unsafe_locations": 116,
+    "final_unsafe_code_diagnostics": 0,
+    "unfulfilled_expectations": 0,
+    "mandatory_tasks": 47,
+    "evidence_validator": "passed",
+    "openspec_strict_validation": "passed"
+  },
+  "residual_non_unsafe_warnings": {
+    "dead_code": 417,
+    "unused_imports": 1,
+    "unused_mut": 1,
+    "unused_qualifications": 19,
+    "unused_variables": 5
+  },
+  "deferred_suppressions": {
+    "count": 37,
+    "status": "unchanged and recorded in baseline.json",
+    "scope": "pre-existing unsafe_code allows outside this change's governed locations"
+  },
+  "dirty_tree_preservation": "The workspace was already substantially dirty. Preimage hashes and scoped diffs were captured before editing; implementation changes in the twelve governed files are limited to narrow lint expectations and adjacent safety documentation. Existing application, remote-service, and size-map work was preserved.",
+  "scoped_diff_review": {
+    "behavior_change": false,
+    "abi_change": false,
+    "persistence_change": false,
+    "dependency_change": false,
+    "process_topology_change": false,
+    "dead_code_change": false,
+    "unrelated_work_reverted": false,
+    "line_ending_note": "git diff reports the repository's existing LF-to-CRLF checkout warning; no formatting rewrite was performed"
+  },
+  "out_of_scope_all_target_failure": {
+    "status": "recorded",
+    "details": "Two existing E0063 test initializer errors for missing folder_admission in explorer-extension-host contribution_gate.rs",
+    "evidence": "all-target-status.json"
+  },
+  "requirements_trace": {
+    "canonical_inventory": ["UCG-BASE", "baseline.json"],
+    "expectation_policy": ["UCG-POLICY", "governance-review.json"],
+    "small_boundaries": ["UCG-SMALL", "batch-small.json"],
+    "focus_and_journal": ["UCG-FOCUS-JOURNAL", "batch-focus-journal.json"],
+    "storage_and_index": ["UCG-STORAGE-INDEX", "batch-storage-index.json"],
+    "query_and_service": ["UCG-QUERY-SERVICE", "batch-query-service.json"],
+    "workspace_integration": ["UCG-INTEGRATION", "integration-validation.json"],
+    "final_traceability": ["UCG-FINAL", "index.json"]
+  }
+}

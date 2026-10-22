@@ -1,0 +1,42 @@
+{
+  "schema_version": 1,
+  "gate": "UCG-SMALL",
+  "captured_at": "2026-08-26T11:58:00.9723292+08:00",
+  "adjustment_id": "ADJ-B-001",
+  "preimage_check": "passed for all five files before each patch",
+  "location_dispositions": {
+    "UCG-0001": "expected-reviewed",
+    "UCG-0002": "expected-reviewed",
+    "UCG-0003": "expected-reviewed",
+    "UCG-0028": "expected-reviewed",
+    "UCG-0029": "expected-reviewed",
+    "UCG-0030": "expected-reviewed",
+    "UCG-0112": "expected-reviewed",
+    "UCG-0113": "expected-reviewed",
+    "UCG-0114": "expected-reviewed",
+    "UCG-0115": "expected-reviewed",
+    "UCG-0116": "expected-reviewed"
+  },
+  "targeted_check": {
+    "command": "cargo check -p explorer-extension-host -p explorer-app --lib --bins --locked --message-format=short",
+    "exit_status": 0,
+    "small_batch_unsafe_diagnostics": 0
+  },
+  "workspace_warning_counts": {
+    "dead_code": 417,
+    "unsafe_code": 204,
+    "unused_imports": 1,
+    "unused_mut": 1,
+    "unused_qualifications": 19,
+    "unused_variables": 5
+  },
+  "non_unsafe_regression": false,
+  "post_edit_hashes": {
+    "crates/explorer-app/src/main.rs": "eae4ef75a164a759dadea7b2584fda8fd646af5d5112a47995f0fc41206d4f83",
+    "crates/explorer-app/src/application.rs": "272e960107645b57b8d5a5a35d16e7a9d092d2e8e840ab1d637d4dd3e03f44d7",
+    "crates/explorer-app/src/brokered_service.rs": "7edeb5bdacd8c6720896bae5cabc55c45ee78cd8a35f55363291bc583a9e87a5",
+    "crates/explorer-app/src/remote_service.rs": "486fef866a08a5fed4101491ed25ce71369dcdefa62010fc596ce22f78df00dd",
+    "crates/explorer-extension-host/src/virtual_container_mutation.rs": "10811966867e4f3046d08a358d7279e557d23b8834c6fd3c9255240a36e6125f"
+  },
+  "dirty_tree_preservation": "Pre-existing application.rs and remote_service.rs hunks remain present; new hunks are limited to unsafe expectations and adjacent SAFETY documentation."
+}
