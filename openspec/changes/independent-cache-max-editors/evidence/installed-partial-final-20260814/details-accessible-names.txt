@@ -1,0 +1,174 @@
+﻿aggregate-fixture
+aggregate-fixture folder icon
+Close tab
+New tab
+Minimize
+Maximize or restore; Windows Snap Layout available
+Close
+Explorer navigation bar
+Back
+Forward
+Up
+Refresh
+Address: D:\SuperExplorer\openspec\changes\independent-cache-max-editors\evidence\installed-partial-final-20260814\aggregate-fixture
+本機
+列出磁碟機
+顯示較舊的路徑層級
+Go to aggregate-fixture
+列出 aggregate-fixture 的子資料夾
+搜尋 aggregate-fixture; 最近搜尋 0 筆
+Add current folder to bookmarks
+Add Lua bookmark
+Manage bookmarks
+Explorer command bar
+Create a new item
+Cut selected items
+Copy selected items
+Paste clipboard items
+Rename selected item
+Share selected items
+Move selected items to the Recycle Bin
+Sort
+View
+其它
+擴充功能
+Navigation pane; services unavailable
+常用
+Quick access (Unavailable)
+圖庫
+OneDrive - Personal
+Expand
+桌面
+下載
+文件
+圖片
+音樂
+影片
+Libraries
+Collapse
+本機磁碟 (C:)
+新增磁碟區 (D:)
+新增磁碟區 (E:)
+網路
+Recycle Bin
+Navigation pane vertical scroll bar
+Resize navigation pane
+Folder is ready
+partial-known-parent Folder
+partial-known-parent icon
+Date modified: 2026/8/14 下午 06:07
+Type: 檔案資料夾
+Size: 
+aaa-omitted-0000.txt File
+aaa-omitted-0000.txt icon
+Type: Text 來源檔案
+Size: 0 KB
+aaa-omitted-0001.txt File
+aaa-omitted-0001.txt icon
+aaa-omitted-0002.txt File
+aaa-omitted-0002.txt icon
+aaa-omitted-0003.txt File
+aaa-omitted-0003.txt icon
+aaa-omitted-0004.txt File
+aaa-omitted-0004.txt icon
+aaa-omitted-0005.txt File
+aaa-omitted-0005.txt icon
+aaa-omitted-0006.txt File
+aaa-omitted-0006.txt icon
+aaa-omitted-0007.txt File
+aaa-omitted-0007.txt icon
+aaa-omitted-0008.txt File
+aaa-omitted-0008.txt icon
+aaa-omitted-0009.txt File
+aaa-omitted-0009.txt icon
+dynamic_columns.rs File
+dynamic_columns.rs icon
+Date modified: 2026/8/14 下午 04:54
+Type: Rust 來源檔案
+Size: 17.4 KB
+tiny-0000.txt File
+tiny-0000.txt icon
+Size: 1.0 KB
+tiny-0001.txt File
+tiny-0001.txt icon
+tiny-0002.txt File
+tiny-0002.txt icon
+tiny-0003.txt File
+tiny-0003.txt icon
+tiny-0004.txt File
+tiny-0004.txt icon
+tiny-0005.txt File
+tiny-0005.txt icon
+tiny-0006.txt File
+tiny-0006.txt icon
+tiny-0007.txt File
+tiny-0007.txt icon
+tiny-0008.txt File
+tiny-0008.txt icon
+tiny-0009.txt File
+tiny-0009.txt icon
+tiny-0010.txt File
+tiny-0010.txt icon
+tiny-0011.txt File
+tiny-0011.txt icon
+tiny-0012.txt File
+tiny-0012.txt icon
+tiny-0013.txt File
+tiny-0013.txt icon
+tiny-0014.txt File
+tiny-0014.txt icon
+tiny-0015.txt File
+tiny-0015.txt icon
+tiny-0016.txt File
+tiny-0016.txt icon
+tiny-0017.txt File
+tiny-0017.txt icon
+tiny-0018.txt File
+tiny-0018.txt icon
+tiny-0019.txt File
+tiny-0019.txt icon
+tiny-0020.txt File
+tiny-0020.txt icon
+tiny-0021.txt File
+tiny-0021.txt icon
+tiny-0022.txt File
+tiny-0022.txt icon
+tiny-0023.txt File
+tiny-0023.txt icon
+tiny-0024.txt File
+tiny-0024.txt icon
+tiny-0025.txt File
+tiny-0025.txt icon
+tiny-0026.txt File
+tiny-0026.txt icon
+tiny-0027.txt File
+tiny-0027.txt icon
+tiny-0028.txt File
+tiny-0028.txt icon
+tiny-0029.txt File
+tiny-0029.txt icon
+tiny-0030.txt File
+tiny-0030.txt icon
+tiny-0031.txt File
+tiny-0031.txt icon
+Details columns: Name, Date modified, Type, Size, Folder size
+Name, sorted   ↑
+Filter Name
+Resize Name column
+Sort by Date modified
+Filter Date modified
+Resize Date modified column
+Sort by Type
+Filter Type
+Resize Type column
+Sort by Size
+Filter Size
+Resize Size column
+Sort by Folder size
+Filter Folder size
+Resize Folder size column
+File view vertical scroll bar
+File view horizontal scroll bar
+44 items | Folder size: Host cache
+Details view
+Icon view
