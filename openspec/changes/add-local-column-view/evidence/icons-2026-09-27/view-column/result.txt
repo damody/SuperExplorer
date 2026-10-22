@@ -1,0 +1,6 @@
+﻿open-view 950,320
+click-columns 953,842
+reopen-view 953,322
+after-reopen columns=True details=True
+click-details 953,674
+clicked-details

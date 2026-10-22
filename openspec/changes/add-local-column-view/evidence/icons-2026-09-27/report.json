@@ -1,0 +1,13 @@
+﻿{
+    "status":  "PASS",
+    "reason":  "Column rows exposed column-icon images.",
+    "iconCount":  22,
+    "rowCount":  4,
+    "screenshot":  "D:\\SuperExplorer\\openspec\\changes\\add-local-column-view\\evidence\\icons-2026-09-27\\column-icons.png",
+    "observed":  [
+                     "view click: invoke",
+                     "columns click: pointer",
+                     "column-icon images: 22",
+                     "matching rows: 4"
+                 ]
+}

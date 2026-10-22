@@ -1,0 +1,9 @@
+﻿{
+    "status":  "SKIP",
+    "reason":  "Headful pointer, keyboard, UIA, and preview-handler interaction for Columns was not driven in this run. Deterministic model and UI reducer coverage is local-column-view-contract. This script only creates a runner-owned fixture and does not claim a window interaction passed.",
+    "fixture":  "D:\\SuperExplorer\\openspec\\changes\\add-local-column-view\\evidence\\headful-skip\\fixture",
+    "observed":  [
+                     "Created nested local folders and files under the runner evidence directory.",
+                     "Did not launch SuperExplorer or send input, so View menu, horizontal scroll, Alt+P, and stale preview were not observed here."
+                 ]
+}

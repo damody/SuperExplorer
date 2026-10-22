@@ -1,0 +1,10 @@
+﻿{
+    "status":  "FAIL",
+    "reason":  "以 \"1\" 引數呼叫 \"GetCurrentPattern\" 時發生例外狀況: \"不支援的模式。\"",
+    "fixture":  "D:\\SuperExplorer\\openspec\\changes\\add-local-column-view\\evidence\\headful-2026-09-26\\fixture\\a",
+    "executable":  "D:\\SuperExplorer\\target\\debug\\SuperExplorer.exe",
+    "observed":  [
+                     "found view button: 檢視",
+                     "found columns item: 分欄"
+                 ]
+}

@@ -1,0 +1,13 @@
+﻿{
+    "status":  "PASS",
+    "reason":  "View menu exposed Columns and the column surface was discoverable through UIA.",
+    "fixture":  "D:\\SuperExplorer\\openspec\\changes\\add-local-column-view\\evidence\\headful-2026-09-26-rerun\\fixture\\a",
+    "executable":  "D:\\SuperExplorer\\target\\debug\\SuperExplorer.exe",
+    "observed":  [
+                     "found view button: 檢視",
+                     "view click: invoke",
+                     "found columns item: 分欄",
+                     "columns click: pointer",
+                     "column surface: 分欄檢視"
+                 ]
+}
