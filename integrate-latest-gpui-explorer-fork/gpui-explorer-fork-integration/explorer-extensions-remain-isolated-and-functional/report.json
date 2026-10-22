@@ -1,0 +1,56 @@
+{
+  "schema_version": 2,
+  "run_id": "1785853066-1d7301e75bcb4b53a639c60134c95cd1",
+  "started_utc": "unix:1785853066",
+  "workspace": "D:\\SuperExplorer",
+  "git_revision": "1c5f44611935",
+  "git_dirty": true,
+  "host": {
+    "windows_build": "26200",
+    "rustc": "rustc 1.97.1 (8bab26f4f 2026-07-14)",
+    "cargo": "cargo 1.97.1 (c980f4866 2026-06-30)",
+    "architecture": "x86_64"
+  },
+  "selected_suites": [
+    "quick"
+  ],
+  "selected_cases": [
+    "rust-folder-size-visual-column-headful"
+  ],
+  "counts": {
+    "PASS": 1
+  },
+  "results": [
+    {
+      "id": "rust-folder-size-visual-column-headful",
+      "description": "Load the canonical Rust folder-size visual column with a deterministic sample tree, require completed exact values and ordinary shell DataItems, verify numeric sorting, toggle the proportional bar through the header setting, and recover after F5 without stale-generation presentation.",
+      "status": "PASS",
+      "started_utc": "unix:1785853066",
+      "duration_ms": 5338,
+      "command": "powershell.exe -Sta -NoProfile -ExecutionPolicy Bypass -File D:\\SuperExplorer\\scripts\\smoke_folder_size_visual_column.ps1 -Executable D:\\SuperExplorer\\target\\debug\\SuperExplorer.exe -PluginDll D:\\SuperExplorer\\sdk\\fixtures\\rust-folder-size-visual-column\\target\\x86_64-pc-windows-msvc\\debug\\rust_folder_size_visual_column.dll -OutputDirectory D:\\SuperExplorer\\integrate-latest-gpui-explorer-fork/gpui-explorer-fork-integration/explorer-extensions-remain-isolated-and-functional\\evidence\\rust-folder-size-visual-column-headful",
+      "exit_code": 0,
+      "terminal_reason": null,
+      "stdout": "logs/rust-folder-size-visual-column-headful.stdout.log",
+      "stderr": "logs/rust-folder-size-visual-column-headful.stderr.log",
+      "evidence_directory": "evidence/rust-folder-size-visual-column-headful",
+      "artifacts": [
+        "evidence/rust-folder-size-visual-column-headful/folder-size-bar-off.png",
+        "evidence/rust-folder-size-visual-column-headful/folder-size-bar-on.png",
+        "evidence/rust-folder-size-visual-column-headful/folder-size-column.png",
+        "evidence/rust-folder-size-visual-column-headful/report.json"
+      ],
+      "requirements": [
+        "build-extensible-plugin-platform/source-example-plugin-suite/folder-size-visual-column-example"
+      ],
+      "rerun_command": "cargo run -p explorer-uitest -- --manifest uitest/manifest.json --case rust-folder-size-visual-column-headful",
+      "process": {
+        "launched_pid": 63708,
+        "before_count": 371,
+        "after_count": 374,
+        "detected_residual_pids": [],
+        "residual_pids": [],
+        "cleanup_attempted": false
+      }
+    }
+  ]
+}
