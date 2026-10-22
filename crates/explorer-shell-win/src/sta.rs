@@ -671,83 +671,139 @@ struct IconJob {
     context: explorer_model::RequestContext,
     key: explorer_model::ShellIconKey,
     terminals: ReliableTerminalPublisher,
+    queued_at: Instant,
 }
 
+const BASIC_ICON_WORKERS: usize = 2;
+const OPTIONAL_ICON_WORKERS: usize = 4;
+pub(crate) const ICON_WORKER_COUNT: usize = BASIC_ICON_WORKERS + OPTIONAL_ICON_WORKERS;
+
 struct IconWorker {
-    sender: SyncSender<IconJob>,
+    basic: SyncSender<IconJob>,
+    optional: SyncSender<IconJob>,
 }
 
 impl IconWorker {
     fn start() -> Result<Self, ExplorerError> {
+        Ok(Self {
+            basic: Self::start_lane("basic", BASIC_ICON_WORKERS)?,
+            optional: Self::start_lane("optional", OPTIONAL_ICON_WORKERS)?,
+        })
+    }
+
+    fn start_lane(
+        name: &'static str,
+        workers: usize,
+    ) -> Result<SyncSender<IconJob>, ExplorerError> {
         let (sender, receiver) = mpsc::sync_channel::<IconJob>(COMMAND_QUEUE_CAPACITY);
-        thread::Builder::new()
-            .name("explorer-shell-icons".to_owned())
-            .spawn(move || {
-                let apartment = ApartmentGuard::initialize();
-                let mut cache = crate::icon::ShellIconCache::default();
-                loop {
-                    let _ = pump_pending_messages();
-                    let job = match receiver.recv_timeout(MESSAGE_PUMP_INTERVAL) {
-                        Ok(job) => job,
-                        Err(RecvTimeoutError::Timeout) => continue,
-                        Err(RecvTimeoutError::Disconnected) => break,
-                    };
-                    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                        #[cfg(test)]
-                        wait_for_icon_test_gate(&job.context);
-                        if apartment.is_err() || job.context.cancellation.is_cancelled() {
-                            return None;
-                        }
-                        match cache.load(&job.key) {
-                            Ok(payload) => Some(payload),
-                            Err(error) => {
-                                tracing::debug!(?error, "Shell icon fallback remains active");
-                                record_process_error(
-                                    ErrorSeverity::Warning,
-                                    "shell",
-                                    &error.operation,
-                                    &error,
-                                    Some(file!()),
-                                );
-                                None
+        let receiver = Arc::new(Mutex::new(receiver));
+        for index in 0..workers {
+            let receiver = Arc::clone(&receiver);
+            thread::Builder::new()
+                .name(format!("explorer-shell-icons-{name}-{index}"))
+                .spawn(move || {
+                    let apartment = ApartmentGuard::initialize();
+                    let trace_timing = std::env::var_os("EXPLORER_ICON_TIMING").is_some();
+                    let mut cache = crate::icon::ShellIconCache::with_capacity(
+                        crate::icon::SHELL_ICON_CACHE_CAPACITY / ICON_WORKER_COUNT,
+                    );
+                    loop {
+                        let _ = pump_pending_messages();
+                        // Hold the queue lock only while receiving. Each icon is resolved on
+                        // its own owning STA, so one slow handler cannot serialize this lane.
+                        let received = {
+                            let Ok(receiver) = receiver.lock() else {
+                                break;
+                            };
+                            receiver.recv_timeout(Duration::from_millis(50))
+                        };
+                        let job = match received {
+                            Ok(job) => job,
+                            Err(RecvTimeoutError::Timeout) => continue,
+                            Err(RecvTimeoutError::Disconnected) => break,
+                        };
+                        let started = Instant::now();
+                        let queue_ms = job.queued_at.elapsed().as_millis();
+                        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                            #[cfg(test)]
+                            wait_for_icon_test_gate(&job.context);
+                            if apartment.is_err() || job.context.cancellation.is_cancelled() {
+                                return None;
                             }
+                            match cache.load(&job.key) {
+                                Ok(payload) => Some(payload),
+                                Err(error) => {
+                                    tracing::debug!(?error, "Shell icon fallback remains active");
+                                    record_process_error(
+                                        ErrorSeverity::Warning,
+                                        "shell",
+                                        &error.operation,
+                                        &error,
+                                        Some(file!()),
+                                    );
+                                    None
+                                }
+                            }
+                        }));
+                        if let Err(payload) = &result {
+                            log_isolated_panic(
+                                "shell",
+                                "icon_worker",
+                                payload.as_ref(),
+                                Some(file!()),
+                            );
                         }
-                    }));
-                    if let Err(payload) = &result {
-                        log_isolated_panic("shell", "icon_worker", payload.as_ref(), Some(file!()));
-                    }
-                    let event = match result {
-                        Ok(Some(payload)) if !job.context.cancellation.is_cancelled() => {
-                            ExplorerEvent::ShellIconLoaded {
+                        let event = match result {
+                            Ok(Some(payload)) if !job.context.cancellation.is_cancelled() => {
+                                ExplorerEvent::ShellIconLoaded {
+                                    context: job.context,
+                                    payload,
+                                }
+                            }
+                            _ => ExplorerEvent::ShellIconFailed {
                                 context: job.context,
-                                payload,
-                            }
+                                key: job.key,
+                                reason: explorer_model::ShellIconFallbackReason::ShellUnavailable,
+                            },
+                        };
+                        job.terminals.publish(event);
+                        if trace_timing {
+                            tracing::info!(
+                                lane = name,
+                                queue_ms,
+                                load_ms = started.elapsed().as_millis(),
+                                "Shell icon timing"
+                            );
                         }
-                        _ => ExplorerEvent::ShellIconFailed {
-                            context: job.context,
-                            key: job.key,
-                            reason: explorer_model::ShellIconFallbackReason::ShellUnavailable,
-                        },
-                    };
-                    job.terminals.publish(event);
-                }
-                // The owning STA drops its sender during shutdown. The worker's
-                // apartment and icon cache are released here on their own thread.
-            })
-            .map_err(|error| {
-                ExplorerError::new(
-                    ExplorerErrorKind::Availability,
-                    "start icon worker",
-                    true,
-                    "Shell icons are temporarily unavailable.",
-                    error.to_string(),
-                )
-            })?;
-        Ok(Self { sender })
+                        tracing::debug!(
+                            lane = name,
+                            elapsed_ms = started.elapsed().as_millis(),
+                            "Shell icon load completed"
+                        );
+                    }
+                    // The owning STA drops its sender during shutdown. The worker's
+                    // apartment and icon cache are released here on their own thread.
+                })
+                .map_err(|error| {
+                    ExplorerError::new(
+                        ExplorerErrorKind::Availability,
+                        "start icon worker",
+                        true,
+                        "Shell icons are temporarily unavailable.",
+                        error.to_string(),
+                    )
+                })?;
+        }
+        Ok(sender)
     }
 
     fn submit(&self, job: IconJob) -> Result<(), ExplorerError> {
-        self.sender.try_send(job).map_err(|_| {
+        let sender = if basic_icon_key(&job.key) {
+            &self.basic
+        } else {
+            &self.optional
+        };
+        sender.try_send(job).map_err(|_| {
             ExplorerError::new(
                 ExplorerErrorKind::Availability,
                 "queue icon load",
@@ -756,6 +812,25 @@ impl IconWorker {
                 "bounded icon worker queue is full or closed",
             )
         })
+    }
+}
+
+fn basic_icon_key(key: &explorer_model::ShellIconKey) -> bool {
+    if key.item_id.is_none() && key.association_generation > 0 && key.overlay_generation == 0 {
+        // Attribute-only base icons never inspect the real item or its overlays.
+        return true;
+    }
+    match &key.location {
+        LocationDescriptor::KnownFolder(_) | LocationDescriptor::ParsingName(_) => true,
+        LocationDescriptor::FileSystem(path) => {
+            path.is_absolute() && path.parent().is_none()
+                && path.components().next().is_some_and(|component| {
+                    matches!(component, std::path::Component::Prefix(prefix)
+                        if matches!(prefix.kind(), std::path::Prefix::Disk(_) | std::path::Prefix::VerbatimDisk(_)))
+                })
+                && crate::navigation::drive_kind_for_path(path) != explorer_model::DriveKind::Network
+        }
+        LocationDescriptor::ShellNamespace(_) | LocationDescriptor::Virtual(_) => false,
     }
 }
 
@@ -1768,9 +1843,11 @@ fn process_command(
                 context: context.clone(),
                 key: key.clone(),
                 terminals: typed_terminals.clone(),
+                queued_at: Instant::now(),
             };
             // Keep live overlay handlers and disk-cache work off navigation's STA.
-            // A blocked icon can delay other icons, but cannot delay opening a folder.
+            // Basic OS/type icons have reserved STAs. Optional network and live-overlay
+            // handlers cannot monopolize that capacity or navigation's STA.
             match &runtime.icon_worker {
                 Some(worker) => worker.submit(job),
                 None => IconWorker::start().and_then(|worker| {
@@ -3322,6 +3399,106 @@ fn pump_pending_messages() -> bool {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn stalled_optional_icons_do_not_block_basic_icons() {
+        let _serial = TEST_LOCK.lock().unwrap();
+        let optional_context = RequestContext::new(TabId::new(), Generation::new(1));
+        let (started_tx, started_rx) = mpsc::sync_channel(4);
+        let release = Arc::new(AtomicBool::new(false));
+        struct ResetGate(RequestContext, Arc<AtomicBool>);
+        impl Drop for ResetGate {
+            fn drop(&mut self) {
+                self.0.cancellation.cancel();
+                self.1.store(true, Ordering::Release);
+                *super::ICON_TEST_GATE.lock().unwrap() = None;
+            }
+        }
+        let reset = ResetGate(optional_context.clone(), Arc::clone(&release));
+        *super::ICON_TEST_GATE.lock().unwrap() = Some(FileOperationTestGate {
+            request_id: optional_context.request_id,
+            started: started_tx,
+            release: Arc::clone(&release),
+        });
+        static TEST_ICON_COUNTERS: super::TerminalLaneCounters = super::TerminalLaneCounters::new();
+        let (terminals, receiver) = ReliableTerminalPublisher::channel(32, 32, &TEST_ICON_COUNTERS);
+        let worker = super::IconWorker::start().unwrap();
+        let key = explorer_model::ShellIconKey {
+            item_id: None,
+            location: LocationDescriptor::file_system(r"\\offline-icon-fixture\share\folder"),
+            size_bucket: 32,
+            dpi: 96,
+            theme: explorer_model::ShellIconTheme::Light,
+            association_generation: 0,
+            overlay_generation: 0,
+        };
+        assert!(!super::basic_icon_key(&key));
+        for _ in 0..4 {
+            worker
+                .submit(super::IconJob {
+                    context: optional_context.clone(),
+                    key: key.clone(),
+                    terminals: terminals.clone(),
+                    queued_at: Instant::now(),
+                })
+                .unwrap();
+        }
+        for _ in 0..4 {
+            started_rx
+                .recv_timeout(Duration::from_secs(3))
+                .expect("all optional workers blocked");
+        }
+        let basic_context = RequestContext::new(TabId::new(), Generation::new(1));
+        let started = Instant::now();
+        let roots = [
+            LocationDescriptor::ParsingName("shell:MyComputerFolder".into()),
+            LocationDescriptor::file_system(r"C:\"),
+            LocationDescriptor::KnownFolder(
+                windows::Win32::UI::Shell::FOLDERID_Desktop
+                    .to_u128()
+                    .to_be_bytes(),
+            ),
+        ];
+        for location in roots {
+            let key = explorer_model::ShellIconKey {
+                location,
+                ..key.clone()
+            };
+            assert!(super::basic_icon_key(&key));
+            worker
+                .submit(super::IconJob {
+                    context: basic_context.clone(),
+                    key,
+                    terminals: terminals.clone(),
+                    queued_at: Instant::now(),
+                })
+                .unwrap();
+        }
+        let mut loaded = 0;
+        while loaded < 3 && started.elapsed() < Duration::from_secs(3) {
+            match receiver.try_recv() {
+                Ok(ExplorerEvent::ShellIconLoaded { context, .. })
+                    if context.request_id == basic_context.request_id =>
+                {
+                    loaded += 1
+                }
+                Ok(event) => panic!("basic icon did not load: {event:?}"),
+                Err(mpsc::TryRecvError::Empty) => thread::sleep(Duration::from_millis(2)),
+                Err(error) => panic!("icon receiver closed: {error:?}"),
+            }
+        }
+        let elapsed = started.elapsed();
+        drop(reset);
+        drop(worker);
+        assert_eq!(
+            loaded, 3,
+            "all basic icons must complete while all optional workers remain blocked"
+        );
+        eprintln!(
+            "basic icons completed in {} ms with four stalled optional handlers",
+            elapsed.as_millis()
+        );
+    }
+
     #[test]
     fn stalled_shell_icon_does_not_block_opening_a_folder() {
         let _serial = TEST_LOCK.lock().unwrap();

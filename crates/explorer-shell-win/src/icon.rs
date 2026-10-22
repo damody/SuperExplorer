@@ -74,7 +74,7 @@ impl Default for ShellIconCache {
 }
 
 impl ShellIconCache {
-    fn with_capacity(capacity: usize) -> Self {
+    pub(crate) fn with_capacity(capacity: usize) -> Self {
         let disk = crate::icon_disk_cache::ShellIconDiskCache::default();
         let raw = crate::icon_raw_cache::RawIconCache::with_root(disk.raw_root());
         Self {
@@ -338,7 +338,7 @@ fn load_filesystem_icon_with_overlays(
     if key.size_bucket <= 256 {
         IMAGE_LIST_PIXELS.with(|cache| {
             let mut cache = cache.borrow_mut();
-            if cache.len() >= 256 {
+            if cache.len() >= 256 / crate::sta::ICON_WORKER_COUNT {
                 cache.clear();
             }
             cache.insert(pixels_key, payload.clone());
@@ -493,9 +493,10 @@ mod tests {
     fn real_large_folder_request_uses_jumbo_shell_pixels() {
         let _serial = REAL_SHELL_ICON_TEST_LOCK.lock().unwrap();
         let _apartment = crate::sta::ApartmentGuard::initialize().expect("STA initializes");
+        let fixture = tempfile::tempdir().expect("owned folder fixture");
         let payload = load(&ShellIconKey {
             item_id: ShellItemId::from_provider_bytes([204]),
-            location: LocationDescriptor::file_system(r"D:\test"),
+            location: LocationDescriptor::file_system(fixture.path()),
             size_bucket: 128,
             dpi: 96,
             theme: ShellIconTheme::Light,
@@ -834,30 +835,26 @@ mod tests {
     fn real_shell_icon_matrix_covers_folder_drive_archives_and_namespace() {
         let _serial = REAL_SHELL_ICON_TEST_LOCK.lock().unwrap();
         let _apartment = crate::sta::ApartmentGuard::initialize().expect("STA initializes");
+        let fixture = tempfile::tempdir().expect("owned icon matrix fixture");
+        let zip = fixture.path().join("fixture.zip");
+        let rar = fixture.path().join("fixture.rar");
+        let mut zip_end = [0u8; 22];
+        zip_end[..4].copy_from_slice(b"PK\x05\x06");
+        std::fs::write(&zip, zip_end).expect("empty ZIP fixture");
+        std::fs::write(&rar, b"Rar!\x1a\x07\x00").expect("RAR signature fixture");
+        let drive_root = std::env::var("SystemDrive").unwrap_or_else(|_| "C:".into()) + "\\";
         let mut locations = vec![
-            LocationDescriptor::file_system(r"D:\"),
-            LocationDescriptor::file_system(r"D:\test"),
+            LocationDescriptor::file_system(&drive_root),
+            LocationDescriptor::file_system(fixture.path()),
             LocationDescriptor::ParsingName("shell:MyComputerFolder".into()),
+            LocationDescriptor::file_system(zip),
+            LocationDescriptor::file_system(rar),
         ];
         if let Some(one_drive) =
             std::env::var_os("OneDrive").filter(|path| std::path::Path::new(path).is_dir())
         {
             locations.push(LocationDescriptor::file_system(one_drive));
         }
-        for entry in std::fs::read_dir(r"D:\").expect("D drive reads").flatten() {
-            let extension = entry
-                .path()
-                .extension()
-                .and_then(|value| value.to_str())
-                .map(str::to_ascii_lowercase);
-            if matches!(extension.as_deref(), Some("zip" | "rar")) {
-                locations.push(LocationDescriptor::file_system(entry.path()));
-            }
-        }
-        assert!(
-            locations.len() >= 5,
-            "D drive fixture must include ZIP and RAR"
-        );
         let mut hashes = Vec::new();
         for location in locations {
             let key = ShellIconKey {
@@ -894,7 +891,7 @@ mod tests {
 
         let folder = load(&ShellIconKey {
             item_id: None,
-            location: LocationDescriptor::file_system(r"D:\test"),
+            location: LocationDescriptor::file_system(fixture.path()),
             size_bucket: 32,
             dpi: 168,
             theme: ShellIconTheme::Light,
