@@ -11189,6 +11189,10 @@ fn breadcrumb_browse_field(
     let overflow_open = address.overflow_open;
     let keyboard_segment_id = address.focused_segment().map(|segment| segment.id);
     let keyboard_menu_index = address.keyboard_menu_index;
+    let remote_heading = address
+        .resolved_ancestry
+        .iter()
+        .find_map(|segment| breadcrumb_remote_heading(&segment.location));
     let (hidden_ancestry, visible_ancestry) = breadcrumb_ancestry_partition(
         address
             .resolved_ancestry
@@ -11241,21 +11245,40 @@ fn breadcrumb_browse_field(
             ADDRESS_EDITOR_ID,
             typography_diagnostic(tokens, tokens.typography.address),
         ))
-        .child(breadcrumb_root(
-            tokens,
-            catalog,
-            keyboard_segment_id == Some(explorer_model::BreadcrumbSegmentId(0)),
-            active_menu == Some(explorer_model::BreadcrumbSegmentId(0)),
-            menu_children.clone(),
-            menu_error.clone(),
-            menu_loading,
-            keyboard_menu_index,
-            menu_focus.clone(),
-            shell_icons.clone(),
-            shell_icon_theme,
-            shell_icon_dpi,
-            on_action.clone(),
-        ))
+        .child(if let Some((label_key, icon)) = remote_heading {
+            div()
+                .id("breadcrumb-root-provider")
+                .h_full()
+                .flex()
+                .items_center()
+                .gap(px(layout.content_spacing.value()))
+                .px(px(layout.content_spacing.value()))
+                .child(navigation_icon(icon, tokens))
+                .child(catalog.t(label_key))
+                .child(chrome_icon(
+                    ADDRESS_EDITOR_ID,
+                    ExplorerIcon::Chevron,
+                    tokens,
+                ))
+                .into_any_element()
+        } else {
+            breadcrumb_root(
+                tokens,
+                catalog,
+                keyboard_segment_id == Some(explorer_model::BreadcrumbSegmentId(0)),
+                active_menu == Some(explorer_model::BreadcrumbSegmentId(0)),
+                menu_children.clone(),
+                menu_error.clone(),
+                menu_loading,
+                keyboard_menu_index,
+                menu_focus.clone(),
+                shell_icons.clone(),
+                shell_icon_theme,
+                shell_icon_dpi,
+                on_action.clone(),
+            )
+            .into_any_element()
+        })
         .when(!hidden_ancestry.is_empty(), |element| {
             element.child(breadcrumb_overflow(
                 tokens,
@@ -11860,6 +11883,23 @@ fn breadcrumb_child_overlay(
             )),
     )
     .with_priority(100)
+}
+
+fn breadcrumb_remote_heading(
+    location: &explorer_model::LocationDescriptor,
+) -> Option<(&'static str, crate::navigation_pane::NavigationIcon)> {
+    use crate::navigation_pane::NavigationIcon;
+
+    let explorer_model::LocationDescriptor::Virtual(remote) = location else {
+        return None;
+    };
+    match remote.provider_id.as_str() {
+        "adb" => Some(("nav-phones", NavigationIcon::Phone)),
+        "ftp" => Some(("nav-ftp", NavigationIcon::Network)),
+        "sftp" => Some(("nav-sftp", NavigationIcon::Server)),
+        "gdrive" => Some(("nav-gdrive", NavigationIcon::GoogleDrive)),
+        _ => None,
+    }
 }
 
 fn breadcrumb_root(

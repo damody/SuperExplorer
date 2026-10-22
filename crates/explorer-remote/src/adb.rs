@@ -28,8 +28,14 @@ emit_entry() {
     entry_path="$2"
     entry_name=${entry_path##*/}
     entry_hex=$(printf '%s' "$entry_name" | od -An -tx1 | tr -d '[:space:]') || exit 21
-    entry_mode=$(stat -c '%f' "$entry_path" 2>/dev/null || true)
-    printf '%s\t%s\t%s\n' "$entry_kind" "$entry_hex" "$entry_mode"
+    entry_stat=$(stat -c '%f:%s' "$entry_path" 2>/dev/null || true)
+    entry_mode=${entry_stat%%:*}
+    entry_size=''
+    case "$entry_kind" in
+        f) entry_size=${entry_stat#*:} ;;
+        lf) entry_size=$(stat -L -c '%s' "$entry_path" 2>/dev/null || true) ;;
+    esac
+    printf '%s\t%s\t%s\t%s\n' "$entry_kind" "$entry_hex" "$entry_mode" "$entry_size"
 }
 
 [ -d "$parent_path" ] || exit 20
@@ -93,6 +99,7 @@ pub struct AdbDirectoryEntry {
     pub name: String,
     pub kind: RemoteEntryKind,
     pub unix_mode: Option<u32>,
+    pub size: Option<u64>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -420,6 +427,18 @@ impl AdbProgressParser {
 
 fn parse_adb_progress_frame(frame: &[u8]) -> Option<AdbProgressObservation> {
     let text = String::from_utf8_lossy(frame);
+    // Multi-file ADB frames contain both an overall prefix and a per-file
+    // percentage. Only the prefix applies to the aggregate transfer size.
+    if let Some(rest) = text.trim_start().strip_prefix('[')
+        && let Some((overall, _)) = rest.split_once(']')
+    {
+        return overall
+            .trim()
+            .strip_suffix('%')
+            .and_then(|value| value.trim().parse::<u8>().ok())
+            .filter(|percent| *percent <= 100)
+            .map(AdbProgressObservation::Percent);
+    }
     if let Some(bytes) = parse_adb_byte_pair(&text) {
         return Some(bytes);
     }
@@ -1059,7 +1078,7 @@ impl<R: AdbCommandRunner> RemoteProvider for AdbProvider<R> {
                     name,
                     location: LocationDescriptor::Virtual(child),
                     kind: raw.kind,
-                    size: None,
+                    size: raw.size,
                     unix_mode: raw.unix_mode,
                 })
             })
@@ -1091,12 +1110,7 @@ impl<R: AdbCommandRunner> RemoteProvider for AdbProvider<R> {
         crate::provider::validate_remote_location(source, "adb", false)?;
         let serial = self.serial(source)?;
         let remote = remote_path(source);
-        let expected = self
-            .client
-            .metadata(&serial, &remote, cancellation)
-            .ok()
-            .filter(|metadata| kind_from_unix_mode(metadata.unix_mode) == RemoteEntryKind::File)
-            .map(|metadata| metadata.size);
+        let expected = crate::transfer::estimate_remote_tree_bytes(self, source, cancellation);
         self.client.pull_with_progress(
             &serial,
             &remote,
@@ -1132,14 +1146,7 @@ impl<R: AdbCommandRunner> RemoteProvider for AdbProvider<R> {
         crate::provider::validate_remote_location(destination, "adb", true)?;
         let serial = self.serial(destination)?;
         let remote_parent = remote_path(destination);
-        let expected = local_source
-            .is_file()
-            .then(|| {
-                std::fs::metadata(local_source)
-                    .ok()
-                    .map(|metadata| metadata.len())
-            })
-            .flatten();
+        let expected = crate::transfer::local_tree_bytes(local_source).ok();
         self.client.push_with_progress(
             &serial,
             local_source,
@@ -1336,7 +1343,7 @@ fn parse_directory_entries(stdout: &[u8]) -> Result<Vec<AdbDirectoryEntry>> {
         .lines()
         .filter(|line| !line.is_empty())
         .map(|line| {
-            let mut fields = line.splitn(3, '\t');
+            let mut fields = line.splitn(4, '\t');
             let token = fields.next().unwrap_or_default();
             let encoded_name = fields
                 .next()
@@ -1345,6 +1352,7 @@ fn parse_directory_entries(stdout: &[u8]) -> Result<Vec<AdbDirectoryEntry>> {
                 .next()
                 .filter(|value| !value.is_empty())
                 .and_then(|value| u32::from_str_radix(value, 16).ok());
+            let size = fields.next().and_then(|value| value.parse::<u64>().ok());
             if encoded_name.len() % 2 != 0 || encoded_name.is_empty() {
                 bail!("ADB directory record has an invalid encoded name");
             }
@@ -1377,6 +1385,10 @@ fn parse_directory_entries(stdout: &[u8]) -> Result<Vec<AdbDirectoryEntry>> {
                 name,
                 kind,
                 unix_mode,
+                // Directory inode size is not the recursive folder size shown by Explorer.
+                size: matches!(kind, RemoteEntryKind::File | RemoteEntryKind::FileSymlink)
+                    .then_some(size)
+                    .flatten(),
             })
         })
         .collect()
@@ -1479,6 +1491,24 @@ mod tests {
                 AdbProgressObservation::Percent(84),
             ]
         );
+    }
+
+    #[test]
+    fn folder_progress_uses_overall_percentage_across_file_boundaries() {
+        let mut parser = AdbProgressParser::default();
+        let deltas = Mutex::new(Vec::new());
+        let record = |delta| deltas.lock().unwrap().push(delta);
+        let mut adapter = AdbProgressAdapter::new(Some(1_000), &record);
+        parser.push(
+            b"[ 10%] /folder/first: 90%\r[ 20%] /folder/first: 100%\r[ 30%] /folder/second: 5%\r",
+            |value| adapter.observe(value),
+        );
+        assert_eq!(*deltas.lock().unwrap(), vec![100, 100, 100]);
+        // Unknown overall progress must not use an unrelated per-file percentage.
+        parser.push(b"[   ?] /folder/second: 99%\r", |value| {
+            adapter.observe(value)
+        });
+        assert_eq!(*deltas.lock().unwrap(), vec![100, 100, 100]);
     }
 
     #[test]
@@ -1630,6 +1660,93 @@ mod tests {
             )
             .unwrap();
         assert_eq!(*deltas.lock().unwrap(), vec![100, 400, 500]);
+    }
+
+    struct FolderStreamingRunner;
+
+    impl AdbCommandRunner for FolderStreamingRunner {
+        fn run(
+            &self,
+            _: &Path,
+            arguments: &[OsString],
+            _: &CancellationToken,
+            _: Duration,
+        ) -> Result<Output> {
+            let stdout = if arguments.iter().any(|arg| arg == "superexplorer-metadata") {
+                b"41ed|4096|1700000000\n".to_vec()
+            } else {
+                // Include a nested directory to exercise aggregate traversal.
+                let script = arguments.last().unwrap().to_string_lossy();
+                if script.contains("parent_b64=L2ZvbGRlcg==;") {
+                    b"f\t6669727374\t81a4\t200\nd\t6e6573746564\t41ed\t\n".to_vec()
+                } else {
+                    b"f\t7365636f6e64\t81a4\t800\n".to_vec()
+                }
+            };
+            Ok(Output {
+                status: std::process::ExitStatus::default(),
+                stdout,
+                stderr: Vec::new(),
+            })
+        }
+
+        fn run_with_output(
+            &self,
+            _: &Path,
+            _: &[OsString],
+            _: &CancellationToken,
+            _: Duration,
+            output_callback: &(dyn Fn(&[u8]) + Send + Sync),
+        ) -> Result<Output> {
+            output_callback(b"[ 10%] folder/first: 50%\r");
+            output_callback(b"[ 20%] folder/first: 100%\r[ 50%] folder/nested/second: 37%\r");
+            Ok(Output {
+                status: std::process::ExitStatus::default(),
+                stdout: Vec::new(),
+                stderr: Vec::new(),
+            })
+        }
+    }
+
+    #[test]
+    fn adb_folder_upload_and_download_report_intermediate_aggregate_bytes() {
+        let directory = tempfile::tempdir().unwrap();
+        let folder = directory.path().join("folder");
+        std::fs::create_dir_all(folder.join("nested")).unwrap();
+        std::fs::write(folder.join("first"), [0; 200]).unwrap();
+        std::fs::write(folder.join("nested/second"), [0; 800]).unwrap();
+        let provider = AdbProvider::new(AdbClient::new(
+            PathBuf::from("fixture-adb.exe"),
+            FolderStreamingRunner,
+        ));
+        provider
+            .register_device([9; 16], "device-9".to_owned())
+            .unwrap();
+        let location = VirtualLocationDescriptor {
+            provider_id: "adb".to_owned(),
+            public_authority: Some("device-9".to_owned()),
+            container_identity: [9; 16],
+            container_generation: 1,
+            entry_id: None,
+            provider_entry_key: None,
+            components: vec!["folder".to_owned()],
+        };
+        let deltas = Mutex::new(Vec::new());
+        let record = |delta| deltas.lock().unwrap().push(delta);
+        provider
+            .upload_with_progress(&folder, &location, &CancellationToken::new(), &record)
+            .unwrap();
+        assert_eq!(*deltas.lock().unwrap(), [100, 100, 300, 500]);
+        deltas.lock().unwrap().clear();
+        provider
+            .download_with_progress(
+                &location,
+                directory.path(),
+                &CancellationToken::new(),
+                &record,
+            )
+            .unwrap();
+        assert_eq!(*deltas.lock().unwrap(), [100, 100, 300, 500]);
     }
 
     #[derive(Clone, Copy)]
@@ -1840,36 +1957,43 @@ mod tests {
                     name: "file".to_owned(),
                     kind: RemoteEntryKind::File,
                     unix_mode: None,
+                    size: None,
                 },
                 AdbDirectoryEntry {
                     name: "dir".to_owned(),
                     kind: RemoteEntryKind::Directory,
                     unix_mode: None,
+                    size: None,
                 },
                 AdbDirectoryEntry {
                     name: "file-link".to_owned(),
                     kind: RemoteEntryKind::FileSymlink,
                     unix_mode: None,
+                    size: None,
                 },
                 AdbDirectoryEntry {
                     name: "dir-link".to_owned(),
                     kind: RemoteEntryKind::DirectorySymlink,
                     unix_mode: None,
+                    size: None,
                 },
                 AdbDirectoryEntry {
                     name: "broken".to_owned(),
                     kind: RemoteEntryKind::BrokenSymlink,
                     unix_mode: None,
+                    size: None,
                 },
                 AdbDirectoryEntry {
                     name: "cycle".to_owned(),
                     kind: RemoteEntryKind::CircularSymlink,
                     unix_mode: None,
+                    size: None,
                 },
                 AdbDirectoryEntry {
                     name: "space and \ttab".to_owned(),
                     kind: RemoteEntryKind::File,
                     unix_mode: None,
+                    size: None,
                 },
             ]
         );
@@ -1892,6 +2016,41 @@ mod tests {
         assert!(parse_directory_entries(b"f\t123\n").is_err());
         assert!(parse_directory_entries(b"f\t6261640a6e616d65\n").is_err());
         assert!(parse_directory_entries(b"f-no-tab\n").is_err());
+    }
+
+    #[test]
+    fn adb_listing_preserves_file_sizes_but_does_not_report_directory_inode_sizes() {
+        let runner = FakeRunner::with_stdout(
+            b"f\t656d707479\t81a4\t0\nf\t6c61726765\t81a4\t5368709120\nd\t666f6c646572\t41ed\t4096\nlf\t6c696e6b\ta1ff\t123\nld\t6469726c696e6b\ta1ff\t4096\nf\t756e6b6e6f776e\t81a4\t\n".to_vec(),
+        );
+        let provider = AdbProvider::new(AdbClient::new(PathBuf::from("fixture-adb.exe"), runner));
+        provider
+            .register_device([9; 16], "device-9".to_owned())
+            .unwrap();
+        let location = VirtualLocationDescriptor {
+            provider_id: "adb".to_owned(),
+            public_authority: Some("device-9".to_owned()),
+            container_identity: [9; 16],
+            container_generation: 1,
+            entry_id: None,
+            provider_entry_key: None,
+            components: vec!["data".to_owned()],
+        };
+        let entries = provider.list(&location, &CancellationToken::new()).unwrap();
+        assert_eq!(
+            entries.iter().map(|entry| entry.size).collect::<Vec<_>>(),
+            [Some(0), Some(5_368_709_120), None, Some(123), None, None]
+        );
+        assert_eq!(entries[0].unix_mode, Some(0o100644));
+        assert_eq!(entries[3].kind, RemoteEntryKind::FileSymlink);
+    }
+
+    #[test]
+    fn unavailable_or_invalid_adb_file_sizes_remain_unknown() {
+        let entries = parse_directory_entries(
+            b"f\t61\t81a4\t-1\nf\t62\t81a4\t18446744073709551616\nf\t63\t81a4\tnot-a-size\nf\t64\t81a4\nf\t65\n",
+        ).unwrap();
+        assert!(entries.iter().all(|entry| entry.size.is_none()));
     }
 
     #[test]
@@ -2029,6 +2188,42 @@ mod tests {
                 "Android /sdcard must be navigable through its symbolic link",
             );
         }
+    }
+
+    #[test]
+    fn real_adb_listing_file_size_matches_stat_when_device_is_available() {
+        let Ok(client) = AdbClient::discover() else {
+            return;
+        };
+        let Some(device) = client
+            .devices()
+            .expect("query ADB devices")
+            .into_iter()
+            .find(|device| device.state == AdbDeviceState::Device)
+        else {
+            return;
+        };
+        let entries = client
+            .list_directory(&device.serial, "/system")
+            .expect("list system files");
+        assert!(
+            entries
+                .iter()
+                .filter(|entry| entry.kind.is_container())
+                .all(|entry| entry.size.is_none())
+        );
+        let file = entries
+            .iter()
+            .find(|entry| entry.kind == RemoteEntryKind::File && entry.size.is_some())
+            .expect("a readable system file has a listed size");
+        let metadata = client
+            .metadata(
+                &device.serial,
+                &format!("/system/{}", file.name),
+                &CancellationToken::new(),
+            )
+            .expect("read file stat");
+        assert_eq!(file.size, Some(metadata.size));
     }
 
     #[test]

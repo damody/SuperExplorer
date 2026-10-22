@@ -617,7 +617,7 @@ fn ensure_transfer_active(cancellation: &CancellationToken) -> Result<()> {
     Ok(())
 }
 
-fn estimate_remote_tree_bytes(
+pub(crate) fn estimate_remote_tree_bytes(
     provider: &dyn crate::RemoteProvider,
     root: &explorer_model::VirtualLocationDescriptor,
     cancellation: &CancellationToken,
