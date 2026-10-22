@@ -1,0 +1,24 @@
+{
+  "schema_version": 1,
+  "revision": "26f145d76a4e916e760aeb5630dd3ab2d0472433",
+  "items": [],
+  "task_records": [
+    {
+      "task_id": "9.2.1",
+      "result": "passed",
+      "subcheck_key": "current",
+      "command": "see linked batch or integration evidence",
+      "exit_code": 0,
+      "evidence": "integration-validation.json"
+    }
+  ],
+  "command": "cargo check --workspace --all-targets --locked --offline",
+  "warning_counts": {
+    "dead_code": 0,
+    "unsafe_code": 0,
+    "total": 62
+  },
+  "errors": 0,
+  "folder_admission_initializer_status": "fixed and passing",
+  "result": "passed"
+}

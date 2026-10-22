@@ -1,0 +1,31 @@
+{
+  "schema_version": 1,
+  "batch": "3.3-size-map-application",
+  "decision": "remove-duplicate-test-scanner",
+  "source_sha256_after": "d3555e7a21ba992d472303398e75deee5d4b5bcd2e87af6ba4977364f26b51cd",
+  "coverage": [
+    { "scenario": "projection", "owner": "application", "test": "size_map_projection_retains_aggregated_items_for_search_and_uia" },
+    { "scenario": "recursive fallback and tree totals", "owner": "folder_size_service", "test": "recursive_snapshot_projects_exact_aggregate_and_tree" },
+    { "scenario": "progressive and terminal deltas", "owner": "folder_size_service", "test": "recursive_reference_emits_progressive_nodes_and_terminal_delta" },
+    { "scenario": "indexed and recursive equivalence", "owner": "folder_size_service", "test": "indexed_provider_normalization_equals_recursive_reference" },
+    { "scenario": "resource bound and cancellation", "owner": "folder_size_service", "test": "resource_limit_and_cancellation_are_typed_not_exact_zero" },
+    { "scenario": "hard links", "owner": "folder_size_service", "test": "hard_links_are_counted_per_directory_entry_like_explorer" },
+    { "scenario": "directory reparse points", "owner": "folder_size_service", "test": "directory_reparse_points_are_reported_but_never_traversed" }
+  ],
+  "removed": [
+    "SizeMapHardLinkPolicyV1",
+    "PendingSizeMapTreeNodeV1",
+    "filesystem_file_identity_v1",
+    "measure_size_map_tree",
+    "measure_size_map_tree_from_mft",
+    "measure_size_map_path",
+    "application-owned duplicate scanner tests"
+  ],
+  "verification": [
+    "cargo check -p explorer-app --lib",
+    "cargo test -p explorer-app --lib hard_links_are_counted_per_directory_entry_like_explorer",
+    "cargo test -p explorer-app --lib directory_reparse_points_are_reported_but_never_traversed",
+    "cargo test -p explorer-app --lib size_map_projection_retains_aggregated_items_for_search_and_uia"
+  ],
+  "result": "pass"
+}

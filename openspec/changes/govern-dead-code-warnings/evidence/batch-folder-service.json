@@ -1,0 +1,22 @@
+{
+  "schema_version": 1,
+  "batch": "4.1-folder-size-service",
+  "source_sha256_after": "5d23123af6ccb8094952af82570a34dfc4c490f268f93477e1043435376c0e58",
+  "method_map": {
+    "active_size_map": ["snapshot_or_scan", "retain_cache_window", "try_mft_snapshot", "try_helper_mft_snapshot"],
+    "cleanup": ["retire_obsolete_details_snapshots_v1"],
+    "removed_details": ["aggregate_or_scan", "subscribe", "publish", "release", "advance_generation", "invalidate_watcher_path", "set_mft_cache_memory_mb", "counters"],
+    "removed_codec": ["encode_snapshot_bounded", "decode_snapshot_bounded"],
+    "removed_closure": ["try_mft_aggregate", "try_helper_mft_aggregate", "sync_service_mft_index", "canonicalize_existing_ancestor", "fresh_service_mft_index"]
+  },
+  "focused_tests": [
+    "obsolete_details_snapshot_cleanup_is_bounded_and_non_recursive",
+    "recursive_snapshot_projects_exact_aggregate_and_tree",
+    "resource_limit_and_cancellation_are_typed_not_exact_zero",
+    "modified_date_controls_cross_generation_folder_cache",
+    "completed_folder_results_are_trimmed_to_active_three_level_window",
+    "subtree_that_becomes_unavailable_produces_a_partial_snapshot",
+    "helper_prompt_state_coalesces_and_does_not_repeat_terminal_failure"
+  ],
+  "result": "pass"
+}

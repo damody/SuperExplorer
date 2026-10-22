@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "duplicate_consumer_path_modules": 0,
+  "only_path_owner": "crates/explorer-mft/src/lib.rs",
+  "consumer_dependency": "explorer-app -> explorer-mft -> explorer-model",
+  "cycle": false,
+  "visibility_rule": "workspace-public items were promoted only when an explorer-app, helper, service, or cross-module compiler call site required access; storage handles remain private fields",
+  "target_local_dead_code_before": 251,
+  "workspace_all_target_dead_code_after": 0,
+  "verification": ["cargo test -p explorer-mft --locked --offline", "cargo check -p explorer-app --tests", "cargo check --workspace --all-targets"],
+  "result": "pass"
+}

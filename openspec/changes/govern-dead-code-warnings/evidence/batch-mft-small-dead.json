@@ -1,0 +1,7 @@
+{
+  "schema_version": 1,
+  "batch": "5.2-mft-small-dead",
+  "removed": ["serve_folder_queries", "mft_focus ERROR_PIPE_LISTENING", "mft_focus ERROR_NO_DATA", "MftIndexV1::path_for_reference", "file_link_count", "CachedFolderAggregateVolumeV1.checkpoint"],
+  "retained_active": ["serve_queries", "try_from_entries_cancelled", "projected_aggregate_bytes", "trim_persisted_to_bytes", "write_service_index", "volume_serial_number", "current_entry"],
+  "result": "pass"
+}

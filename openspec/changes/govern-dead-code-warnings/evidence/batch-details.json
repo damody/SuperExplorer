@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "gate": "DCG-OBSOLETE",
+  "result": "passed",
+  "source": {"path":"crates/explorer-app/src/application.rs","baseline_sha256":"272e960107645b57b8d5a5a35d16e7a9d092d2e8e840ab1d637d4dd3e03f44d7","post_sha256":"81d50b65f2da08f6b2ecaa025592f4f6be979b3a9459b48c3218216a07271457"},
+  "removed_items": ["FolderSizeCachedValueV1","with_ttl","set_ttl_seconds","partition_folder_size_cache_hits","exact_directory_facts","FOLDER_SIZE_QUERY_DEADLINE_V1","query_folder_size_with_deadline_v1","receive_folder_size_query_v1","take_folder_size_requests","take_folder_size_request"],
+  "replacement": "The bounded MFT folder batch claimant and protocol remain authoritative; queue tests now claim through take_folder_size_batch.",
+  "focused_checks": {"commands":13,"passed":13,"failed":0,"dead_code_warnings_from_removed_items":0},
+  "task_records": [
+    {"task_id":"3.2.1","subcheck_key":"cache-ttl-removal","command":"cargo test -p explorer-app --lib folder_size_batch_preserves_visible_order_and_one_view_generation --locked --offline","exit_code":0,"warning_count":66,"result":"passed"},
+    {"task_id":"3.2.2","subcheck_key":"projection-admission","command":"cargo test -p explorer-ui folder_admission_never_dispatches_without_exact_in_limit_facts --locked --offline","exit_code":0,"warning_count":3,"result":"passed"},
+    {"task_id":"3.2.3","subcheck_key":"protocol-timeout-cancel","command":"cargo test -p explorer-app --lib stopped_read_is_reported_as_interrupted_without_waiting_for_timeout --locked --offline","exit_code":0,"warning_count":66,"result":"passed"},
+    {"task_id":"3.2.4","subcheck_key":"bounded-claimant","command":"cargo test -p explorer-app --lib folder_size_workers_claim_independent_visible_requests --locked --offline","exit_code":0,"warning_count":66,"result":"passed"},
+    {"task_id":"3.2.5","subcheck_key":"batch-semantics","command":"nine focused explorer-app batch, order, cancel, stale and protocol tests","exit_code":0,"warning_count":66,"result":"passed"},
+    {"task_id":"3.2.6","subcheck_key":"details-admission","command":"four explorer-ui Folder Size/File Count/Folder Count/Code Lines admission tests","exit_code":0,"warning_count":3,"result":"passed"}
+  ]
+}

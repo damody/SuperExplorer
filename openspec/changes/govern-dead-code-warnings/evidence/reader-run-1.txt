@@ -1,0 +1,2945 @@
+warning: methods `revoke` and `replace_current` are never used
+   --> crates\explorer-extension-host\src\runtime_authority.rs:111:19
+    |
+ 79 | impl RuntimeAuthorityV1 {
+    | ----------------------- methods in this implementation
+...
+111 |     pub(crate) fn revoke(
+    |                   ^^^^^^
+...
+169 |     pub(crate) fn replace_current(
+    |                   ^^^^^^^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `explorer-extension-host` (lib) generated 1 warning
+warning: unnecessary qualification
+    --> crates\explorer-ui\src\lib.rs:6917:9
+     |
+6917 |         gpui::RenderImage::new_bc7_srgb(gpui::CompressedRaster {
+     |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+     = note: requested on the command line with `-W unused-qualifications`
+help: remove the unnecessary path segments
+     |
+6917 -         gpui::RenderImage::new_bc7_srgb(gpui::CompressedRaster {
+6917 +         RenderImage::new_bc7_srgb(gpui::CompressedRaster {
+     |
+
+warning: variable does not need to be mutable
+     --> crates\explorer-ui\src\chrome.rs:11495:13
+      |
+11495 |         let mut status = if presentation.selected_count > 0 {
+      |             ----^^^^^^
+      |             |
+      |             help: remove this `mut`
+      |
+      = note: `#[warn(unused_mut)]` (part of `#[warn(unused)]`) on by default
+
+warning: function `cache_usage_section` is never used
+    --> crates\explorer-ui\src\chrome.rs:3216:4
+     |
+3216 | fn cache_usage_section(
+     |    ^^^^^^^^^^^^^^^^^^^
+     |
+     = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: function `view_item_width` is never used
+    --> crates\explorer-ui\src\chrome.rs:9742:15
+     |
+9742 | pub(crate) fn view_item_width(settings: &explorer_model::ViewSettings) -> f32 {
+     |               ^^^^^^^^^^^^^^^
+
+warning: function `details_horizontal_maximum` is never used
+    --> crates\explorer-ui\src\chrome.rs:9769:15
+     |
+9769 | pub(crate) fn details_horizontal_maximum(
+     |               ^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: method `add_bookmark` is never used
+    --> crates\explorer-ui\src\state.rs:1005:19
+     |
+ 739 | impl AppViewState {
+     | ----------------- method in this implementation
+...
+1005 |     pub(crate) fn add_bookmark(
+     |                   ^^^^^^^^^^^^
+
+warning: `explorer-ui` (lib) generated 6 warnings (run `cargo fix --lib -p explorer-ui` to apply 2 suggestions)
+warning: unused import: `VecDeque`
+ --> crates\explorer-app\src\application.rs:5:37
+  |
+5 |     collections::{HashMap, HashSet, VecDeque},
+  |                                     ^^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unnecessary qualification
+    --> crates\explorer-app\src\application.rs:2955:25
+     |
+2955 |         .duration_since(std::time::UNIX_EPOCH)
+     |                         ^^^^^^^^^^^^^^^^^^^^^
+     |
+     = note: requested on the command line with `-W unused-qualifications`
+help: remove the unnecessary path segments
+     |
+2955 -         .duration_since(std::time::UNIX_EPOCH)
+2955 +         .duration_since(UNIX_EPOCH)
+     |
+
+warning: unnecessary qualification
+    --> crates\explorer-app\src\application.rs:3092:39
+     |
+3092 |             let restart_manager = if !std::fs::metadata(&resources[resource_index].path)
+     |                                       ^^^^^^^^^^^^^^^^^
+     |
+help: remove the unnecessary path segments
+     |
+3092 -             let restart_manager = if !std::fs::metadata(&resources[resource_index].path)
+3092 +             let restart_manager = if !fs::metadata(&resources[resource_index].path)
+     |
+
+warning: unnecessary qualification
+  --> crates\explorer-app\src\brokered_service.rs:77:23
+   |
+77 |             .and_then(std::path::Path::extension)
+   |                       ^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+help: remove the unnecessary path segments
+   |
+77 -             .and_then(std::path::Path::extension)
+77 +             .and_then(Path::extension)
+   |
+
+warning: unnecessary qualification
+   --> crates\explorer-app\src\brokered_service.rs:280:17
+    |
+280 |         cbSize: std::mem::size_of::<CREDUI_INFOW>() as u32,
+    |                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+help: remove the unnecessary path segments
+    |
+280 -         cbSize: std::mem::size_of::<CREDUI_INFOW>() as u32,
+280 +         cbSize: size_of::<CREDUI_INFOW>() as u32,
+    |
+
+warning: unnecessary qualification
+   --> crates\explorer-app\src\folder_size_service.rs:935:37
+    |
+935 |         let mut invalidated_paths = std::collections::HashSet::new();
+    |                                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+help: remove the unnecessary path segments
+    |
+935 -         let mut invalidated_paths = std::collections::HashSet::new();
+935 +         let mut invalidated_paths = HashSet::new();
+    |
+
+warning: unnecessary qualification
+   --> crates\explorer-app\src\mft_focus.rs:457:17
+    |
+457 |         length: std::mem::size_of::<SecurityAttributes>() as u32,
+    |                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+help: remove the unnecessary path segments
+    |
+457 -         length: std::mem::size_of::<SecurityAttributes>() as u32,
+457 +         length: size_of::<SecurityAttributes>() as u32,
+    |
+
+warning: unnecessary qualification
+   --> crates\explorer-app\src\mft_migration.rs:523:13
+    |
+523 |             std::mem::size_of::<FileDispositionInfo>() as u32,
+    |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+help: remove the unnecessary path segments
+    |
+523 -             std::mem::size_of::<FileDispositionInfo>() as u32,
+523 +             size_of::<FileDispositionInfo>() as u32,
+    |
+
+warning: unnecessary qualification
+   --> crates\explorer-app\src\mft_migration.rs:571:22
+    |
+571 |         .checked_mul(std::mem::size_of::<u16>())
+    |                      ^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+help: remove the unnecessary path segments
+    |
+571 -         .checked_mul(std::mem::size_of::<u16>())
+571 +         .checked_mul(size_of::<u16>())
+    |
+
+warning: unnecessary qualification
+   --> crates\explorer-app\src\mft_query.rs:927:17
+    |
+927 |         length: std::mem::size_of::<SecurityAttributes>() as u32,
+    |                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+help: remove the unnecessary path segments
+    |
+927 -         length: std::mem::size_of::<SecurityAttributes>() as u32,
+927 +         length: size_of::<SecurityAttributes>() as u32,
+    |
+
+warning: unnecessary qualification
+   --> crates\explorer-app\src\mft_size_map.rs:590:27
+    |
+590 |         let mut breadth = std::collections::VecDeque::from([(root_reference, None)]);
+    |                           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+help: remove the unnecessary path segments
+    |
+590 -         let mut breadth = std::collections::VecDeque::from([(root_reference, None)]);
+590 +         let mut breadth = VecDeque::from([(root_reference, None)]);
+    |
+
+warning: unnecessary qualification
+   --> crates\explorer-app\src\remote_service.rs:294:17
+    |
+294 |         cbSize: std::mem::size_of::<CREDUI_INFOW>() as u32,
+    |                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+help: remove the unnecessary path segments
+    |
+294 -         cbSize: std::mem::size_of::<CREDUI_INFOW>() as u32,
+294 +         cbSize: size_of::<CREDUI_INFOW>() as u32,
+    |
+
+warning: unused variable: `event_guard`
+   --> crates\explorer-app\src\mft_focus.rs:649:9
+    |
+649 |     let event_guard = WinEvent(event);
+    |         ^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_event_guard`
+    |
+    = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused variable: `event_guard`
+   --> crates\explorer-app\src\mft_focus.rs:705:9
+    |
+705 |     let event_guard = WinEvent(event);
+    |         ^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_event_guard`
+
+warning: unused variable: `error`
+   --> crates\explorer-app\src\remote_service.rs:673:21
+    |
+673 |                 Err(error) if context.cancellation.is_cancelled() => OperationTerminal::Cancelled,
+    |                     ^^^^^ help: if this is intentional, prefix it with an underscore: `_error`
+
+warning: constant `CODE_LINES_DIRECTORY_CACHE_SCHEMA_V1` is never used
+  --> crates\explorer-app\src\application.rs:48:7
+   |
+48 | const CODE_LINES_DIRECTORY_CACHE_SCHEMA_V1: u32 = 2;
+   |       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: constant `CODE_LINES_DIRECTORY_CACHE_MAX_RECORD_BYTES_V1` is never used
+  --> crates\explorer-app\src\application.rs:49:7
+   |
+49 | const CODE_LINES_DIRECTORY_CACHE_MAX_RECORD_BYTES_V1: u64 = 8 * 1024;
+   |       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: constant `CODE_LINES_DIRECTORY_CACHE_MAX_FILES_V1` is never used
+  --> crates\explorer-app\src\application.rs:50:7
+   |
+50 | const CODE_LINES_DIRECTORY_CACHE_MAX_FILES_V1: usize = 1_024;
+   |       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: methods `with_ttl` and `set_ttl_seconds` are never used
+    --> crates\explorer-app\src\application.rs:1045:8
+     |
+ 984 | impl<T: HostExtensionColumnCacheValueV1> HostExtensionColumnCacheV1<T> {
+     | ---------------------------------------------------------------------- methods in this implementation
+...
+1045 |     fn with_ttl(mut self, seconds: u64) -> Self {
+     |        ^^^^^^^^
+...
+1050 |     fn set_ttl_seconds(&mut self, ttl: Option<u64>) {
+     |        ^^^^^^^^^^^^^^^
+
+warning: struct `FolderSizeCachedValueV1` is never constructed
+    --> crates\explorer-app\src\application.rs:1322:8
+     |
+1322 | struct FolderSizeCachedValueV1 {
+     |        ^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `partition_folder_size_cache_hits` is never used
+    --> crates\explorer-app\src\application.rs:1348:4
+     |
+1348 | fn partition_folder_size_cache_hits(
+     |    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `exact_directory_facts` is never used
+    --> crates\explorer-app\src\application.rs:1387:4
+     |
+1387 | fn exact_directory_facts(
+     |    ^^^^^^^^^^^^^^^^^^^^^
+
+warning: constant `FOLDER_SIZE_QUERY_DEADLINE_V1` is never used
+    --> crates\explorer-app\src\application.rs:1414:7
+     |
+1414 | const FOLDER_SIZE_QUERY_DEADLINE_V1: Duration = Duration::from_secs(10);
+     |       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `query_folder_size_with_deadline_v1` is never used
+    --> crates\explorer-app\src\application.rs:1416:4
+     |
+1416 | fn query_folder_size_with_deadline_v1(
+     |    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `receive_folder_size_query_v1` is never used
+    --> crates\explorer-app\src\application.rs:1432:4
+     |
+1432 | fn receive_folder_size_query_v1(
+     |    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `take_folder_size_requests` is never used
+    --> crates\explorer-app\src\application.rs:1488:4
+     |
+1488 | fn take_folder_size_requests(
+     |    ^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `take_folder_size_request` is never used
+    --> crates\explorer-app\src\application.rs:1501:4
+     |
+1501 | fn take_folder_size_request(
+     |    ^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `is_code_lines_directory_row` is never used
+    --> crates\explorer-app\src\application.rs:2537:4
+     |
+2537 | fn is_code_lines_directory_row(path: &Path) -> bool {
+     |    ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: struct `CodeLinesDirectoryCacheKeyV1` is never constructed
+    --> crates\explorer-app\src\application.rs:2569:8
+     |
+2569 | struct CodeLinesDirectoryCacheKeyV1 {
+     |        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `code_lines_directory_cache_directory` is never used
+    --> crates\explorer-app\src\application.rs:2575:4
+     |
+2575 | fn code_lines_directory_cache_directory() -> Option<PathBuf> {
+     |    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `code_lines_directory_cache_key` is never used
+    --> crates\explorer-app\src\application.rs:2592:4
+     |
+2592 | fn code_lines_directory_cache_key(path: &Path) -> Option<CodeLinesDirectoryCacheKeyV1> {
+     |    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `persistent_code_lines_hash_v1` is never used
+    --> crates\explorer-app\src\application.rs:2609:4
+     |
+2609 | fn persistent_code_lines_hash_v1(input: &str) -> u64 {
+     |    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `code_lines_directory_cache_path` is never used
+    --> crates\explorer-app\src\application.rs:2618:4
+     |
+2618 | fn code_lines_directory_cache_path(
+     |    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `read_code_lines_directory_cache` is never used
+    --> crates\explorer-app\src\application.rs:2628:4
+     |
+2628 | fn read_code_lines_directory_cache(
+     |    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `prune_code_lines_directory_cache` is never used
+    --> crates\explorer-app\src\application.rs:2666:4
+     |
+2666 | fn prune_code_lines_directory_cache(directory: &Path) {
+     |    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `store_code_lines_directory_cache` is never used
+    --> crates\explorer-app\src\application.rs:2698:4
+     |
+2698 | fn store_code_lines_directory_cache(
+     |    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `replace_code_lines_cache_file` is never used
+    --> crates\explorer-app\src\application.rs:2745:4
+     |
+2745 | fn replace_code_lines_cache_file(temporary: &Path, destination: &Path) -> std::io::Result<()> {
+     |    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `measure_code_lines_directory` is never used
+    --> crates\explorer-app\src\application.rs:2779:4
+     |
+2779 | fn measure_code_lines_directory(
+     |    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `measure_all_code_lines_directory` is never used
+    --> crates\explorer-app\src\application.rs:2785:4
+     |
+2785 | fn measure_all_code_lines_directory(
+     |    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `measure_code_lines_directory_with_cache` is never used
+    --> crates\explorer-app\src\application.rs:2816:4
+     |
+2816 | fn measure_code_lines_directory_with_cache(
+     |    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: enum `SizeMapHardLinkPolicyV1` is never used
+    --> crates\explorer-app\src\application.rs:3807:6
+     |
+3807 | enum SizeMapHardLinkPolicyV1 {
+     |      ^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: struct `PendingSizeMapTreeNodeV1` is never constructed
+    --> crates\explorer-app\src\application.rs:3826:8
+     |
+3826 | struct PendingSizeMapTreeNodeV1 {
+     |        ^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `filesystem_file_identity_v1` is never used
+    --> crates\explorer-app\src\application.rs:3915:4
+     |
+3915 | fn filesystem_file_identity_v1(path: &Path) -> Option<Vec<u8>> {
+     |    ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `MoveFileExW` is never used
+    --> crates\explorer-app\src\application.rs:2751:12
+     |
+2751 |         fn MoveFileExW(existing: *const u16, replacement: *const u16, flags: u32) -> i32;
+     |            ^^^^^^^^^^^
+
+warning: variant `Remove` is never constructed
+   --> crates\explorer-app\src\folder_size_service.rs:102:5
+    |
+ 99 | pub(crate) enum FolderSnapshotDeltaV1 {
+    |                 --------------------- variant in this enum
+...
+102 |     Remove(SnapshotNodeIdV1),
+    |     ^^^^^^
+    |
+    = note: `FolderSnapshotDeltaV1` has derived impls for the traits `Debug` and `Clone`, but these are intentionally ignored during dead code analysis
+
+warning: function `encode_snapshot_bounded` is never used
+   --> crates\explorer-app\src\folder_size_service.rs:133:15
+    |
+133 | pub(crate) fn encode_snapshot_bounded(snapshot: &FolderSnapshotV1) -> Result<Vec<u8>, String> {
+    |               ^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `decode_snapshot_bounded` is never used
+   --> crates\explorer-app\src\folder_size_service.rs:144:15
+    |
+144 | pub(crate) fn decode_snapshot_bounded(mut reader: impl Read) -> Result<FolderSnapshotV1, String> {
+    |               ^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: multiple methods are never used
+    --> crates\explorer-app\src\folder_size_service.rs:575:19
+     |
+ 566 | impl FolderSizeServiceV1 {
+     | ------------------------ methods in this implementation
+...
+ 575 |     pub(crate) fn set_mft_cache_memory_mb(&mut self, value: u16) {
+     |                   ^^^^^^^^^^^^^^^^^^^^^^^
+...
+ 582 |     pub(crate) fn advance_generation(&mut self, root: &Path) {
+     |                   ^^^^^^^^^^^^^^^^^^
+...
+ 594 |     pub(crate) fn invalidate_watcher_path(&mut self, changed: &Path) {
+     |                   ^^^^^^^^^^^^^^^^^^^^^^^
+...
+ 624 |     pub(crate) fn subscribe(&mut self, key: SnapshotLeaseKeyV1) -> Option<Arc<FolderSnapshotV1>> {
+     |                   ^^^^^^^^^
+...
+ 637 |     pub(crate) fn aggregate_or_scan(
+     |                   ^^^^^^^^^^^^^^^^^
+...
+ 868 |     pub(crate) fn publish(&mut self, key: SnapshotLeaseKeyV1, snapshot: FolderSnapshotV1) -> bool {
+     |                   ^^^^^^^
+...
+ 914 |     fn sync_service_mft_index(&mut self, root: &Path) -> Result<(), String> {
+     |        ^^^^^^^^^^^^^^^^^^^^^^
+...
+1065 |     fn try_mft_aggregate(
+     |        ^^^^^^^^^^^^^^^^^
+...
+1211 |     fn try_helper_mft_aggregate(
+     |        ^^^^^^^^^^^^^^^^^^^^^^^^
+...
+1226 |     pub(crate) fn release(&mut self, key: &SnapshotLeaseKeyV1) {
+     |                   ^^^^^^^
+...
+1274 |     pub(crate) fn counters(&self) -> FolderSizeServiceCountersV1 {
+     |                   ^^^^^^^^
+
+warning: function `canonicalize_existing_ancestor` is never used
+    --> crates\explorer-app\src\folder_size_service.rs:1337:4
+     |
+1337 | fn canonicalize_existing_ancestor(path: &Path) -> Option<PathBuf> {
+     |    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `service_mft_cache_root` is never used
+    --> crates\explorer-app\src\folder_size_service.rs:1571:4
+     |
+1571 | fn service_mft_cache_root() -> PathBuf {
+     |    ^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `volume_root` is never used
+    --> crates\explorer-app\src\folder_size_service.rs:1580:4
+     |
+1580 | fn volume_root(path: &Path) -> PathBuf {
+     |    ^^^^^^^^^^^
+
+warning: function `fresh_service_mft_index` is never used
+    --> crates\explorer-app\src\folder_size_service.rs:1587:4
+     |
+1587 | fn fresh_service_mft_index(
+     |    ^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: constant `MAX_FOCUS_CONNECTIONS` is never used
+  --> crates\explorer-app\src\mft_focus.rs:33:18
+   |
+33 | pub(crate) const MAX_FOCUS_CONNECTIONS: usize = 32;
+   |                  ^^^^^^^^^^^^^^^^^^^^^
+
+warning: constant `FOCUS_LEASE_TTL` is never used
+  --> crates\explorer-app\src\mft_focus.rs:35:7
+   |
+35 | const FOCUS_LEASE_TTL: Duration = Duration::from_secs(15);
+   |       ^^^^^^^^^^^^^^^
+
+warning: associated function `decode` is never used
+  --> crates\explorer-app\src\mft_focus.rs:64:19
+   |
+53 | impl FocusFrameV1 {
+   | ----------------- associated function in this implementation
+...
+64 |     pub(crate) fn decode(bytes: &[u8]) -> Result<Self, &'static str> {
+   |                   ^^^^^^
+
+warning: struct `FocusClientIdentityV1` is never constructed
+  --> crates\explorer-app\src\mft_focus.rs:96:19
+   |
+96 | pub(crate) struct FocusClientIdentityV1 {
+   |                   ^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `authorize_focus_client` is never used
+   --> crates\explorer-app\src\mft_focus.rs:105:15
+    |
+105 | pub(crate) fn authorize_focus_client(
+    |               ^^^^^^^^^^^^^^^^^^^^^^
+
+warning: constant `ERROR_PIPE_CONNECTED` is never used
+   --> crates\explorer-app\src\mft_focus.rs:129:7
+    |
+129 | const ERROR_PIPE_CONNECTED: u32 = 535;
+    |       ^^^^^^^^^^^^^^^^^^^^
+
+warning: constant `ERROR_PIPE_LISTENING` is never used
+   --> crates\explorer-app\src\mft_focus.rs:131:7
+    |
+131 | const ERROR_PIPE_LISTENING: u32 = 536;
+    |       ^^^^^^^^^^^^^^^^^^^^
+
+warning: constant `ERROR_NO_DATA` is never used
+   --> crates\explorer-app\src\mft_focus.rs:133:7
+    |
+133 | const ERROR_NO_DATA: u32 = 232;
+    |       ^^^^^^^^^^^^^
+
+warning: struct `LocalMemory` is never constructed
+   --> crates\explorer-app\src\mft_focus.rs:402:8
+    |
+402 | struct LocalMemory(*mut c_void);
+    |        ^^^^^^^^^^^
+
+warning: function `serve_focus_leases` is never used
+   --> crates\explorer-app\src\mft_focus.rs:431:15
+    |
+431 | pub(crate) fn serve_focus_leases(
+    |               ^^^^^^^^^^^^^^^^^^
+
+warning: function `handle_focus_connection` is never used
+   --> crates\explorer-app\src\mft_focus.rs:521:4
+    |
+521 | fn handle_focus_connection(
+    |    ^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `connect_overlapped` is never used
+   --> crates\explorer-app\src\mft_focus.rs:646:4
+    |
+646 | fn connect_overlapped(handle: isize, stopped: &dyn Fn() -> bool) -> Result<(), String> {
+    |    ^^^^^^^^^^^^^^^^^^
+
+warning: function `CreateNamedPipeW` is never used
+   --> crates\explorer-app\src\mft_focus.rs:156:8
+    |
+156 |     fn CreateNamedPipeW(
+    |        ^^^^^^^^^^^^^^^^
+
+warning: function `ConnectNamedPipe` is never used
+   --> crates\explorer-app\src\mft_focus.rs:166:8
+    |
+166 |     fn ConnectNamedPipe(pipe: isize, overlapped: *mut c_void) -> i32;
+    |        ^^^^^^^^^^^^^^^^
+
+warning: function `DisconnectNamedPipe` is never used
+   --> crates\explorer-app\src\mft_focus.rs:167:8
+    |
+167 |     fn DisconnectNamedPipe(pipe: isize) -> i32;
+    |        ^^^^^^^^^^^^^^^^^^^
+
+warning: function `ConvertStringSecurityDescriptorToSecurityDescriptorW` is never used
+   --> crates\explorer-app\src\mft_focus.rs:363:8
+    |
+363 |     fn ConvertStringSecurityDescriptorToSecurityDescriptorW(
+    |        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `LocalFree` is never used
+   --> crates\explorer-app\src\mft_focus.rs:380:8
+    |
+380 |     fn LocalFree(memory: *mut c_void) -> *mut c_void;
+    |        ^^^^^^^^^
+
+warning: constant `CHECKPOINT_MAGIC` is never used
+  --> crates\explorer-app\src\mft_journal.rs:41:7
+   |
+41 | const CHECKPOINT_MAGIC: &[u8; 8] = b"SEMFTCP2";
+   |       ^^^^^^^^^^^^^^^^
+
+warning: constant `DELTA_MAGIC` is never used
+  --> crates\explorer-app\src\mft_journal.rs:42:7
+   |
+42 | const DELTA_MAGIC: &[u8; 8] = b"SEMFTDL2";
+   |       ^^^^^^^^^^^
+
+warning: constant `STATUS_MAGIC` is never used
+  --> crates\explorer-app\src\mft_journal.rs:43:7
+   |
+43 | const STATUS_MAGIC: &[u8; 8] = b"SEMFTST2";
+   |       ^^^^^^^^^^^^
+
+warning: constant `COMMIT_MARKER` is never used
+  --> crates\explorer-app\src\mft_journal.rs:44:7
+   |
+44 | const COMMIT_MARKER: u64 = 0x5345_4D46_5443_4D54;
+   |       ^^^^^^^^^^^^^
+
+warning: constant `SCHEMA_V2` is never used
+  --> crates\explorer-app\src\mft_journal.rs:45:7
+   |
+45 | const SCHEMA_V2: u32 = 2;
+   |       ^^^^^^^^^
+
+warning: constant `MAX_RECORD_BYTES` is never used
+  --> crates\explorer-app\src\mft_journal.rs:46:7
+   |
+46 | const MAX_RECORD_BYTES: usize = 64 * 1024 * 1024;
+   |       ^^^^^^^^^^^^^^^^
+
+warning: constant `MAX_CHANGES` is never used
+  --> crates\explorer-app\src\mft_journal.rs:47:7
+   |
+47 | const MAX_CHANGES: usize = 100_000;
+   |       ^^^^^^^^^^^
+
+warning: constant `MAX_NAME_BYTES` is never used
+  --> crates\explorer-app\src\mft_journal.rs:48:7
+   |
+48 | const MAX_NAME_BYTES: usize = 64 * 1024;
+   |       ^^^^^^^^^^^^^^
+
+warning: constant `JOURNAL_BUFFER_BYTES` is never used
+  --> crates\explorer-app\src\mft_journal.rs:49:18
+   |
+49 | pub(crate) const JOURNAL_BUFFER_BYTES: usize = 1024 * 1024;
+   |                  ^^^^^^^^^^^^^^^^^^^^
+
+warning: constant `PENDING_CHANGE_LIMIT` is never used
+  --> crates\explorer-app\src\mft_journal.rs:50:18
+   |
+50 | pub(crate) const PENDING_CHANGE_LIMIT: usize = 100_000;
+   |                  ^^^^^^^^^^^^^^^^^^^^
+
+warning: constant `PENDING_BYTE_LIMIT` is never used
+  --> crates\explorer-app\src\mft_journal.rs:51:18
+   |
+51 | pub(crate) const PENDING_BYTE_LIMIT: usize = 16 * 1024 * 1024;
+   |                  ^^^^^^^^^^^^^^^^^^
+
+warning: constant `RELEVANT_REASON_MASK` is never used
+  --> crates\explorer-app\src\mft_journal.rs:53:18
+   |
+53 | pub(crate) const RELEVANT_REASON_MASK: u32 = USN_REASON_DATA_OVERWRITE
+   |                  ^^^^^^^^^^^^^^^^^^^^
+
+warning: struct `JournalMetadataV2` is never constructed
+  --> crates\explorer-app\src\mft_journal.rs:72:19
+   |
+72 | pub(crate) struct JournalMetadataV2 {
+   |                   ^^^^^^^^^^^^^^^^^
+
+warning: associated items `new` and `compatible_with` are never used
+   --> crates\explorer-app\src\mft_journal.rs:89:19
+    |
+ 88 | impl MftCheckpointV2 {
+    | -------------------- associated items in this implementation
+ 89 |     pub(crate) fn new(
+    |                   ^^^
+...
+104 |     pub(crate) fn compatible_with(
+    |                   ^^^^^^^^^^^^^^^
+
+warning: enum `MftChangeKindV2` is never used
+   --> crates\explorer-app\src\mft_journal.rs:119:17
+    |
+119 | pub(crate) enum MftChangeKindV2 {
+    |                 ^^^^^^^^^^^^^^^
+
+warning: struct `MftChangeV2` is never constructed
+   --> crates\explorer-app\src\mft_journal.rs:126:19
+    |
+126 | pub(crate) struct MftChangeV2 {
+    |                   ^^^^^^^^^^^
+
+warning: struct `MftDeltaV2` is never constructed
+   --> crates\explorer-app\src\mft_journal.rs:138:19
+    |
+138 | pub(crate) struct MftDeltaV2 {
+    |                   ^^^^^^^^^^
+
+warning: enum `MftServiceModeV2` is never used
+   --> crates\explorer-app\src\mft_journal.rs:150:17
+    |
+150 | pub(crate) enum MftServiceModeV2 {
+    |                 ^^^^^^^^^^^^^^^^
+
+warning: struct `MftServiceStatusV2` is never constructed
+   --> crates\explorer-app\src\mft_journal.rs:158:19
+    |
+158 | pub(crate) struct MftServiceStatusV2 {
+    |                   ^^^^^^^^^^^^^^^^^^
+
+warning: struct `UsnEventV2` is never constructed
+   --> crates\explorer-app\src\mft_journal.rs:171:19
+    |
+171 | pub(crate) struct UsnEventV2 {
+    |                   ^^^^^^^^^^
+
+warning: struct `HandleGuard` is never constructed
+   --> crates\explorer-app\src\mft_journal.rs:180:8
+    |
+180 | struct HandleGuard(HANDLE);
+    |        ^^^^^^^^^^^
+
+warning: function `open_volume` is never used
+   --> crates\explorer-app\src\mft_journal.rs:197:4
+    |
+197 | fn open_volume(root: &Path, overlapped: bool) -> Result<HandleGuard, String> {
+    |    ^^^^^^^^^^^
+
+warning: function `query_journal` is never used
+   --> crates\explorer-app\src\mft_journal.rs:227:15
+    |
+227 | pub(crate) fn query_journal(root: &Path) -> Result<JournalMetadataV2, String> {
+    |               ^^^^^^^^^^^^^
+
+warning: function `read_journal_once` is never used
+   --> crates\explorer-app\src\mft_journal.rs:263:15
+    |
+263 | pub(crate) fn read_journal_once(
+    |               ^^^^^^^^^^^^^^^^^
+
+warning: function `normalize_event` is never used
+   --> crates\explorer-app\src\mft_journal.rs:363:15
+    |
+363 | pub(crate) fn normalize_event(event: &UsnEventV2) -> MftChangeKindV2 {
+    |               ^^^^^^^^^^^^^^^
+
+warning: function `coalesce_events` is never used
+   --> crates\explorer-app\src\mft_journal.rs:393:15
+    |
+393 | pub(crate) fn coalesce_events(
+    |               ^^^^^^^^^^^^^^^
+
+warning: function `coalesced_bytes` is never used
+   --> crates\explorer-app\src\mft_journal.rs:414:15
+    |
+414 | pub(crate) fn coalesced_bytes(pending: &HashMap<u64, UsnEventV2>) -> usize {
+    |               ^^^^^^^^^^^^^^^
+
+warning: function `publication_due` is never used
+   --> crates\explorer-app\src\mft_journal.rs:421:15
+    |
+421 | pub(crate) fn publication_due(
+    |               ^^^^^^^^^^^^^^^
+
+warning: function `checkpoint_path` is never used
+   --> crates\explorer-app\src\mft_journal.rs:431:15
+    |
+431 | pub(crate) fn checkpoint_path(cache: &Path, letter: char, generation: u64) -> PathBuf {
+    |               ^^^^^^^^^^^^^^^
+
+warning: function `delta_path` is never used
+   --> crates\explorer-app\src\mft_journal.rs:435:15
+    |
+435 | pub(crate) fn delta_path(cache: &Path, letter: char, generation: u64) -> PathBuf {
+    |               ^^^^^^^^^^
+
+warning: function `status_path` is never used
+   --> crates\explorer-app\src\mft_journal.rs:439:15
+    |
+439 | pub(crate) fn status_path(cache: &Path, letter: char) -> PathBuf {
+    |               ^^^^^^^^^^^
+
+warning: function `latest_checkpoint` is never used
+   --> crates\explorer-app\src\mft_journal.rs:443:15
+    |
+443 | pub(crate) fn latest_checkpoint(
+    |               ^^^^^^^^^^^^^^^^^
+
+warning: function `publish_delta_and_checkpoint` is never used
+   --> crates\explorer-app\src\mft_journal.rs:465:15
+    |
+465 | pub(crate) fn publish_delta_and_checkpoint(
+    |               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `publish_initial_checkpoint` is never used
+   --> crates\explorer-app\src\mft_journal.rs:484:15
+    |
+484 | pub(crate) fn publish_initial_checkpoint(
+    |               ^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `write_status` is never used
+   --> crates\explorer-app\src\mft_journal.rs:495:15
+    |
+495 | pub(crate) fn write_status(
+    |               ^^^^^^^^^^^^
+
+warning: function `read_checkpoint` is never used
+   --> crates\explorer-app\src\mft_journal.rs:503:15
+    |
+503 | pub(crate) fn read_checkpoint(path: &Path) -> Result<MftCheckpointV2, String> {
+    |               ^^^^^^^^^^^^^^^
+
+warning: function `read_delta` is never used
+   --> crates\explorer-app\src\mft_journal.rs:508:15
+    |
+508 | pub(crate) fn read_delta(path: &Path) -> Result<MftDeltaV2, String> {
+    |               ^^^^^^^^^^
+
+warning: function `read_status` is never used
+   --> crates\explorer-app\src\mft_journal.rs:513:15
+    |
+513 | pub(crate) fn read_status(path: &Path) -> Result<MftServiceStatusV2, String> {
+    |               ^^^^^^^^^^^
+
+warning: function `deltas_after` is never used
+   --> crates\explorer-app\src\mft_journal.rs:518:15
+    |
+518 | pub(crate) fn deltas_after(
+    |               ^^^^^^^^^^^^
+
+warning: function `validate_delta_after` is never used
+   --> crates\explorer-app\src\mft_journal.rs:534:15
+    |
+534 | pub(crate) fn validate_delta_after(
+    |               ^^^^^^^^^^^^^^^^^^^^
+
+warning: function `remove_volume_sidecars` is never used
+   --> crates\explorer-app\src\mft_journal.rs:554:15
+    |
+554 | pub(crate) fn remove_volume_sidecars(cache: &Path, letter: char) -> Result<(), String> {
+    |               ^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `atomic_create` is never used
+   --> crates\explorer-app\src\mft_journal.rs:570:4
+    |
+570 | fn atomic_create(path: &Path, bytes: &[u8]) -> Result<(), String> {
+    |    ^^^^^^^^^^^^^
+
+warning: function `atomic_replace` is never used
+   --> crates\explorer-app\src\mft_journal.rs:595:4
+    |
+595 | fn atomic_replace(path: &Path, bytes: &[u8]) -> Result<(), String> {
+    |    ^^^^^^^^^^^^^^
+
+warning: function `write_synced` is never used
+   --> crates\explorer-app\src\mft_journal.rs:602:4
+    |
+602 | fn write_synced(path: &Path, bytes: &[u8]) -> Result<(), String> {
+    |    ^^^^^^^^^^^^
+
+warning: function `read_bounded` is never used
+   --> crates\explorer-app\src\mft_journal.rs:608:4
+    |
+608 | fn read_bounded(path: &Path) -> Result<Vec<u8>, String> {
+    |    ^^^^^^^^^^^^
+
+warning: function `encode_checkpoint` is never used
+   --> crates\explorer-app\src\mft_journal.rs:625:4
+    |
+625 | fn encode_checkpoint(checkpoint: &MftCheckpointV2) -> Vec<u8> {
+    |    ^^^^^^^^^^^^^^^^^
+
+warning: function `decode_checkpoint` is never used
+   --> crates\explorer-app\src\mft_journal.rs:636:4
+    |
+636 | fn decode_checkpoint(bytes: &[u8]) -> Result<MftCheckpointV2, String> {
+    |    ^^^^^^^^^^^^^^^^^
+
+warning: function `encode_delta` is never used
+   --> crates\explorer-app\src\mft_journal.rs:654:4
+    |
+654 | fn encode_delta(delta: &MftDeltaV2) -> Result<Vec<u8>, String> {
+    |    ^^^^^^^^^^^^
+
+warning: function `decode_delta` is never used
+   --> crates\explorer-app\src\mft_journal.rs:689:4
+    |
+689 | fn decode_delta(bytes: &[u8]) -> Result<MftDeltaV2, String> {
+    |    ^^^^^^^^^^^^
+
+warning: function `encode_status` is never used
+   --> crates\explorer-app\src\mft_journal.rs:754:4
+    |
+754 | fn encode_status(status: &MftServiceStatusV2) -> Result<Vec<u8>, String> {
+    |    ^^^^^^^^^^^^^
+
+warning: function `decode_status` is never used
+   --> crates\explorer-app\src\mft_journal.rs:775:4
+    |
+775 | fn decode_status(bytes: &[u8]) -> Result<MftServiceStatusV2, String> {
+    |    ^^^^^^^^^^^^^
+
+warning: function `finish_record` is never used
+   --> crates\explorer-app\src\mft_journal.rs:819:4
+    |
+819 | fn finish_record(mut bytes: Vec<u8>) -> Vec<u8> {
+    |    ^^^^^^^^^^^^^
+
+warning: function `verify_record` is never used
+   --> crates\explorer-app\src\mft_journal.rs:826:4
+    |
+826 | fn verify_record<'a>(bytes: &'a [u8], magic: &[u8; 8]) -> Result<&'a [u8], String> {
+    |    ^^^^^^^^^^^^^
+
+warning: function `checksum` is never used
+   --> crates\explorer-app\src\mft_journal.rs:842:4
+    |
+842 | fn checksum(bytes: &[u8]) -> u64 {
+    |    ^^^^^^^^
+
+warning: function `normalize_reference` is never used
+   --> crates\explorer-app\src\mft_journal.rs:848:15
+    |
+848 | pub(crate) fn normalize_reference(reference: u64) -> u64 {
+    |               ^^^^^^^^^^^^^^^^^^^
+
+warning: function `push_u32` is never used
+   --> crates\explorer-app\src\mft_journal.rs:852:4
+    |
+852 | fn push_u32(bytes: &mut Vec<u8>, value: u32) {
+    |    ^^^^^^^^
+
+warning: function `push_u64` is never used
+   --> crates\explorer-app\src\mft_journal.rs:856:4
+    |
+856 | fn push_u64(bytes: &mut Vec<u8>, value: u64) {
+    |    ^^^^^^^^
+
+warning: function `push_i64` is never used
+   --> crates\explorer-app\src\mft_journal.rs:860:4
+    |
+860 | fn push_i64(bytes: &mut Vec<u8>, value: i64) {
+    |    ^^^^^^^^
+
+warning: function `read_u16_at` is never used
+   --> crates\explorer-app\src\mft_journal.rs:864:4
+    |
+864 | fn read_u16_at(bytes: &[u8], offset: usize) -> Option<u16> {
+    |    ^^^^^^^^^^^
+
+warning: function `read_u32_at` is never used
+   --> crates\explorer-app\src\mft_journal.rs:870:4
+    |
+870 | fn read_u32_at(bytes: &[u8], offset: usize) -> Option<u32> {
+    |    ^^^^^^^^^^^
+
+warning: function `read_u64_at` is never used
+   --> crates\explorer-app\src\mft_journal.rs:876:4
+    |
+876 | fn read_u64_at(bytes: &[u8], offset: usize) -> Option<u64> {
+    |    ^^^^^^^^^^^
+
+warning: function `read_i64_at` is never used
+   --> crates\explorer-app\src\mft_journal.rs:882:4
+    |
+882 | fn read_i64_at(bytes: &[u8], offset: usize) -> Option<i64> {
+    |    ^^^^^^^^^^^
+
+warning: struct `Cursor` is never constructed
+   --> crates\explorer-app\src\mft_journal.rs:888:8
+    |
+888 | struct Cursor<'a> {
+    |        ^^^^^^
+
+warning: multiple associated items are never used
+   --> crates\explorer-app\src\mft_journal.rs:894:8
+    |
+893 | impl<'a> Cursor<'a> {
+    | ------------------- associated items in this implementation
+894 |     fn new(bytes: &'a [u8], offset: usize) -> Self {
+    |        ^^^
+...
+898 |     fn bytes(&mut self, length: usize) -> Result<&'a [u8], String> {
+    |        ^^^^^
+...
+908 |     fn skip(&mut self, length: usize) -> Result<(), String> {
+    |        ^^^^
+...
+913 |     fn u8(&mut self) -> Result<u8, String> {
+    |        ^^
+...
+917 |     fn u32(&mut self) -> Result<u32, String> {
+    |        ^^^
+...
+925 |     fn u64(&mut self) -> Result<u64, String> {
+    |        ^^^
+...
+933 |     fn i64(&mut self) -> Result<i64, String> {
+    |        ^^^
+...
+941 |     fn finished(&self) -> bool {
+    |        ^^^^^^^^
+
+warning: constant `MANIFEST_VERSION` is never used
+  --> crates\explorer-app\src\mft_migration.rs:18:7
+   |
+18 | const MANIFEST_VERSION: u32 = 1;
+   |       ^^^^^^^^^^^^^^^^
+
+warning: struct `InventoryEntryV1` is never constructed
+  --> crates\explorer-app\src\mft_migration.rs:21:19
+   |
+21 | pub(crate) struct InventoryEntryV1 {
+   |                   ^^^^^^^^^^^^^^^^
+
+warning: struct `MaintenanceManifestV1` is never constructed
+  --> crates\explorer-app\src\mft_migration.rs:32:8
+   |
+32 | struct MaintenanceManifestV1 {
+   |        ^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `inventory_legacy` is never used
+  --> crates\explorer-app\src\mft_migration.rs:41:15
+   |
+41 | pub(crate) fn inventory_legacy(root: &Path, letter: char) -> Result<Vec<InventoryEntryV1>, String> {
+   |               ^^^^^^^^^^^^^^^^
+
+warning: function `cleanup_legacy_after_promotion` is never used
+  --> crates\explorer-app\src\mft_migration.rs:56:15
+   |
+56 | pub(crate) fn cleanup_legacy_after_promotion(
+   |               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `cleanup_legacy_after_promotion_guarded` is never used
+  --> crates\explorer-app\src\mft_migration.rs:64:15
+   |
+64 | pub(crate) fn cleanup_legacy_after_promotion_guarded(
+   |               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `cleanup_legacy_after_promotion_linearized` is never used
+  --> crates\explorer-app\src\mft_migration.rs:73:15
+   |
+73 | pub(crate) fn cleanup_legacy_after_promotion_linearized(
+   |               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `cleanup_legacy_after_promotion_impl` is never used
+  --> crates\explorer-app\src\mft_migration.rs:89:4
+   |
+89 | fn cleanup_legacy_after_promotion_impl(
+   |    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `quarantine_canonical` is never used
+   --> crates\explorer-app\src\mft_migration.rs:151:15
+    |
+151 | pub(crate) fn quarantine_canonical(
+    |               ^^^^^^^^^^^^^^^^^^^^
+
+warning: function `quarantine_canonical_guarded` is never used
+   --> crates\explorer-app\src\mft_migration.rs:160:15
+    |
+160 | pub(crate) fn quarantine_canonical_guarded(
+    |               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `quarantine_canonical_linearized` is never used
+   --> crates\explorer-app\src\mft_migration.rs:177:15
+    |
+177 | pub(crate) fn quarantine_canonical_linearized(
+    |               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `quarantine_canonical_impl` is never used
+   --> crates\explorer-app\src\mft_migration.rs:195:4
+    |
+195 | fn quarantine_canonical_impl(
+    |    ^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `inventory_canonical` is never used
+   --> crates\explorer-app\src\mft_migration.rs:316:4
+    |
+316 | fn inventory_canonical(root: &Path, letter: char) -> Result<Vec<InventoryEntryV1>, String> {
+    |    ^^^^^^^^^^^^^^^^^^^
+
+warning: function `find_incomplete_quarantine` is never used
+   --> crates\explorer-app\src\mft_migration.rs:338:4
+    |
+338 | fn find_incomplete_quarantine(parent: &Path, letter: char) -> Result<Option<PathBuf>, String> {
+    |    ^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `recognized_legacy_name` is never used
+   --> crates\explorer-app\src\mft_migration.rs:356:4
+    |
+356 | fn recognized_legacy_name(letter: char, name: &str) -> bool {
+    |    ^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `inventory_file` is never used
+   --> crates\explorer-app\src\mft_migration.rs:374:4
+    |
+374 | fn inventory_file(root: &Path, path: &Path) -> Result<InventoryEntryV1, String> {
+    |    ^^^^^^^^^^^^^^
+
+warning: function `inventory_file_from_handle` is never used
+   --> crates\explorer-app\src\mft_migration.rs:379:4
+    |
+379 | fn inventory_file_from_handle(
+    |    ^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `verify_inventory_match` is never used
+   --> crates\explorer-app\src\mft_migration.rs:406:4
+    |
+406 | fn verify_inventory_match(
+    |    ^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `open_inventory_handle` is never used
+   --> crates\explorer-app\src\mft_migration.rs:419:4
+    |
+419 | fn open_inventory_handle(path: &Path) -> Result<File, String> {
+    |    ^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `file_identity` is never used
+   --> crates\explorer-app\src\mft_migration.rs:446:4
+    |
+446 | fn file_identity(file: &File) -> Result<(u64, u64), String> {
+    |    ^^^^^^^^^^^^^
+
+warning: function `open_verified_inventory_handle` is never used
+   --> crates\explorer-app\src\mft_migration.rs:484:4
+    |
+484 | fn open_verified_inventory_handle(
+    |    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `delete_file_handle` is never used
+   --> crates\explorer-app\src\mft_migration.rs:503:4
+    |
+503 | fn delete_file_handle(file: &File) -> Result<(), String> {
+    |    ^^^^^^^^^^^^^^^^^^
+
+warning: function `rename_file_handle` is never used
+   --> crates\explorer-app\src\mft_migration.rs:540:4
+    |
+540 | fn rename_file_handle(file: &File, destination: &Path) -> Result<(), String> {
+    |    ^^^^^^^^^^^^^^^^^^
+
+warning: function `hardlink_and_unlink_exclusive_handle` is never used
+   --> crates\explorer-app\src\mft_migration.rs:618:4
+    |
+618 | fn hardlink_and_unlink_exclusive_handle(
+    |    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `maintenance_write` is never used
+   --> crates\explorer-app\src\mft_migration.rs:649:4
+    |
+649 | fn maintenance_write<T>(
+    |    ^^^^^^^^^^^^^^^^^
+
+warning: function `resolved_directory` is never used
+   --> crates\explorer-app\src\mft_migration.rs:667:4
+    |
+667 | fn resolved_directory(path: &Path) -> Result<PathBuf, String> {
+    |    ^^^^^^^^^^^^^^^^^^
+
+warning: function `validate_manifest` is never used
+   --> crates\explorer-app\src\mft_migration.rs:675:4
+    |
+675 | fn validate_manifest(
+    |    ^^^^^^^^^^^^^^^^^
+
+warning: function `read_manifest` is never used
+   --> crates\explorer-app\src\mft_migration.rs:697:4
+    |
+697 | fn read_manifest(path: &Path) -> Result<MaintenanceManifestV1, String> {
+    |    ^^^^^^^^^^^^^
+
+warning: function `write_synced_json` is never used
+   --> crates\explorer-app\src\mft_migration.rs:702:4
+    |
+702 | fn write_synced_json(path: &Path, value: &MaintenanceManifestV1) -> Result<(), String> {
+    |    ^^^^^^^^^^^^^^^^^
+
+warning: function `sha256_file` is never used
+   --> crates\explorer-app\src\mft_migration.rs:747:4
+    |
+747 | fn sha256_file(path: &Path) -> Result<String, String> {
+    |    ^^^^^^^^^^^
+
+warning: function `sha256_open_file` is never used
+   --> crates\explorer-app\src\mft_migration.rs:752:4
+    |
+752 | fn sha256_open_file(file: &mut File) -> Result<String, String> {
+    |    ^^^^^^^^^^^^^^^^
+
+warning: struct `Sha256` is never constructed
+   --> crates\explorer-app\src\mft_migration.rs:771:8
+    |
+771 | struct Sha256 {
+    |        ^^^^^^
+
+warning: associated items `new`, `update`, `finish`, and `compress` are never used
+   --> crates\explorer-app\src\mft_migration.rs:777:8
+    |
+776 | impl Sha256 {
+    | ----------- associated items in this implementation
+777 |     fn new() -> Self {
+    |        ^^^
+...
+787 |     fn update(&mut self, bytes: &[u8]) {
+    |        ^^^^^^
+...
+797 |     fn finish(mut self) -> [u8; 32] {
+    |        ^^^^^^
+...
+816 |     fn compress(&mut self, b: &[u8; 64]) {
+    |        ^^^^^^^^
+
+warning: function `GetFileInformationByHandle` is never used
+   --> crates\explorer-app\src\mft_migration.rs:463:12
+    |
+463 |         fn GetFileInformationByHandle(
+    |            ^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `SetFileInformationByHandle` is never used
+   --> crates\explorer-app\src\mft_migration.rs:510:12
+    |
+510 |         fn SetFileInformationByHandle(
+    |            ^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `SetFileInformationByHandle` is never used
+   --> crates\explorer-app\src\mft_migration.rs:550:12
+    |
+550 |         fn SetFileInformationByHandle(
+    |            ^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `CreateHardLinkW` is never used
+   --> crates\explorer-app\src\mft_migration.rs:625:12
+    |
+625 |         fn CreateHardLinkW(
+    |            ^^^^^^^^^^^^^^^
+
+warning: constant `PERSISTENCE_INTERVAL` is never used
+ --> crates\explorer-app\src\mft_persistence.rs:8:18
+  |
+8 | pub(crate) const PERSISTENCE_INTERVAL: Duration = Duration::from_secs(10 * 60);
+  |                  ^^^^^^^^^^^^^^^^^^^^
+
+warning: constant `LIFECYCLE_OPEN` is never used
+  --> crates\explorer-app\src\mft_persistence.rs:10:7
+   |
+10 | const LIFECYCLE_OPEN: u8 = 0;
+   |       ^^^^^^^^^^^^^^
+
+warning: constant `LIFECYCLE_INVOKING` is never used
+  --> crates\explorer-app\src\mft_persistence.rs:11:7
+   |
+11 | const LIFECYCLE_INVOKING: u8 = 1;
+   |       ^^^^^^^^^^^^^^^^^^
+
+warning: constant `LIFECYCLE_CLOSED` is never used
+  --> crates\explorer-app\src\mft_persistence.rs:12:7
+   |
+12 | const LIFECYCLE_CLOSED: u8 = 2;
+   |       ^^^^^^^^^^^^^^^^
+
+warning: struct `LifecycleBarrierV1` is never constructed
+  --> crates\explorer-app\src\mft_persistence.rs:19:19
+   |
+19 | pub(crate) struct LifecycleBarrierV1 {
+   |                   ^^^^^^^^^^^^^^^^^^
+
+warning: associated items `new`, `is_open`, `close`, and `invoke` are never used
+  --> crates\explorer-app\src\mft_persistence.rs:24:25
+   |
+23 | impl LifecycleBarrierV1 {
+   | ----------------------- associated items in this implementation
+24 |     pub(crate) const fn new() -> Self {
+   |                         ^^^
+...
+30 |     pub(crate) fn is_open(&self) -> bool {
+   |                   ^^^^^^^
+...
+34 |     pub(crate) fn close(&self) {
+   |                   ^^^^^
+...
+38 |     pub(crate) fn invoke<T>(
+   |                   ^^^^^^
+
+warning: struct `MonotonicMillis` is never constructed
+  --> crates\explorer-app\src\mft_persistence.rs:69:19
+   |
+69 | pub(crate) struct MonotonicMillis(pub(crate) u64);
+   |                   ^^^^^^^^^^^^^^^
+
+warning: methods `elapsed_since` and `saturating_add` are never used
+  --> crates\explorer-app\src\mft_persistence.rs:72:14
+   |
+71 | impl MonotonicMillis {
+   | -------------------- methods in this implementation
+72 |     const fn elapsed_since(self, earlier: Self) -> Duration {
+   |              ^^^^^^^^^^^^^
+...
+76 |     fn saturating_add(self, duration: Duration) -> Self {
+   |        ^^^^^^^^^^^^^^
+
+warning: struct `JournalCursorV1` is never constructed
+  --> crates\explorer-app\src\mft_persistence.rs:85:19
+   |
+85 | pub(crate) struct JournalCursorV1 {
+   |                   ^^^^^^^^^^^^^^^
+
+warning: enum `RecoveryReasonV1` is never used
+  --> crates\explorer-app\src\mft_persistence.rs:92:17
+   |
+92 | pub(crate) enum RecoveryReasonV1 {
+   |                 ^^^^^^^^^^^^^^^^
+
+warning: enum `MigrationStateV1` is never used
+   --> crates\explorer-app\src\mft_persistence.rs:102:17
+    |
+102 | pub(crate) enum MigrationStateV1 {
+    |                 ^^^^^^^^^^^^^^^^
+
+warning: struct `PendingBatchV1` is never constructed
+   --> crates\explorer-app\src\mft_persistence.rs:110:19
+    |
+110 | pub(crate) struct PendingBatchV1<T> {
+    |                   ^^^^^^^^^^^^^^
+
+warning: associated function `capture` is never used
+   --> crates\explorer-app\src\mft_persistence.rs:118:19
+    |
+117 | impl<T> PendingBatchV1<T> {
+    | ------------------------- associated function in this implementation
+118 |     pub(crate) fn capture(
+    |                   ^^^^^^^
+
+warning: function `capture_coalesced_batch` is never used
+   --> crates\explorer-app\src\mft_persistence.rs:141:15
+    |
+141 | pub(crate) fn capture_coalesced_batch<K, V>(
+    |               ^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: enum `PersistenceDecisionV1` is never used
+   --> crates\explorer-app\src\mft_persistence.rs:155:17
+    |
+155 | pub(crate) enum PersistenceDecisionV1 {
+    |                 ^^^^^^^^^^^^^^^^^^^^^
+
+warning: struct `PersistenceScheduleV1` is never constructed
+   --> crates\explorer-app\src\mft_persistence.rs:166:19
+    |
+166 | pub(crate) struct PersistenceScheduleV1 {
+    |                   ^^^^^^^^^^^^^^^^^^^^^
+
+warning: multiple associated items are never used
+   --> crates\explorer-app\src\mft_persistence.rs:175:25
+    |
+174 | impl PersistenceScheduleV1 {
+    | -------------------------- associated items in this implementation
+175 |     pub(crate) const fn new(startup: MonotonicMillis) -> Self {
+    |                         ^^^
+...
+188 |     pub(crate) fn expedite_initial_recovery(&mut self, _now: MonotonicMillis) {
+    |                   ^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+194 |     pub(crate) fn decision(
+    |                   ^^^^^^^^
+...
+222 |     pub(crate) fn record_attempt(&mut self, now: MonotonicMillis) -> Result<(), &'static str> {
+    |                   ^^^^^^^^^^^^^^
+...
+231 |     pub(crate) fn record_success(&mut self, now: MonotonicMillis) {
+    |                   ^^^^^^^^^^^^^^
+...
+235 |     pub(crate) fn inhibit_for_stop(&mut self) {
+    |                   ^^^^^^^^^^^^^^^^
+...
+239 |     pub(crate) const fn last_success(&self) -> Option<MonotonicMillis> {
+    |                         ^^^^^^^^^^^^
+
+warning: type alias `LeaseIdV1` is never used
+   --> crates\explorer-app\src\mft_persistence.rs:249:17
+    |
+249 | pub(crate) type LeaseIdV1 = u128;
+    |                 ^^^^^^^^^
+
+warning: type alias `LeaseOwnerV1` is never used
+   --> crates\explorer-app\src\mft_persistence.rs:250:17
+    |
+250 | pub(crate) type LeaseOwnerV1 = u64;
+    |                 ^^^^^^^^^^^^
+
+warning: struct `FocusLeaseV1` is never constructed
+   --> crates\explorer-app\src\mft_persistence.rs:253:8
+    |
+253 | struct FocusLeaseV1 {
+    |        ^^^^^^^^^^^^
+
+warning: struct `FocusLeaseRegistryV1` is never constructed
+   --> crates\explorer-app\src\mft_persistence.rs:259:19
+    |
+259 | pub(crate) struct FocusLeaseRegistryV1 {
+    |                   ^^^^^^^^^^^^^^^^^^^^
+
+warning: multiple methods are never used
+   --> crates\explorer-app\src\mft_persistence.rs:264:19
+    |
+263 | impl FocusLeaseRegistryV1 {
+    | ------------------------- methods in this implementation
+264 |     pub(crate) fn acquire_or_renew(
+    |                   ^^^^^^^^^^^^^^^^
+...
+291 |     pub(crate) fn release(&mut self, id: LeaseIdV1, owner: LeaseOwnerV1) -> bool {
+    |                   ^^^^^^^
+...
+304 |     pub(crate) fn disconnect(&mut self, owner: LeaseOwnerV1) {
+    |                   ^^^^^^^^^^
+...
+308 |     pub(crate) fn clear(&mut self) {
+    |                   ^^^^^
+...
+312 |     pub(crate) fn expire(&mut self, now: MonotonicMillis) {
+    |                   ^^^^^^
+...
+316 |     pub(crate) fn any_focused(&mut self, now: MonotonicMillis) -> bool {
+    |                   ^^^^^^^^^^^
+...
+321 |     pub(crate) fn contains_active(&mut self, id: LeaseIdV1, now: MonotonicMillis) -> bool {
+    |                   ^^^^^^^^^^^^^^^
+...
+326 |     pub(crate) fn active_count(&mut self, now: MonotonicMillis) -> usize {
+    |                   ^^^^^^^^^^^^
+...
+331 |     pub(crate) fn expiry_remaining(&mut self, now: MonotonicMillis) -> Duration {
+    |                   ^^^^^^^^^^^^^^^^
+
+warning: constant `PIPE_SECURITY_SDDL` is never used
+ --> crates\explorer-app\src\mft_query.rs:6:7
+  |
+6 | const PIPE_SECURITY_SDDL: &str = "D:P(A;;GA;;;SY)(A;;GRGW;;;IU)";
+  |       ^^^^^^^^^^^^^^^^^^
+
+warning: constant `PIPE_TYPE_MESSAGE_READMODE_REJECT_REMOTE` is never used
+ --> crates\explorer-app\src\mft_query.rs:7:7
+  |
+7 | const PIPE_TYPE_MESSAGE_READMODE_REJECT_REMOTE: u32 = 0x0000_0001 | 0x0000_0008;
+  |       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: constant `REQUEST_KIND_FOLDER` is never used
+  --> crates\explorer-app\src\mft_query.rs:26:7
+   |
+26 | const REQUEST_KIND_FOLDER: u16 = 0;
+   |       ^^^^^^^^^^^^^^^^^^^
+
+warning: constant `REQUEST_KIND_HIERARCHY` is never used
+  --> crates\explorer-app\src\mft_query.rs:30:7
+   |
+30 | const REQUEST_KIND_HIERARCHY: u16 = 4;
+   |       ^^^^^^^^^^^^^^^^^^^^^^
+
+warning: constant `FOLDER_BATCH_PARALLELISM` is never used
+  --> crates\explorer-app\src\mft_query.rs:43:7
+   |
+43 | const FOLDER_BATCH_PARALLELISM: usize = 4;
+   |       ^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: constant `ERROR_PIPE_CONNECTED` is never used
+  --> crates\explorer-app\src\mft_query.rs:47:7
+   |
+47 | const ERROR_PIPE_CONNECTED: u32 = 535;
+   |       ^^^^^^^^^^^^^^^^^^^^
+
+warning: constant `ERROR_PIPE_LISTENING` is never used
+  --> crates\explorer-app\src\mft_query.rs:48:7
+   |
+48 | const ERROR_PIPE_LISTENING: u32 = 536;
+   |       ^^^^^^^^^^^^^^^^^^^^
+
+warning: struct `LocalMemory` is never constructed
+   --> crates\explorer-app\src\mft_query.rs:253:8
+    |
+253 | struct LocalMemory(*mut c_void);
+    |        ^^^^^^^^^^^
+
+warning: function `serve_folder_queries` is never used
+   --> crates\explorer-app\src\mft_query.rs:875:15
+    |
+875 | pub(crate) fn serve_folder_queries(
+    |               ^^^^^^^^^^^^^^^^^^^^
+
+warning: function `serve_queries` is never used
+   --> crates\explorer-app\src\mft_query.rs:895:15
+    |
+895 | pub(crate) fn serve_queries(
+    |               ^^^^^^^^^^^^^
+
+warning: struct `ServiceFolderBatchItemV1` is never constructed
+    --> crates\explorer-app\src\mft_query.rs:1102:8
+     |
+1102 | struct ServiceFolderBatchItemV1 {
+     |        ^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `serve_folder_batch` is never used
+    --> crates\explorer-app\src\mft_query.rs:1109:4
+     |
+1109 | fn serve_folder_batch(
+     |    ^^^^^^^^^^^^^^^^^^
+
+warning: function `decode_folder_batch_payload` is never used
+    --> crates\explorer-app\src\mft_query.rs:1176:4
+     |
+1176 | fn decode_folder_batch_payload(
+     |    ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `encode_folder_batch_response` is never used
+    --> crates\explorer-app\src\mft_query.rs:1230:4
+     |
+1230 | fn encode_folder_batch_response(
+     |    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `encode_folder_batch_end` is never used
+    --> crates\explorer-app\src\mft_query.rs:1268:4
+     |
+1268 | fn encode_folder_batch_end(batch_id: u64) -> [u8; FOLDER_BATCH_RESPONSE_BYTES] {
+     |    ^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `wait_for_client_close` is never used
+    --> crates\explorer-app\src\mft_query.rs:1283:4
+     |
+1283 | fn wait_for_client_close(handle: isize, stopped: impl Fn() -> bool) {
+     |    ^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `encode_hierarchy_response` is never used
+    --> crates\explorer-app\src\mft_query.rs:1303:4
+     |
+1303 | fn encode_hierarchy_response(
+     |    ^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `encode_durability_diagnostics_response` is never used
+    --> crates\explorer-app\src\mft_query.rs:1347:4
+     |
+1347 | fn encode_durability_diagnostics_response(
+     |    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `encode_diagnostics_breakdown_response` is never used
+    --> crates\explorer-app\src\mft_query.rs:1409:4
+     |
+1409 | fn encode_diagnostics_breakdown_response(
+     |    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `encode_diagnostics_response` is never used
+    --> crates\explorer-app\src\mft_query.rs:1436:4
+     |
+1436 | fn encode_diagnostics_response(
+     |    ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `encode_response` is never used
+    --> crates\explorer-app\src\mft_query.rs:1460:4
+     |
+1460 | fn encode_response(result: Result<FolderAggregateQueryV1, String>) -> Vec<u8> {
+     |    ^^^^^^^^^^^^^^^
+
+warning: function `bounded_error_detail` is never used
+    --> crates\explorer-app\src\mft_query.rs:1491:4
+     |
+1491 | fn bounded_error_detail(mut error: String) -> String {
+     |    ^^^^^^^^^^^^^^^^^^^^
+
+warning: function `CreateNamedPipeW` is never used
+   --> crates\explorer-app\src\mft_query.rs:174:8
+    |
+174 |     fn CreateNamedPipeW(
+    |        ^^^^^^^^^^^^^^^^
+
+warning: function `ConnectNamedPipe` is never used
+   --> crates\explorer-app\src\mft_query.rs:184:8
+    |
+184 |     fn ConnectNamedPipe(pipe: isize, overlapped: *mut c_void) -> i32;
+    |        ^^^^^^^^^^^^^^^^
+
+warning: function `DisconnectNamedPipe` is never used
+   --> crates\explorer-app\src\mft_query.rs:185:8
+    |
+185 |     fn DisconnectNamedPipe(pipe: isize) -> i32;
+    |        ^^^^^^^^^^^^^^^^^^^
+
+warning: function `PeekNamedPipe` is never used
+   --> crates\explorer-app\src\mft_query.rs:210:8
+    |
+210 |     fn PeekNamedPipe(
+    |        ^^^^^^^^^^^^^
+
+warning: function `LocalFree` is never used
+   --> crates\explorer-app\src\mft_query.rs:220:8
+    |
+220 |     fn LocalFree(memory: *mut c_void) -> *mut c_void;
+    |        ^^^^^^^^^
+
+warning: function `ConvertStringSecurityDescriptorToSecurityDescriptorW` is never used
+   --> crates\explorer-app\src\mft_query.rs:231:8
+    |
+231 |     fn ConvertStringSecurityDescriptorToSecurityDescriptorW(
+    |        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: struct `VolumeMemoryRuntimeV1` is never constructed
+  --> crates\explorer-app\src\mft_runtime.rs:10:19
+   |
+10 | pub(crate) struct VolumeMemoryRuntimeV1 {
+   |                   ^^^^^^^^^^^^^^^^^^^^^
+
+warning: multiple associated items are never used
+   --> crates\explorer-app\src\mft_runtime.rs:20:19
+    |
+ 19 | impl VolumeMemoryRuntimeV1 {
+    | -------------------------- associated items in this implementation
+ 20 |     pub(crate) fn new(index: MftIndexV1, durable: JournalCursorV1) -> Self {
+    |                   ^^^
+...
+ 31 |     pub(crate) fn rebuild_required(index: MftIndexV1, cursor: JournalCursorV1) -> Self {
+    |                   ^^^^^^^^^^^^^^^^
+...
+ 37 |     pub(crate) fn replace_with_exact(&mut self, index: MftIndexV1, cursor: JournalCursorV1) {
+    |                   ^^^^^^^^^^^^^^^^^^
+...
+ 46 |     pub(crate) fn replace_with_partial(&mut self, index: MftIndexV1, cursor: JournalCursorV1) {
+    |                   ^^^^^^^^^^^^^^^^^^^^
+...
+ 55 |     pub(crate) fn replace_with_caught_up(
+    |                   ^^^^^^^^^^^^^^^^^^^^^^
+...
+ 78 |     pub(crate) fn observe(&mut self, change: MftChangeV2, next_usn: i64) -> Result<(), String> {
+    |                   ^^^^^^^
+...
+ 94 |     pub(crate) const fn is_exact(&self) -> bool {
+    |                         ^^^^^^^^
+...
+ 98 |     pub(crate) fn has_pending(&self) -> bool {
+    |                   ^^^^^^^^^^^
+...
+102 |     pub(crate) const fn pending_bytes(&self) -> usize {
+    |                         ^^^^^^^^^^^^^
+...
+106 |     pub(crate) fn pending_count(&self) -> usize {
+    |                   ^^^^^^^^^^^^^
+...
+110 |     pub(crate) fn mark_inexact(&mut self) {
+    |                   ^^^^^^^^^^^^
+...
+118 |     pub(crate) fn evict_index_for_active_volume_paging(&mut self) {
+    |                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+126 |     pub(crate) fn advance_inexact_observed(&mut self, next_usn: i64) -> Result<(), String> {
+    |                   ^^^^^^^^^^^^^^^^^^^^^^^^
+...
+140 |     pub(crate) fn capture(&mut self) -> Result<PendingBatchV1<MftChangeV2>, String> {
+    |                   ^^^^^^^
+...
+152 |     pub(crate) fn commit_succeeded(&mut self, batch: &PendingBatchV1<MftChangeV2>) {
+    |                   ^^^^^^^^^^^^^^^^
+...
+156 |     pub(crate) fn commit_failed(&mut self, batch: PendingBatchV1<MftChangeV2>) {
+    |                   ^^^^^^^^^^^^^
+...
+164 |     fn recount_pending_bytes(&mut self) {
+    |        ^^^^^^^^^^^^^^^^^^^^^
+
+warning: field `worker_count` is never read
+  --> crates\explorer-app\src\mft_size_map.rs:83:5
+   |
+81 | pub(crate) struct MftAggregateIndexV1 {
+   |                   ------------------- field in this struct
+82 |     totals: BTreeMap<u64, MftAggregateV1>,
+83 |     worker_count: usize,
+   |     ^^^^^^^^^^^^
+   |
+   = note: `MftAggregateIndexV1` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+
+warning: methods `estimated_resident_bytes` and `trim_to_bytes` are never used
+   --> crates\explorer-app\src\mft_size_map.rs:165:19
+    |
+ 86 | impl MftAggregateIndexV1 {
+    | ------------------------ methods in this implementation
+...
+165 |     pub(crate) fn estimated_resident_bytes(&self) -> usize {
+    |                   ^^^^^^^^^^^^^^^^^^^^^^^^
+...
+171 |     pub(crate) fn trim_to_bytes(&mut self, limit: usize) -> bool {
+    |                   ^^^^^^^^^^^^^
+
+warning: multiple associated items are never used
+   --> crates\explorer-app\src\mft_size_map.rs:273:19
+    |
+248 | impl MftIndexV1 {
+    | --------------- associated items in this implementation
+...
+273 |     pub(crate) fn try_from_entries(entries: BTreeMap<u64, MftEntryV1>) -> Result<Self, String> {
+    |                   ^^^^^^^^^^^^^^^^
+...
+279 |     pub(crate) fn try_from_entries_cancelled(
+    |                   ^^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+328 |     pub(crate) fn serialized_bytes(&self) -> usize {
+    |                   ^^^^^^^^^^^^^^^^
+...
+337 |     pub(crate) fn projected_aggregate_bytes(&self) -> usize {
+    |                   ^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+343 |     pub(crate) fn trim_persisted_to_bytes(&mut self, limit: usize) -> bool {
+    |                   ^^^^^^^^^^^^^^^^^^^^^^^
+...
+359 |     pub(crate) fn trim_file_data_to_bytes(&mut self, limit: usize) -> bool {
+    |                   ^^^^^^^^^^^^^^^^^^^^^^^
+...
+395 |     pub(crate) fn estimated_resident_bytes(&self) -> usize {
+    |                   ^^^^^^^^^^^^^^^^^^^^^^^^
+...
+420 |     pub(crate) fn apply_change(
+    |                   ^^^^^^^^^^^^
+...
+466 |     pub(crate) fn ancestor_references(&self, reference: u64) -> Vec<u64> {
+    |                   ^^^^^^^^^^^^^^^^^^^
+...
+482 |     pub(crate) fn path_for_reference(
+    |                   ^^^^^^^^^^^^^^^^^^
+...
+504 |     pub(crate) fn aggregate_subtree_bounded(
+    |                   ^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `write_index` is never used
+   --> crates\explorer-app\src\mft_size_map.rs:643:15
+    |
+643 | pub(crate) fn write_index(path: &Path, index: &MftIndexV1) -> Result<(), String> {
+    |               ^^^^^^^^^^^
+
+warning: function `write_service_index` is never used
+   --> crates\explorer-app\src\mft_size_map.rs:648:15
+    |
+648 | pub(crate) fn write_service_index(path: &Path, index: &MftIndexV1) -> Result<(), String> {
+    |               ^^^^^^^^^^^^^^^^^^^
+
+warning: function `write_index_record` is never used
+   --> crates\explorer-app\src\mft_size_map.rs:666:4
+    |
+666 | fn write_index_record(path: &Path, index: &MftIndexV1) -> Result<(), String> {
+    |    ^^^^^^^^^^^^^^^^^^
+
+warning: function `validate_helper_output_path` is never used
+   --> crates\explorer-app\src\mft_size_map.rs:705:4
+    |
+705 | fn validate_helper_output_path(path: &Path) -> Result<(), String> {
+    |    ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `file_link_count` is never used
+   --> crates\explorer-app\src\mft_size_map.rs:834:15
+    |
+834 | pub(crate) fn file_link_count(path: &Path) -> Result<u32, String> {
+    |               ^^^^^^^^^^^^^^^
+
+warning: function `volume_serial_number` is never used
+    --> crates\explorer-app\src\mft_size_map.rs:1192:15
+     |
+1192 | pub(crate) fn volume_serial_number(path: &Path) -> Result<u64, String> {
+     |               ^^^^^^^^^^^^^^^^^^^^
+
+warning: function `current_entry` is never used
+    --> crates\explorer-app\src\mft_size_map.rs:1200:15
+     |
+1200 | pub(crate) fn current_entry(
+     |               ^^^^^^^^^^^^^
+
+warning: constant `SCHEMA_VERSION` is never used
+  --> crates\explorer-app\src\mft_sqlite.rs:19:7
+   |
+19 | const SCHEMA_VERSION: i64 = 1;
+   |       ^^^^^^^^^^^^^^
+
+warning: constant `BUSY_TIMEOUT` is never used
+  --> crates\explorer-app\src\mft_sqlite.rs:20:7
+   |
+20 | const BUSY_TIMEOUT: Duration = Duration::from_secs(2);
+   |       ^^^^^^^^^^^^
+
+warning: constant `WAL_MAINTENANCE_THRESHOLD_BYTES` is never used
+  --> crates\explorer-app\src\mft_sqlite.rs:21:18
+   |
+21 | pub(crate) const WAL_MAINTENANCE_THRESHOLD_BYTES: u64 = 256 * 1024 * 1024;
+   |                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: constant `MAX_PENDING_BATCH_BYTES` is never used
+  --> crates\explorer-app\src\mft_sqlite.rs:22:18
+   |
+22 | pub(crate) const MAX_PENDING_BATCH_BYTES: u64 = 16 * 1024 * 1024;
+   |                  ^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: constant `WAL_FRAME_OVERHEAD_MULTIPLIER` is never used
+  --> crates\explorer-app\src\mft_sqlite.rs:25:7
+   |
+25 | const WAL_FRAME_OVERHEAD_MULTIPLIER: u64 = 4;
+   |       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: constant `SQLITE_PAGE_BYTES` is never used
+  --> crates\explorer-app\src\mft_sqlite.rs:26:7
+   |
+26 | const SQLITE_PAGE_BYTES: u64 = 4096;
+   |       ^^^^^^^^^^^^^^^^^
+
+warning: constant `MIN_SQLITE_STORE_PAGES` is never used
+  --> crates\explorer-app\src\mft_sqlite.rs:27:7
+   |
+27 | const MIN_SQLITE_STORE_PAGES: u64 = 8;
+   |       ^^^^^^^^^^^^^^^^^^^^^^
+
+warning: constant `SQLITE_TEMP_TRANSACTION_OVERHEAD_BYTES` is never used
+  --> crates\explorer-app\src\mft_sqlite.rs:28:7
+   |
+28 | const SQLITE_TEMP_TRANSACTION_OVERHEAD_BYTES: u64 = 1024 * 1024;
+   |       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: constant `SQLITE_WRITER_COMPANION_RESERVE_BYTES` is never used
+  --> crates\explorer-app\src\mft_sqlite.rs:32:7
+   |
+32 | const SQLITE_WRITER_COMPANION_RESERVE_BYTES: u64 = 1024 * 1024;
+   |       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: constant `WAL_FRAME_HEADER_BYTES` is never used
+  --> crates\explorer-app\src\mft_sqlite.rs:33:7
+   |
+33 | const WAL_FRAME_HEADER_BYTES: u64 = 24;
+   |       ^^^^^^^^^^^^^^^^^^^^^^
+
+warning: constant `MAX_SCATTERED_WAL_GROWTH_BYTES` is never used
+  --> crates\explorer-app\src\mft_sqlite.rs:37:7
+   |
+37 | const MAX_SCATTERED_WAL_GROWTH_BYTES: u64 = (PENDING_CHANGE_LIMIT as u64)
+   |       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: constant `MAX_INDEX_ENTRIES` is never used
+  --> crates\explorer-app\src\mft_sqlite.rs:40:7
+   |
+40 | const MAX_INDEX_ENTRIES: usize = 20_000_000;
+   |       ^^^^^^^^^^^^^^^^^
+
+warning: constant `MAX_ENTRY_NAME_BYTES` is never used
+  --> crates\explorer-app\src\mft_sqlite.rs:41:7
+   |
+41 | const MAX_ENTRY_NAME_BYTES: usize = 64 * 1024;
+   |       ^^^^^^^^^^^^^^^^^^^^
+
+warning: constant `SQLITE_LENGTH_LIMIT_BYTES` is never used
+  --> crates\explorer-app\src\mft_sqlite.rs:42:7
+   |
+42 | const SQLITE_LENGTH_LIMIT_BYTES: i32 = (MAX_ENTRY_NAME_BYTES + 4096) as i32;
+   |       ^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: constant `MAX_INDEX_DECODED_BYTES` is never used
+  --> crates\explorer-app\src\mft_sqlite.rs:43:7
+   |
+43 | const MAX_INDEX_DECODED_BYTES: usize = 8 * 1024 * 1024 * 1024;
+   |       ^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: struct `StoreIdentityV1` is never constructed
+  --> crates\explorer-app\src\mft_sqlite.rs:46:19
+   |
+46 | pub(crate) struct StoreIdentityV1 {
+   |                   ^^^^^^^^^^^^^^^
+
+warning: struct `StoreTelemetryV1` is never constructed
+  --> crates\explorer-app\src\mft_sqlite.rs:53:19
+   |
+53 | pub(crate) struct StoreTelemetryV1 {
+   |                   ^^^^^^^^^^^^^^^^
+
+warning: enum `CommitFailurePointV1` is never used
+  --> crates\explorer-app\src\mft_sqlite.rs:65:17
+   |
+65 | pub(crate) enum CommitFailurePointV1 {
+   |                 ^^^^^^^^^^^^^^^^^^^^
+
+warning: enum `MigrationFailurePointV1` is never used
+  --> crates\explorer-app\src\mft_sqlite.rs:73:6
+   |
+73 | enum MigrationFailurePointV1 {
+   |      ^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: struct `MftSqliteStoreV1` is never constructed
+  --> crates\explorer-app\src\mft_sqlite.rs:85:19
+   |
+85 | pub(crate) struct MftSqliteStoreV1 {
+   |                   ^^^^^^^^^^^^^^^^
+
+warning: multiple associated items are never used
+    --> crates\explorer-app\src\mft_sqlite.rs:93:25
+     |
+  92 | impl MftSqliteStoreV1 {
+     | --------------------- associated items in this implementation
+  93 |     pub(crate) const fn schema_version() -> u8 {
+     |                         ^^^^^^^^^^^^^^
+...
+  97 |     pub(crate) fn file_bytes_for_path(path: &Path) -> (u64, u64) {
+     |                   ^^^^^^^^^^^^^^^^^^^
+...
+ 104 |     pub(crate) fn migrate_snapshot(
+     |                   ^^^^^^^^^^^^^^^^
+...
+ 125 |     pub(crate) fn migrate_snapshot_guarded(
+     |                   ^^^^^^^^^^^^^^^^^^^^^^^^
+...
+ 147 |     pub(crate) fn rebuild_snapshot_guarded(
+     |                   ^^^^^^^^^^^^^^^^^^^^^^^^
+...
+ 169 |     pub(crate) fn snapshot_linearized(
+     |                   ^^^^^^^^^^^^^^^^^^^
+...
+ 192 |     pub(crate) fn snapshot_focused_linearized(
+     |                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+ 216 |     pub(crate) fn snapshot_focused_bounded_linearized(
+     |                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+ 248 |     fn migrate_snapshot_injected(
+     |        ^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+ 550 |     pub(crate) fn load_read_only(
+     |                   ^^^^^^^^^^^^^^
+...
+ 565 |     pub(crate) fn query_folder_aggregate_read_only(
+     |                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+ 653 |     pub(crate) fn load_read_only_bounded(
+     |                   ^^^^^^^^^^^^^^^^^^^^^^
+...
+ 671 |     pub(crate) fn load_read_only_bounded_cancelled(
+     |                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+ 691 |     pub(crate) fn replacement_backup_path(canonical: &Path) -> PathBuf {
+     |                   ^^^^^^^^^^^^^^^^^^^^^^^
+...
+ 695 |     pub(crate) fn load_replacement_backup_read_only(
+     |                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+ 706 |     pub(crate) fn load_replacement_backup_read_only_bounded(
+     |                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+ 725 |     pub(crate) fn restore_replacement_backup_focused_linearized(
+     |                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+ 770 |     pub(crate) fn cleanup_replacement_backup_focused_linearized(
+     |                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+ 791 |     fn load_read_only_unvalidated(
+     |        ^^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+ 820 |     fn load_read_only_bounded_unvalidated(
+     |        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+ 837 |     fn load_read_only_bounded_unvalidated_cancelled(
+     |        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+ 874 |     pub(crate) fn create(
+     |                   ^^^^^^
+...
+ 896 |     pub(crate) fn open(
+     |                   ^^^^
+...
+ 916 |     fn open_expected_completeness(
+     |        ^^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+ 961 |     pub(crate) const fn identity(&self) -> StoreIdentityV1 {
+     |                         ^^^^^^^^
+...
+ 965 |     pub(crate) fn telemetry(&mut self) -> StoreTelemetryV1 {
+     |                   ^^^^^^^^^
+...
+ 970 |     pub(crate) const fn telemetry_cached(&self) -> StoreTelemetryV1 {
+     |                         ^^^^^^^^^^^^^^^^
+...
+ 974 |     pub(crate) fn commit_changes(
+     |                   ^^^^^^^^^^^^^^
+...
+ 983 |     pub(crate) fn commit_changes_guarded(
+     |                   ^^^^^^^^^^^^^^^^^^^^^^
+...
+1020 |     pub(crate) fn commit_changes_linearized(
+     |                   ^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+1029 |     pub(crate) fn commit_changes_focused_linearized(
+     |                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+1081 |     pub(crate) fn entry_count(&self) -> Result<u64, String> {
+     |                   ^^^^^^^^^^^
+...
+1087 |     pub(crate) fn load_index(&self) -> Result<MftIndexV1, String> {
+     |                   ^^^^^^^^^^
+...
+1091 |     pub(crate) fn canonical_members(path: &Path) -> [PathBuf; 3] {
+     |                   ^^^^^^^^^^^^^^^^^
+...
+1099 |     pub(crate) fn prune_persisted_store_focused_linearized(
+     |                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `validate_migration_temp_path` is never used
+    --> crates\explorer-app\src\mft_sqlite.rs:1169:4
+     |
+1169 | fn validate_migration_temp_path(
+     |    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `install_migration_entries_guarded` is never used
+    --> crates\explorer-app\src\mft_sqlite.rs:1201:4
+     |
+1201 | fn install_migration_entries_guarded(
+     |    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `sync_file` is never used
+    --> crates\explorer-app\src\mft_sqlite.rs:1239:4
+     |
+1239 | fn sync_file(path: &Path) -> Result<(), String> {
+     |    ^^^^^^^^^
+
+warning: function `run_cancellable_vacuum_into` is never used
+    --> crates\explorer-app\src\mft_sqlite.rs:1248:4
+     |
+1248 | fn run_cancellable_vacuum_into(
+     |    ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `atomic_replace_file` is never used
+    --> crates\explorer-app\src\mft_sqlite.rs:1293:4
+     |
+1293 | fn atomic_replace_file(
+     |    ^^^^^^^^^^^^^^^^^^^
+
+warning: function `load_index_from_connection` is never used
+    --> crates\explorer-app\src\mft_sqlite.rs:1352:4
+     |
+1352 | fn load_index_from_connection(connection: &Connection) -> Result<MftIndexV1, String> {
+     |    ^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `load_index_from_connection_bounded` is never used
+    --> crates\explorer-app\src\mft_sqlite.rs:1402:4
+     |
+1402 | fn load_index_from_connection_bounded(
+     |    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `never_cancelled` is never used
+    --> crates\explorer-app\src\mft_sqlite.rs:1470:4
+     |
+1470 | fn never_cancelled() -> bool {
+     |    ^^^^^^^^^^^^^^^
+
+warning: multiple methods are never used
+    --> crates\explorer-app\src\mft_sqlite.rs:1478:19
+     |
+1474 | impl MftSqliteStoreV1 {
+     | --------------------- methods in this implementation
+...
+1478 |     pub(crate) fn install_snapshot(
+     |                   ^^^^^^^^^^^^^^^^
+...
+1507 |     pub(crate) fn wal_checkpoint_eligible(
+     |                   ^^^^^^^^^^^^^^^^^^^^^^^
+...
+1516 |     pub(crate) fn truncate_wal(
+     |                   ^^^^^^^^^^^^
+...
+1524 |     pub(crate) fn truncate_wal_guarded(
+     |                   ^^^^^^^^^^^^^^^^^^^^
+...
+1549 |     pub(crate) fn truncate_wal_linearized(
+     |                   ^^^^^^^^^^^^^^^^^^^^^^^
+...
+1558 |     pub(crate) fn truncate_wal_focused_linearized(
+     |                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+1567 |     pub(crate) fn truncate_wal_ready_linearized(
+     |                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+1598 |     pub(crate) fn wal_allows(&mut self, incoming_encoded_bytes: u64) -> bool {
+     |                   ^^^^^^^^^^
+...
+1603 |     fn refresh_file_bytes(&mut self) {
+     |        ^^^^^^^^^^^^^^^^^^
+
+warning: function `run_truncate_checkpoint` is never used
+    --> crates\explorer-app\src\mft_sqlite.rs:1609:4
+     |
+1609 | fn run_truncate_checkpoint(connection: &Connection) -> Result<(), String> {
+     |    ^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `install_snapshot_transaction` is never used
+    --> crates\explorer-app\src\mft_sqlite.rs:1621:4
+     |
+1621 | fn install_snapshot_transaction(
+     |    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `configure` is never used
+    --> crates\explorer-app\src\mft_sqlite.rs:1661:4
+     |
+1661 | fn configure(connection: &Connection) -> Result<(), String> {
+     |    ^^^^^^^^^
+
+warning: function `enable_persistent_wal_files` is never used
+    --> crates\explorer-app\src\mft_sqlite.rs:1696:4
+     |
+1696 | fn enable_persistent_wal_files(connection: &Connection) -> Result<(), String> {
+     |    ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `checkpoint_eligible` is never used
+    --> crates\explorer-app\src\mft_sqlite.rs:1714:10
+     |
+1714 | const fn checkpoint_eligible(wal_bytes: u64, focused: bool, conflicting_work: bool) -> bool {
+     |          ^^^^^^^^^^^^^^^^^^^
+
+warning: function `wal_admission` is never used
+    --> crates\explorer-app\src\mft_sqlite.rs:1718:10
+     |
+1718 | const fn wal_admission(current_wal_bytes: u64, incoming_encoded_bytes: u64) -> bool {
+     |          ^^^^^^^^^^^^^
+
+warning: function `maximum_wal_batch_growth_bytes` is never used
+    --> crates\explorer-app\src\mft_sqlite.rs:1729:21
+     |
+1729 | pub(crate) const fn maximum_wal_batch_growth_bytes(incoming_encoded_bytes: u64) -> u64 {
+     |                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `initialize_schema` is never used
+    --> crates\explorer-app\src\mft_sqlite.rs:1745:4
+     |
+1745 | fn initialize_schema(connection: &Connection, identity: StoreIdentityV1) -> Result<(), String> {
+     |    ^^^^^^^^^^^^^^^^^
+
+warning: function `commit_transaction` is never used
+    --> crates\explorer-app\src\mft_sqlite.rs:1789:4
+     |
+1789 | fn commit_transaction(
+     |    ^^^^^^^^^^^^^^^^^^
+
+warning: function `apply_changes` is never used
+    --> crates\explorer-app\src\mft_sqlite.rs:1824:4
+     |
+1824 | fn apply_changes(transaction: &Transaction<'_>, changes: &[MftChangeV2]) -> Result<(), String> {
+     |    ^^^^^^^^^^^^^
+
+warning: function `read_identity` is never used
+    --> crates\explorer-app\src\mft_sqlite.rs:1866:4
+     |
+1866 | fn read_identity(connection: &Connection) -> Result<StoreIdentityV1, String> {
+     |    ^^^^^^^^^^^^^
+
+warning: function `verify_integrity` is never used
+    --> crates\explorer-app\src\mft_sqlite.rs:1895:4
+     |
+1895 | fn verify_integrity(connection: &Connection) -> Result<(), String> {
+     |    ^^^^^^^^^^^^^^^^
+
+warning: function `configure_page_size` is never used
+    --> crates\explorer-app\src\mft_sqlite.rs:1906:4
+     |
+1906 | fn configure_page_size(connection: &Connection) -> Result<(), String> {
+     |    ^^^^^^^^^^^^^^^^^^^
+
+warning: function `verify_page_size` is never used
+    --> crates\explorer-app\src\mft_sqlite.rs:1913:4
+     |
+1913 | fn verify_page_size(connection: &Connection) -> Result<(), String> {
+     |    ^^^^^^^^^^^^^^^^
+
+warning: function `validate_cursor` is never used
+    --> crates\explorer-app\src\mft_sqlite.rs:1925:4
+     |
+1925 | fn validate_cursor(cursor: JournalCursorV1) -> Result<(), String> {
+     |    ^^^^^^^^^^^^^^^
+
+warning: function `encode_u64` is never used
+    --> crates\explorer-app\src\mft_sqlite.rs:1932:10
+     |
+1932 | const fn encode_u64(value: u64) -> i64 {
+     |          ^^^^^^^^^^
+
+warning: function `decode_u64` is never used
+    --> crates\explorer-app\src\mft_sqlite.rs:1936:10
+     |
+1936 | const fn decode_u64(value: i64) -> u64 {
+     |          ^^^^^^^^^^
+
+warning: function `validate_store_path` is never used
+    --> crates\explorer-app\src\mft_sqlite.rs:1940:4
+     |
+1940 | fn validate_store_path(path: &Path, fixed_root: &Path) -> Result<(), String> {
+     |    ^^^^^^^^^^^^^^^^^^^
+
+warning: function `validate_replacement_backup_path` is never used
+    --> crates\explorer-app\src\mft_sqlite.rs:1984:4
+     |
+1984 | fn validate_replacement_backup_path(
+     |    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `wal_path` is never used
+    --> crates\explorer-app\src\mft_sqlite.rs:2012:4
+     |
+2012 | fn wal_path(path: &Path) -> PathBuf {
+     |    ^^^^^^^^
+
+warning: function `file_bytes` is never used
+    --> crates\explorer-app\src\mft_sqlite.rs:2016:4
+     |
+2016 | fn file_bytes(path: &Path) -> u64 {
+     |    ^^^^^^^^^^
+
+warning: function `ReplaceFileW` is never used
+    --> crates\explorer-app\src\mft_sqlite.rs:1300:12
+     |
+1300 |         fn ReplaceFileW(
+     |            ^^^^^^^^^^^^
+
+warning: `explorer-app` (lib) generated 284 warnings (run `cargo fix --lib -p explorer-app` to apply 15 suggestions)
+warning: unnecessary qualification
+   --> crates\explorer-app\src\bin\..\mft_focus.rs:457:17
+    |
+457 |         length: std::mem::size_of::<SecurityAttributes>() as u32,
+    |                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = note: requested on the command line with `-W unused-qualifications`
+help: remove the unnecessary path segments
+    |
+457 -         length: std::mem::size_of::<SecurityAttributes>() as u32,
+457 +         length: size_of::<SecurityAttributes>() as u32,
+    |
+
+warning: unnecessary qualification
+   --> crates\explorer-app\src\bin\..\mft_migration.rs:523:13
+    |
+523 |             std::mem::size_of::<FileDispositionInfo>() as u32,
+    |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+help: remove the unnecessary path segments
+    |
+523 -             std::mem::size_of::<FileDispositionInfo>() as u32,
+523 +             size_of::<FileDispositionInfo>() as u32,
+    |
+
+warning: unnecessary qualification
+   --> crates\explorer-app\src\bin\..\mft_migration.rs:571:22
+    |
+571 |         .checked_mul(std::mem::size_of::<u16>())
+    |                      ^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+help: remove the unnecessary path segments
+    |
+571 -         .checked_mul(std::mem::size_of::<u16>())
+571 +         .checked_mul(size_of::<u16>())
+    |
+
+warning: unnecessary qualification
+   --> crates\explorer-app\src\bin\..\mft_query.rs:927:17
+    |
+927 |         length: std::mem::size_of::<SecurityAttributes>() as u32,
+    |                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+help: remove the unnecessary path segments
+    |
+927 -         length: std::mem::size_of::<SecurityAttributes>() as u32,
+927 +         length: size_of::<SecurityAttributes>() as u32,
+    |
+
+warning: unnecessary qualification
+   --> crates\explorer-app\src\bin\..\mft_size_map.rs:590:27
+    |
+590 |         let mut breadth = std::collections::VecDeque::from([(root_reference, None)]);
+    |                           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+help: remove the unnecessary path segments
+    |
+590 -         let mut breadth = std::collections::VecDeque::from([(root_reference, None)]);
+590 +         let mut breadth = VecDeque::from([(root_reference, None)]);
+    |
+
+warning: unnecessary qualification
+   --> crates\explorer-app\src\bin\mft_service.rs:241:17
+    |
+241 |     if needed < std::mem::size_of::<TOKEN_USER>() as u32 {
+    |                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+help: remove the unnecessary path segments
+    |
+241 -     if needed < std::mem::size_of::<TOKEN_USER>() as u32 {
+241 +     if needed < size_of::<TOKEN_USER>() as u32 {
+    |
+
+warning: unnecessary qualification
+    --> crates\explorer-app\src\bin\mft_service.rs:5120:16
+     |
+5120 |         root: &std::path::Path,
+     |                ^^^^^^^^^^^^^^^
+     |
+help: remove the unnecessary path segments
+     |
+5120 -         root: &std::path::Path,
+5120 +         root: &Path,
+     |
+
+warning: unnecessary qualification
+    --> crates\explorer-app\src\bin\mft_service.rs:5143:9
+     |
+5143 |         std::fs::create_dir_all(&root).unwrap();
+     |         ^^^^^^^^^^^^^^^^^^^^^^^
+     |
+help: remove the unnecessary path segments
+     |
+5143 -         std::fs::create_dir_all(&root).unwrap();
+5143 +         fs::create_dir_all(&root).unwrap();
+     |
+
+warning: unnecessary qualification
+    --> crates\explorer-app\src\bin\mft_service.rs:5311:9
+     |
+5311 |         std::fs::write(&sqlite, b"durable-fixture").unwrap();
+     |         ^^^^^^^^^^^^^^
+     |
+help: remove the unnecessary path segments
+     |
+5311 -         std::fs::write(&sqlite, b"durable-fixture").unwrap();
+5311 +         fs::write(&sqlite, b"durable-fixture").unwrap();
+     |
+
+warning: unnecessary qualification
+    --> crates\explorer-app\src\bin\mft_service.rs:5354:20
+     |
+5354 |         assert_eq!(std::fs::read(&sqlite).unwrap(), b"durable-fixture");
+     |                    ^^^^^^^^^^^^^
+     |
+help: remove the unnecessary path segments
+     |
+5354 -         assert_eq!(std::fs::read(&sqlite).unwrap(), b"durable-fixture");
+5354 +         assert_eq!(fs::read(&sqlite).unwrap(), b"durable-fixture");
+     |
+
+warning: unnecessary qualification
+    --> crates\explorer-app\src\bin\mft_service.rs:5355:17
+     |
+5355 |         let _ = std::fs::remove_dir_all(root);
+     |                 ^^^^^^^^^^^^^^^^^^^^^^^
+     |
+help: remove the unnecessary path segments
+     |
+5355 -         let _ = std::fs::remove_dir_all(root);
+5355 +         let _ = fs::remove_dir_all(root);
+     |
+
+warning: unnecessary qualification
+    --> crates\explorer-app\src\bin\mft_service.rs:5487:13
+     |
+5487 |             std::path::Path::new("."),
+     |             ^^^^^^^^^^^^^^^^^^^^
+     |
+help: remove the unnecessary path segments
+     |
+5487 -             std::path::Path::new("."),
+5487 +             Path::new("."),
+     |
+
+warning: unnecessary qualification
+    --> crates\explorer-app\src\bin\mft_service.rs:5488:13
+     |
+5488 |             std::path::Path::new(r"D:\"),
+     |             ^^^^^^^^^^^^^^^^^^^^
+     |
+help: remove the unnecessary path segments
+     |
+5488 -             std::path::Path::new(r"D:\"),
+5488 +             Path::new(r"D:\"),
+     |
+
+warning: unnecessary qualification
+    --> crates\explorer-app\src\bin\mft_service.rs:5585:17
+     |
+5585 |         let _ = std::fs::remove_dir_all(root);
+     |                 ^^^^^^^^^^^^^^^^^^^^^^^
+     |
+help: remove the unnecessary path segments
+     |
+5585 -         let _ = std::fs::remove_dir_all(root);
+5585 +         let _ = fs::remove_dir_all(root);
+     |
+
+warning: unnecessary qualification
+    --> crates\explorer-app\src\bin\mft_service.rs:5591:20
+     |
+5591 |         let file = std::fs::File::create(root.join("C.mft.sqlite3")).unwrap();
+     |                    ^^^^^^^^^^^^^^^^^^^^^
+     |
+help: remove the unnecessary path segments
+     |
+5591 -         let file = std::fs::File::create(root.join("C.mft.sqlite3")).unwrap();
+5591 +         let file = fs::File::create(root.join("C.mft.sqlite3")).unwrap();
+     |
+
+warning: unnecessary qualification
+    --> crates\explorer-app\src\bin\mft_service.rs:5626:17
+     |
+5626 |         let _ = std::fs::remove_dir_all(root);
+     |                 ^^^^^^^^^^^^^^^^^^^^^^^
+     |
+help: remove the unnecessary path segments
+     |
+5626 -         let _ = std::fs::remove_dir_all(root);
+5626 +         let _ = fs::remove_dir_all(root);
+     |
+
+warning: unnecessary qualification
+    --> crates\explorer-app\src\bin\mft_service.rs:5651:17
+     |
+5651 |         let _ = std::fs::remove_dir_all(root);
+     |                 ^^^^^^^^^^^^^^^^^^^^^^^
+     |
+help: remove the unnecessary path segments
+     |
+5651 -         let _ = std::fs::remove_dir_all(root);
+5651 +         let _ = fs::remove_dir_all(root);
+     |
+
+warning: unnecessary qualification
+    --> crates\explorer-app\src\bin\mft_service.rs:5658:9
+     |
+5658 |         std::fs::File::create(root.join("other.mft.sqlite3"))
+     |         ^^^^^^^^^^^^^^^^^^^^^
+     |
+help: remove the unnecessary path segments
+     |
+5658 -         std::fs::File::create(root.join("other.mft.sqlite3"))
+5658 +         fs::File::create(root.join("other.mft.sqlite3"))
+     |
+
+warning: unnecessary qualification
+    --> crates\explorer-app\src\bin\mft_service.rs:5662:9
+     |
+5662 |         std::fs::File::create(&canonical)
+     |         ^^^^^^^^^^^^^^^^^^^^^
+     |
+help: remove the unnecessary path segments
+     |
+5662 -         std::fs::File::create(&canonical)
+5662 +         fs::File::create(&canonical)
+     |
+
+warning: unnecessary qualification
+    --> crates\explorer-app\src\bin\mft_service.rs:5666:9
+     |
+5666 |         std::fs::File::create(mft_sqlite::MftSqliteStoreV1::replacement_backup_path(
+     |         ^^^^^^^^^^^^^^^^^^^^^
+     |
+help: remove the unnecessary path segments
+     |
+5666 -         std::fs::File::create(mft_sqlite::MftSqliteStoreV1::replacement_backup_path(
+5666 +         fs::File::create(mft_sqlite::MftSqliteStoreV1::replacement_backup_path(
+     |
+
+warning: unnecessary qualification
+    --> crates\explorer-app\src\bin\mft_service.rs:5674:17
+     |
+5674 |         let _ = std::fs::remove_dir_all(root);
+     |                 ^^^^^^^^^^^^^^^^^^^^^^^
+     |
+help: remove the unnecessary path segments
+     |
+5674 -         let _ = std::fs::remove_dir_all(root);
+5674 +         let _ = fs::remove_dir_all(root);
+     |
+
+warning: unnecessary qualification
+    --> crates\explorer-app\src\bin\mft_service.rs:5698:17
+     |
+5698 |         let _ = std::fs::remove_dir_all(root);
+     |                 ^^^^^^^^^^^^^^^^^^^^^^^
+     |
+help: remove the unnecessary path segments
+     |
+5698 -         let _ = std::fs::remove_dir_all(root);
+5698 +         let _ = fs::remove_dir_all(root);
+     |
+
+warning: unnecessary qualification
+    --> crates\explorer-app\src\bin\mft_service.rs:5707:9
+     |
+5707 |         std::fs::rename(&initial, &destination).unwrap();
+     |         ^^^^^^^^^^^^^^^
+     |
+help: remove the unnecessary path segments
+     |
+5707 -         std::fs::rename(&initial, &destination).unwrap();
+5707 +         fs::rename(&initial, &destination).unwrap();
+     |
+
+warning: unnecessary qualification
+    --> crates\explorer-app\src\bin\mft_service.rs:5709:9
+     |
+5709 |         std::fs::write(&unrelated, b"keep").unwrap();
+     |         ^^^^^^^^^^^^^^
+     |
+help: remove the unnecessary path segments
+     |
+5709 -         std::fs::write(&unrelated, b"keep").unwrap();
+5709 +         fs::write(&unrelated, b"keep").unwrap();
+     |
+
+warning: unnecessary qualification
+    --> crates\explorer-app\src\bin\mft_service.rs:5710:9
+     |
+5710 |         std::fs::write(root.join("C.prune-interrupted.tmp"), b"incomplete").unwrap();
+     |         ^^^^^^^^^^^^^^
+     |
+help: remove the unnecessary path segments
+     |
+5710 -         std::fs::write(root.join("C.prune-interrupted.tmp"), b"incomplete").unwrap();
+5710 +         fs::write(root.join("C.prune-interrupted.tmp"), b"incomplete").unwrap();
+     |
+
+warning: unnecessary qualification
+    --> crates\explorer-app\src\bin\mft_service.rs:5714:24
+     |
+5714 |         let metadata = std::fs::metadata(&destination).unwrap();
+     |                        ^^^^^^^^^^^^^^^^^
+     |
+help: remove the unnecessary path segments
+     |
+5714 -         let metadata = std::fs::metadata(&destination).unwrap();
+5714 +         let metadata = fs::metadata(&destination).unwrap();
+     |
+
+warning: unnecessary qualification
+    --> crates\explorer-app\src\bin\mft_service.rs:5717:20
+     |
+5717 |         assert_eq!(std::fs::read(&unrelated).unwrap(), b"keep");
+     |                    ^^^^^^^^^^^^^
+     |
+help: remove the unnecessary path segments
+     |
+5717 -         assert_eq!(std::fs::read(&unrelated).unwrap(), b"keep");
+5717 +         assert_eq!(fs::read(&unrelated).unwrap(), b"keep");
+     |
+
+warning: unnecessary qualification
+    --> crates\explorer-app\src\bin\mft_service.rs:5725:17
+     |
+5725 |         let _ = std::fs::remove_dir_all(root);
+     |                 ^^^^^^^^^^^^^^^^^^^^^^^
+     |
+help: remove the unnecessary path segments
+     |
+5725 -         let _ = std::fs::remove_dir_all(root);
+5725 +         let _ = fs::remove_dir_all(root);
+     |
+
+warning: unnecessary qualification
+    --> crates\explorer-app\src\bin\mft_service.rs:5734:9
+     |
+5734 |         std::fs::rename(&initial, &destination).unwrap();
+     |         ^^^^^^^^^^^^^^^
+     |
+help: remove the unnecessary path segments
+     |
+5734 -         std::fs::rename(&initial, &destination).unwrap();
+5734 +         fs::rename(&initial, &destination).unwrap();
+     |
+
+warning: unnecessary qualification
+    --> crates\explorer-app\src\bin\mft_service.rs:5739:17
+     |
+5739 |         let _ = std::fs::remove_dir_all(root);
+     |                 ^^^^^^^^^^^^^^^^^^^^^^^
+     |
+help: remove the unnecessary path segments
+     |
+5739 -         let _ = std::fs::remove_dir_all(root);
+5739 +         let _ = fs::remove_dir_all(root);
+     |
+
+warning: unnecessary qualification
+    --> crates\explorer-app\src\bin\mft_service.rs:5811:17
+     |
+5811 |         let _ = std::fs::remove_dir_all(root);
+     |                 ^^^^^^^^^^^^^^^^^^^^^^^
+     |
+help: remove the unnecessary path segments
+     |
+5811 -         let _ = std::fs::remove_dir_all(root);
+5811 +         let _ = fs::remove_dir_all(root);
+     |
+
+warning: unnecessary qualification
+    --> crates\explorer-app\src\bin\mft_service.rs:5904:17
+     |
+5904 |                 std::path::Path::new("."),
+     |                 ^^^^^^^^^^^^^^^^^^^^
+     |
+help: remove the unnecessary path segments
+     |
+5904 -                 std::path::Path::new("."),
+5904 +                 Path::new("."),
+     |
+
+warning: unnecessary qualification
+    --> crates\explorer-app\src\bin\mft_service.rs:5905:17
+     |
+5905 |                 std::path::Path::new("Z:\\"),
+     |                 ^^^^^^^^^^^^^^^^^^^^
+     |
+help: remove the unnecessary path segments
+     |
+5905 -                 std::path::Path::new("Z:\\"),
+5905 +                 Path::new("Z:\\"),
+     |
+
+warning: unnecessary qualification
+    --> crates\explorer-app\src\bin\mft_service.rs:5919:17
+     |
+5919 |                 std::path::Path::new("."),
+     |                 ^^^^^^^^^^^^^^^^^^^^
+     |
+help: remove the unnecessary path segments
+     |
+5919 -                 std::path::Path::new("."),
+5919 +                 Path::new("."),
+     |
+
+warning: unnecessary qualification
+    --> crates\explorer-app\src\bin\mft_service.rs:5920:17
+     |
+5920 |                 std::path::Path::new("Z:\\"),
+     |                 ^^^^^^^^^^^^^^^^^^^^
+     |
+help: remove the unnecessary path segments
+     |
+5920 -                 std::path::Path::new("Z:\\"),
+5920 +                 Path::new("Z:\\"),
+     |
+
+warning: unnecessary qualification
+    --> crates\explorer-app\src\bin\mft_service.rs:5935:17
+     |
+5935 |                 std::path::Path::new("."),
+     |                 ^^^^^^^^^^^^^^^^^^^^
+     |
+help: remove the unnecessary path segments
+     |
+5935 -                 std::path::Path::new("."),
+5935 +                 Path::new("."),
+     |
+
+warning: unnecessary qualification
+    --> crates\explorer-app\src\bin\mft_service.rs:5936:17
+     |
+5936 |                 std::path::Path::new("Z:\\"),
+     |                 ^^^^^^^^^^^^^^^^^^^^
+     |
+help: remove the unnecessary path segments
+     |
+5936 -                 std::path::Path::new("Z:\\"),
+5936 +                 Path::new("Z:\\"),
+     |
+
+warning: unnecessary qualification
+    --> crates\explorer-app\src\bin\mft_service.rs:6002:17
+     |
+6002 |                 std::path::Path::new("."),
+     |                 ^^^^^^^^^^^^^^^^^^^^
+     |
+help: remove the unnecessary path segments
+     |
+6002 -                 std::path::Path::new("."),
+6002 +                 Path::new("."),
+     |
+
+warning: unnecessary qualification
+    --> crates\explorer-app\src\bin\mft_service.rs:6003:17
+     |
+6003 |                 std::path::Path::new("Z:\\"),
+     |                 ^^^^^^^^^^^^^^^^^^^^
+     |
+help: remove the unnecessary path segments
+     |
+6003 -                 std::path::Path::new("Z:\\"),
+6003 +                 Path::new("Z:\\"),
+     |
+
+warning: unnecessary qualification
+    --> crates\explorer-app\src\bin\mft_service.rs:6021:17
+     |
+6021 |                 std::path::Path::new("."),
+     |                 ^^^^^^^^^^^^^^^^^^^^
+     |
+help: remove the unnecessary path segments
+     |
+6021 -                 std::path::Path::new("."),
+6021 +                 Path::new("."),
+     |
+
+warning: unnecessary qualification
+    --> crates\explorer-app\src\bin\mft_service.rs:6022:17
+     |
+6022 |                 std::path::Path::new("Z:\\"),
+     |                 ^^^^^^^^^^^^^^^^^^^^
+     |
+help: remove the unnecessary path segments
+     |
+6022 -                 std::path::Path::new("Z:\\"),
+6022 +                 Path::new("Z:\\"),
+     |
+
+warning: unnecessary qualification
+    --> crates\explorer-app\src\bin\mft_service.rs:6037:20
+     |
+6037 |         let root = std::path::PathBuf::from(
+     |                    ^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+help: remove the unnecessary path segments
+     |
+6037 -         let root = std::path::PathBuf::from(
+6037 +         let root = PathBuf::from(
+     |
+
+warning: unnecessary qualification
+    --> crates\explorer-app\src\bin\mft_service.rs:6047:21
+     |
+6047 |         let cache = std::path::PathBuf::from(
+     |                     ^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+help: remove the unnecessary path segments
+     |
+6047 -         let cache = std::path::PathBuf::from(
+6047 +         let cache = PathBuf::from(
+     |
+
+warning: unused variable: `event_guard`
+   --> crates\explorer-app\src\bin\..\mft_focus.rs:649:9
+    |
+649 |     let event_guard = WinEvent(event);
+    |         ^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_event_guard`
+    |
+    = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused variable: `event_guard`
+   --> crates\explorer-app\src\bin\..\mft_focus.rs:705:9
+    |
+705 |     let event_guard = WinEvent(event);
+    |         ^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_event_guard`
+
+warning: function `with_lifecycle_permit` is never used
+  --> crates\explorer-app\src\bin\mft_service.rs:93:4
+   |
+93 | fn with_lifecycle_permit<T>(operation: impl FnOnce() -> Result<T, String>) -> Result<T, String> {
+   |    ^^^^^^^^^^^^^^^^^^^^^
+   |
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: field `checkpoint` is never read
+    --> crates\explorer-app\src\bin\mft_service.rs:1606:5
+     |
+1603 | struct CachedFolderAggregateVolumeV1 {
+     |        ----------------------------- field in this struct
+...
+1606 |     checkpoint: mft_journal::MftCheckpointV2,
+     |     ^^^^^^^^^^
+
+warning: methods `query`, `query_inner`, and `refresh_volume` are never used
+    --> crates\explorer-app\src\bin\mft_service.rs:2315:8
+     |
+2016 | impl ServiceFolderAggregateCacheV1 {
+     | ---------------------------------- methods in this implementation
+...
+2315 |     fn query(
+     |        ^^^^^
+...
+2331 |     fn query_inner(
+     |        ^^^^^^^^^^^
+...
+2441 |     fn refresh_volume(
+     |        ^^^^^^^^^^^^^^
+
+warning: function `watch_volume` is never used
+    --> crates\explorer-app\src\bin\mft_service.rs:4539:4
+     |
+4539 | fn watch_volume(
+     |    ^^^^^^^^^^^^
+
+warning: function `publish_pending` is never used
+    --> crates\explorer-app\src\bin\mft_service.rs:4723:4
+     |
+4723 | fn publish_pending(
+     |    ^^^^^^^^^^^^^^^
+
+warning: constant `ERROR_PIPE_LISTENING` is never used
+   --> crates\explorer-app\src\bin\..\mft_focus.rs:131:7
+    |
+131 | const ERROR_PIPE_LISTENING: u32 = 536;
+    |       ^^^^^^^^^^^^^^^^^^^^
+
+warning: constant `ERROR_NO_DATA` is never used
+   --> crates\explorer-app\src\bin\..\mft_focus.rs:133:7
+    |
+133 | const ERROR_NO_DATA: u32 = 232;
+    |       ^^^^^^^^^^^^^
+
+warning: enum `ReporterCommandV1` is never used
+   --> crates\explorer-app\src\bin\..\mft_focus.rs:197:6
+    |
+197 | enum ReporterCommandV1 {
+    |      ^^^^^^^^^^^^^^^^^
+
+warning: static `REPORTER` is never used
+   --> crates\explorer-app\src\bin\..\mft_focus.rs:202:8
+    |
+202 | static REPORTER: OnceLock<mpsc::Sender<ReporterCommandV1>> = OnceLock::new();
+    |        ^^^^^^^^
+
+warning: static `NEXT_LEASE` is never used
+   --> crates\explorer-app\src\bin\..\mft_focus.rs:204:8
+    |
+204 | static NEXT_LEASE: AtomicU64 = AtomicU64::new(1);
+    |        ^^^^^^^^^^
+
+warning: struct `FocusWindowReporterV1` is never constructed
+   --> crates\explorer-app\src\bin\..\mft_focus.rs:207:19
+    |
+207 | pub(crate) struct FocusWindowReporterV1 {
+    |                   ^^^^^^^^^^^^^^^^^^^^^
+
+warning: associated items `new` and `set_focused` are never used
+   --> crates\explorer-app\src\bin\..\mft_focus.rs:214:19
+    |
+213 | impl FocusWindowReporterV1 {
+    | -------------------------- associated items in this implementation
+214 |     pub(crate) fn new() -> Self {
+    |                   ^^^
+...
+227 |     pub(crate) fn set_focused(&self, focused: bool) {
+    |                   ^^^^^^^^^^^
+
+warning: function `focus_reporter_worker` is never used
+   --> crates\explorer-app\src\bin\..\mft_focus.rs:244:4
+    |
+244 | fn focus_reporter_worker(receiver: mpsc::Receiver<ReporterCommandV1>) {
+    |    ^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `send_focus_frame` is never used
+   --> crates\explorer-app\src\bin\..\mft_focus.rs:344:4
+    |
+344 | fn send_focus_frame(handle: isize, frame: FocusFrameV1) -> Result<(), String> {
+    |    ^^^^^^^^^^^^^^^^
+
+warning: enum `RecoveryReasonV1` is never used
+  --> crates\explorer-app\src\bin\..\mft_persistence.rs:92:17
+   |
+92 | pub(crate) enum RecoveryReasonV1 {
+   |                 ^^^^^^^^^^^^^^^^
+
+warning: enum `MigrationStateV1` is never used
+   --> crates\explorer-app\src\bin\..\mft_persistence.rs:102:17
+    |
+102 | pub(crate) enum MigrationStateV1 {
+    |                 ^^^^^^^^^^^^^^^^
+
+warning: function `set_cache_budgets` is never used
+   --> crates\explorer-app\src\bin\..\mft_query.rs:770:15
+    |
+770 | pub(crate) fn set_cache_budgets(
+    |               ^^^^^^^^^^^^^^^^^
+
+warning: function `serve_folder_queries` is never used
+   --> crates\explorer-app\src\bin\..\mft_query.rs:875:15
+    |
+875 | pub(crate) fn serve_folder_queries(
+    |               ^^^^^^^^^^^^^^^^^^^^
+
+warning: method `path_for_reference` is never used
+   --> crates\explorer-app\src\bin\..\mft_size_map.rs:482:19
+    |
+248 | impl MftIndexV1 {
+    | --------------- method in this implementation
+...
+482 |     pub(crate) fn path_for_reference(
+    |                   ^^^^^^^^^^^^^^^^^^
+
+warning: function `file_link_count` is never used
+   --> crates\explorer-app\src\bin\..\mft_size_map.rs:834:15
+    |
+834 | pub(crate) fn file_link_count(path: &Path) -> Result<u32, String> {
+    |               ^^^^^^^^^^^^^^^
+
+warning: function `read_volume_index_with_helper` is never used
+    --> crates\explorer-app\src\bin\..\mft_size_map.rs:1044:15
+     |
+1044 | pub(crate) fn read_volume_index_with_helper(
+     |               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: associated items `migrate_snapshot_guarded`, `rebuild_snapshot_guarded`, `snapshot_linearized`, `snapshot_focused_linearized`, `telemetry_cached`, and `commit_changes_linearized` are never used
+    --> crates\explorer-app\src\bin\..\mft_sqlite.rs:125:19
+     |
+  92 | impl MftSqliteStoreV1 {
+     | --------------------- associated items in this implementation
+...
+ 125 |     pub(crate) fn migrate_snapshot_guarded(
+     |                   ^^^^^^^^^^^^^^^^^^^^^^^^
+...
+ 147 |     pub(crate) fn rebuild_snapshot_guarded(
+     |                   ^^^^^^^^^^^^^^^^^^^^^^^^
+...
+ 169 |     pub(crate) fn snapshot_linearized(
+     |                   ^^^^^^^^^^^^^^^^^^^
+...
+ 192 |     pub(crate) fn snapshot_focused_linearized(
+     |                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+ 970 |     pub(crate) const fn telemetry_cached(&self) -> StoreTelemetryV1 {
+     |                         ^^^^^^^^^^^^^^^^
+...
+1020 |     pub(crate) fn commit_changes_linearized(
+     |                   ^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: methods `truncate_wal_linearized` and `truncate_wal_focused_linearized` are never used
+    --> crates\explorer-app\src\bin\..\mft_sqlite.rs:1549:19
+     |
+1474 | impl MftSqliteStoreV1 {
+     | --------------------- methods in this implementation
+...
+1549 |     pub(crate) fn truncate_wal_linearized(
+     |                   ^^^^^^^^^^^^^^^^^^^^^^^
+...
+1558 |     pub(crate) fn truncate_wal_focused_linearized(
+     |                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: `explorer-app` (bin "superexplorer-mft-service" test) generated 68 warnings (run `cargo fix --bin "superexplorer-mft-service" -p explorer-app --tests` to apply 45 suggestions)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.61s
+     Running unittests src\bin\mft_service.rs (target\debug\deps\superexplorer_mft_service-6e1e4a291000cd07.exe)
+
+running 1 test
+test tests::checked_in_legacy_golden_readers_do_not_call_writers ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 119 filtered out; finished in 0.02s
+

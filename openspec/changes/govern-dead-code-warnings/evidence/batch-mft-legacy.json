@@ -1,0 +1,8 @@
+{
+  "schema_version": 1,
+  "batch": "5.1-mft-legacy",
+  "removed": ["legacy ServiceFolderAggregateCacheV1 query/query_inner/query_live/refresh_volume", "watch_volume", "publish_pending", "publish_delta_and_checkpoint", "encode_delta", "coalesce_events", "coalesced_bytes", "publication_due", "writer-only fixture generator", "fallback exhaustion and persisted-limit test closures"],
+  "retained_readers": ["load_legacy_memory_index", "read_checkpoint", "deltas_after", "validate_delta_after", "decode_delta", "read_status"],
+  "verification": ["cargo check -p explorer-app --tests", "cargo test -p explorer-app --lib mft_journal::tests", "cargo test -p explorer-app --lib mft_query::tests", "cargo test -p explorer-app --lib mft_focus::tests", "cargo test -p explorer-app --bin superexplorer-mft-service checked_in_legacy_golden_readers_do_not_call_writers"],
+  "result": "pass"
+}

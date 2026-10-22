@@ -1,0 +1,55 @@
+{
+  "schema_version": 1,
+  "gate": "DCG-POLICY",
+  "captured_at": "2026-08-26T23:57:13.7174480+08:00",
+  "main": {
+    "result": "passed",
+    "baseline_items": 438,
+    "ledger_items": 438,
+    "unresolved_ownership": 0,
+    "suppression_files_scanned": 215
+  },
+  "self_tests": null,
+  "task_records": [
+    {
+      "task_id": "1.3.1",
+      "result": "passed",
+      "subcheck_key": "schema",
+      "command": "schema plus validator",
+      "exit_code": 0,
+      "evidence": "evidence/schema.json"
+    },
+    {
+      "task_id": "1.3.2",
+      "result": "passed",
+      "subcheck_key": "suppression-scan",
+      "command": "validate-governance.ps1",
+      "exit_code": 0,
+      "evidence": "main.suppression_files_scanned and suppression fixtures"
+    },
+    {
+      "task_id": "1.3.3",
+      "result": "passed",
+      "subcheck_key": "lineage",
+      "command": "validate-governance.ps1",
+      "exit_code": 0,
+      "evidence": "baseline/ledger uniqueness and ownership checks"
+    },
+    {
+      "task_id": "1.3.4",
+      "result": "passed",
+      "subcheck_key": "subchecks",
+      "command": "validate-governance.ps1 -SelfTest",
+      "exit_code": 0,
+      "evidence": "self_tests missing/duplicate subcheck"
+    },
+    {
+      "task_id": "1.3.5",
+      "result": "passed",
+      "subcheck_key": "self-test",
+      "command": "validate-governance.ps1 -SelfTest",
+      "exit_code": 0,
+      "evidence": "self_tests"
+    }
+  ]
+}

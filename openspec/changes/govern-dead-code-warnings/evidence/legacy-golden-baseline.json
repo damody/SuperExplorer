@@ -1,0 +1,105 @@
+{
+  "schema_version": 1,
+  "gate": [
+    "DCG-OBSOLETE",
+    "DCG-OWNERSHIP"
+  ],
+  "captured_at": "2026-08-26T23:07:48.5603848+08:00",
+  "producer_revision": "26f145d76a4e916e760aeb5630dd3ab2d0472433",
+  "fixture_manifest": "crates/explorer-app/tests/fixtures/mft-legacy/manifest.json",
+  "fixture_manifest_sha256": "8ef5c8cfd014ba501684e86fde752e2e8a78a2ef4f15835514385f3c3eb08621",
+  "file_count": 23,
+  "generator": "tests::generate_dead_code_legacy_golden_fixtures (ignored; not used by normal tests)",
+  "reader_test": "tests::checked_in_legacy_golden_readers_do_not_call_writers",
+  "source_write": {
+    "path": "crates/explorer-app/src/bin/mft_service.rs",
+    "expected_preimage_sha256": "e9cd7bccd79356056cf41b67e50b7d62afed06401405e99405617154b4e49e8b",
+    "current_sha256": "3da7edd1b0342aac98c4343ff20bdb8324e1c31637e971e5ce4476e0a591c3ae",
+    "intended_hunk": "test module only: golden generator, reader-only test, fixture copy helper",
+    "external_hunks_unchanged": true
+  },
+  "keep_remove_whitelist": {
+    "keep": [
+      "load_legacy_memory_index",
+      "mft_journal::read_checkpoint",
+      "mft_journal::read_delta",
+      "mft_journal::deltas_after",
+      "mft_journal::validate_delta_after",
+      "mft_journal decode closure",
+      "mft_size_map::read_index_bounded"
+    ],
+    "remove_only_after_golden_gate": [
+      "publish_initial_checkpoint",
+      "publish_delta_and_checkpoint",
+      "write_status",
+      "writer-only encode closure"
+    ],
+    "override_level": "C-level migration capability change"
+  },
+  "task_records": [
+    {
+      "task_id": "1.4.1",
+      "result": "passed",
+      "subcheck_key": "valid-chain",
+      "command": "cargo test generator --ignored",
+      "exit_code": 0,
+      "evidence": "valid fixture chain and producer revision"
+    },
+    {
+      "task_id": "1.4.2",
+      "result": "passed",
+      "subcheck_key": "fixture-manifest",
+      "command": "build-legacy-golden-manifest.ps1",
+      "exit_code": 0,
+      "evidence": "manifest file sizes and hashes"
+    },
+    {
+      "task_id": "1.4.3",
+      "result": "passed",
+      "subcheck_key": "failure-fixtures",
+      "command": "cargo test generator --ignored",
+      "exit_code": 0,
+      "evidence": "corruption/identity/contiguity/bounds fixtures"
+    },
+    {
+      "task_id": "1.4.4",
+      "result": "passed",
+      "subcheck_key": "preservation-fixtures",
+      "command": "cargo test generator --ignored",
+      "exit_code": 0,
+      "evidence": "unfocused-no-delete and failed-promotion-retry fixtures"
+    },
+    {
+      "task_id": "1.4.5",
+      "result": "passed",
+      "subcheck_key": "reader-only-test",
+      "command": "cargo test reader-only",
+      "exit_code": 0,
+      "evidence": "reader test does not invoke generator/writer"
+    },
+    {
+      "task_id": "1.4.6",
+      "result": "passed",
+      "subcheck_key": "whitelist",
+      "command": "build-legacy-golden-manifest.ps1",
+      "exit_code": 0,
+      "evidence": "keep_remove_whitelist"
+    },
+    {
+      "task_id": "1.4.7",
+      "result": "passed",
+      "subcheck_key": "determinism",
+      "command": "reader-only test twice plus hash comparison",
+      "exit_code": 0,
+      "evidence": "reader-run-1.txt, reader-run-2.txt, fixture hashes unchanged"
+    }
+  ],
+  "determinism": {
+    "before_sha256": "1eb39f24e15fb26cdffdbe89d6ef4e5d307b920b95e9e3e8ccf7378b90dd8038",
+    "after_first_sha256": "1eb39f24e15fb26cdffdbe89d6ef4e5d307b920b95e9e3e8ccf7378b90dd8038",
+    "after_second_sha256": "1eb39f24e15fb26cdffdbe89d6ef4e5d307b920b95e9e3e8ccf7378b90dd8038",
+    "unchanged": true,
+    "run_1_exit_code": 0,
+    "run_2_exit_code": 0
+  }
+}

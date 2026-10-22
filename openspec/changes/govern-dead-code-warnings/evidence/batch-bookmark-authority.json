@@ -1,0 +1,26 @@
+{
+  "schema_version": 1,
+  "gate": ["DCG-OBSOLETE", "DCG-TEST"],
+  "result": "passed",
+  "ownership": [
+    {"path":"crates/explorer-ui/src/state.rs","baseline_sha256":"4c162dd2988df8390e6467066f3a7e64b1c3906ac1fb5266e0948a6ba8e7814f","stale_reason":"The active fix-remote-context-menu-coordinate-space change modified separate hunks after baseline.","resolution":"Only the bookmark API/tests and a missing test import changed.","post_sha256":"670bc20fbaa75cdec95c111d7a17fb17307f8c156cc9398f2a11f3f613945a74"},
+    {"path":"crates/explorer-extension-host/src/runtime_authority.rs","baseline_sha256":"ec71d458286082be7aab9a7ce86659517b87038bce3f1f6b77702de4e39d6433","resolution":"Baseline matched before the scoped edit.","post_sha256":"2f2ddb3770a77b71a8e30d518df54222b76754e25d576c476093583ccd54acd2"}
+  ],
+  "references": [
+    {"subcheck_key":"bookmark-add","item":"AppViewState::add_bookmark","production_consumers":0,"replacement":"Bookmarks::begin_add"},
+    {"subcheck_key":"authority-revoke","item":"RuntimeAuthorityV1::revoke","production_consumers":0,"replacement":"RuntimeAuthorityV1::revoke_feature"},
+    {"subcheck_key":"authority-replace","item":"RuntimeAuthorityV1::replace_current","production_consumers":0,"replacement":"RuntimeAuthorityV1::issue"}
+  ],
+  "commands": [
+    {"subcheck_key":"bookmark-persistence","command":"cargo test -p explorer-ui bookmark_manager_edits_reorders_deletes_and_restores_typed_entries --locked --offline -- --nocapture","exit_code":0,"dead_code_warnings":0,"result":"passed"},
+    {"subcheck_key":"bookmark-ui","command":"cargo test -p explorer-ui bookmark_context_menu_tracks_pointer_and_closes_without_mutating_bookmarks --locked --offline -- --nocapture","exit_code":0,"dead_code_warnings":0,"result":"passed"},
+    {"subcheck_key":"authority-fail-closed","command":"cargo test -p explorer-extension-host runtime_authority --locked --offline -- --nocapture","exit_code":0,"dead_code_warnings":0,"tests_passed":4,"result":"passed"}
+  ],
+  "task_records": [
+    {"task_id":"2.2.1","subcheck_key":"bookmark-references","result":"passed"},
+    {"task_id":"2.2.2","subcheck_key":"bookmark-mutation-api","result":"passed"},
+    {"task_id":"2.2.3","subcheck_key":"authority-references","result":"passed"},
+    {"task_id":"2.2.4","subcheck_key":"authority-production-api","result":"passed"},
+    {"task_id":"2.2.5","subcheck_key":"focused-tests","result":"passed"}
+  ]
+}

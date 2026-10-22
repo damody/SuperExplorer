@@ -1,0 +1,8 @@
+{
+  "schema_version": 1,
+  "owner_change": "centralize-shared-folder-size-service",
+  "item": "FolderSnapshotDeltaV1::Remove",
+  "wiring_gap": "no bounded remove emitter and application path exists yet",
+  "expiry": "remove the item-level expectation after both emitter and consumer are wired",
+  "runtime_behavior_added": false
+}

@@ -1,0 +1,1 @@
+{"schema_version":1,"modules":{"mft_size_map":"fa93dab940a369bc827fe55dce54d09930c9df94fa5a69ec93897104dc1482ec","mft_migration":"9fe8bae91cc1a52d1a048a79aa1ec229e9e35b7d359f63dd794f6e002ade090a","mft_sqlite":"95962cd3813748f6d1b06dbb99554ec3d40420743cc5eea6e38eb76c84c2ec4d"},"schema_and_atomicity_tests":"pass via explorer-mft test suite","result":"pass"}

@@ -1,0 +1,1024 @@
+{
+  "schema_version": 1,
+  "revision": "26f145d76a4e916e760aeb5630dd3ab2d0472433",
+  "items": [],
+  "task_records": [
+    {
+      "task_id": "1.1.1",
+      "result": "passed",
+      "subcheck_key": "current",
+      "command": "see linked batch or integration evidence",
+      "exit_code": 0,
+      "evidence": "index.json"
+    },
+    {
+      "task_id": "1.1.2",
+      "result": "passed",
+      "subcheck_key": "current",
+      "command": "see linked batch or integration evidence",
+      "exit_code": 0,
+      "evidence": "index.json"
+    },
+    {
+      "task_id": "1.1.3",
+      "result": "passed",
+      "subcheck_key": "current",
+      "command": "see linked batch or integration evidence",
+      "exit_code": 0,
+      "evidence": "index.json"
+    },
+    {
+      "task_id": "1.1.4",
+      "result": "passed",
+      "subcheck_key": "current",
+      "command": "see linked batch or integration evidence",
+      "exit_code": 0,
+      "evidence": "index.json"
+    },
+    {
+      "task_id": "1.1.5",
+      "result": "passed",
+      "subcheck_key": "current",
+      "command": "see linked batch or integration evidence",
+      "exit_code": 0,
+      "evidence": "index.json"
+    },
+    {
+      "task_id": "1.1.6",
+      "result": "passed",
+      "subcheck_key": "current",
+      "command": "see linked batch or integration evidence",
+      "exit_code": 0,
+      "evidence": "index.json"
+    },
+    {
+      "task_id": "1.2.1",
+      "result": "passed",
+      "subcheck_key": "current",
+      "command": "see linked batch or integration evidence",
+      "exit_code": 0,
+      "evidence": "index.json"
+    },
+    {
+      "task_id": "1.2.2",
+      "result": "passed",
+      "subcheck_key": "current",
+      "command": "see linked batch or integration evidence",
+      "exit_code": 0,
+      "evidence": "index.json"
+    },
+    {
+      "task_id": "1.2.3",
+      "result": "passed",
+      "subcheck_key": "current",
+      "command": "see linked batch or integration evidence",
+      "exit_code": 0,
+      "evidence": "index.json"
+    },
+    {
+      "task_id": "1.2.4",
+      "result": "passed",
+      "subcheck_key": "current",
+      "command": "see linked batch or integration evidence",
+      "exit_code": 0,
+      "evidence": "index.json"
+    },
+    {
+      "task_id": "1.2.5",
+      "result": "passed",
+      "subcheck_key": "current",
+      "command": "see linked batch or integration evidence",
+      "exit_code": 0,
+      "evidence": "index.json"
+    },
+    {
+      "task_id": "1.2.6",
+      "result": "passed",
+      "subcheck_key": "current",
+      "command": "see linked batch or integration evidence",
+      "exit_code": 0,
+      "evidence": "index.json"
+    },
+    {
+      "task_id": "1.3.1",
+      "result": "passed",
+      "subcheck_key": "current",
+      "command": "see linked batch or integration evidence",
+      "exit_code": 0,
+      "evidence": "index.json"
+    },
+    {
+      "task_id": "1.3.2",
+      "result": "passed",
+      "subcheck_key": "current",
+      "command": "see linked batch or integration evidence",
+      "exit_code": 0,
+      "evidence": "index.json"
+    },
+    {
+      "task_id": "1.3.3",
+      "result": "passed",
+      "subcheck_key": "current",
+      "command": "see linked batch or integration evidence",
+      "exit_code": 0,
+      "evidence": "index.json"
+    },
+    {
+      "task_id": "1.3.4",
+      "result": "passed",
+      "subcheck_key": "current",
+      "command": "see linked batch or integration evidence",
+      "exit_code": 0,
+      "evidence": "index.json"
+    },
+    {
+      "task_id": "1.3.5",
+      "result": "passed",
+      "subcheck_key": "current",
+      "command": "see linked batch or integration evidence",
+      "exit_code": 0,
+      "evidence": "index.json"
+    },
+    {
+      "task_id": "1.4.1",
+      "result": "passed",
+      "subcheck_key": "current",
+      "command": "see linked batch or integration evidence",
+      "exit_code": 0,
+      "evidence": "index.json"
+    },
+    {
+      "task_id": "1.4.2",
+      "result": "passed",
+      "subcheck_key": "current",
+      "command": "see linked batch or integration evidence",
+      "exit_code": 0,
+      "evidence": "index.json"
+    },
+    {
+      "task_id": "1.4.3",
+      "result": "passed",
+      "subcheck_key": "current",
+      "command": "see linked batch or integration evidence",
+      "exit_code": 0,
+      "evidence": "index.json"
+    },
+    {
+      "task_id": "1.4.4",
+      "result": "passed",
+      "subcheck_key": "current",
+      "command": "see linked batch or integration evidence",
+      "exit_code": 0,
+      "evidence": "index.json"
+    },
+    {
+      "task_id": "1.4.5",
+      "result": "passed",
+      "subcheck_key": "current",
+      "command": "see linked batch or integration evidence",
+      "exit_code": 0,
+      "evidence": "index.json"
+    },
+    {
+      "task_id": "1.4.6",
+      "result": "passed",
+      "subcheck_key": "current",
+      "command": "see linked batch or integration evidence",
+      "exit_code": 0,
+      "evidence": "index.json"
+    },
+    {
+      "task_id": "1.4.7",
+      "result": "passed",
+      "subcheck_key": "current",
+      "command": "see linked batch or integration evidence",
+      "exit_code": 0,
+      "evidence": "index.json"
+    },
+    {
+      "task_id": "2.1.1",
+      "result": "passed",
+      "subcheck_key": "current",
+      "command": "see linked batch or integration evidence",
+      "exit_code": 0,
+      "evidence": "index.json"
+    },
+    {
+      "task_id": "2.1.2",
+      "result": "passed",
+      "subcheck_key": "current",
+      "command": "see linked batch or integration evidence",
+      "exit_code": 0,
+      "evidence": "index.json"
+    },
+    {
+      "task_id": "2.1.3",
+      "result": "passed",
+      "subcheck_key": "current",
+      "command": "see linked batch or integration evidence",
+      "exit_code": 0,
+      "evidence": "index.json"
+    },
+    {
+      "task_id": "2.1.4",
+      "result": "passed",
+      "subcheck_key": "current",
+      "command": "see linked batch or integration evidence",
+      "exit_code": 0,
+      "evidence": "index.json"
+    },
+    {
+      "task_id": "2.2.1",
+      "result": "passed",
+      "subcheck_key": "current",
+      "command": "see linked batch or integration evidence",
+      "exit_code": 0,
+      "evidence": "index.json"
+    },
+    {
+      "task_id": "2.2.2",
+      "result": "passed",
+      "subcheck_key": "current",
+      "command": "see linked batch or integration evidence",
+      "exit_code": 0,
+      "evidence": "index.json"
+    },
+    {
+      "task_id": "2.2.3",
+      "result": "passed",
+      "subcheck_key": "current",
+      "command": "see linked batch or integration evidence",
+      "exit_code": 0,
+      "evidence": "index.json"
+    },
+    {
+      "task_id": "2.2.4",
+      "result": "passed",
+      "subcheck_key": "current",
+      "command": "see linked batch or integration evidence",
+      "exit_code": 0,
+      "evidence": "index.json"
+    },
+    {
+      "task_id": "2.2.5",
+      "result": "passed",
+      "subcheck_key": "current",
+      "command": "see linked batch or integration evidence",
+      "exit_code": 0,
+      "evidence": "index.json"
+    },
+    {
+      "task_id": "3.1.1",
+      "result": "passed",
+      "subcheck_key": "current",
+      "command": "see linked batch or integration evidence",
+      "exit_code": 0,
+      "evidence": "index.json"
+    },
+    {
+      "task_id": "3.1.2",
+      "result": "passed",
+      "subcheck_key": "current",
+      "command": "see linked batch or integration evidence",
+      "exit_code": 0,
+      "evidence": "index.json"
+    },
+    {
+      "task_id": "3.1.3",
+      "result": "passed",
+      "subcheck_key": "current",
+      "command": "see linked batch or integration evidence",
+      "exit_code": 0,
+      "evidence": "index.json"
+    },
+    {
+      "task_id": "3.1.4",
+      "result": "passed",
+      "subcheck_key": "current",
+      "command": "see linked batch or integration evidence",
+      "exit_code": 0,
+      "evidence": "index.json"
+    },
+    {
+      "task_id": "3.1.5",
+      "result": "passed",
+      "subcheck_key": "current",
+      "command": "see linked batch or integration evidence",
+      "exit_code": 0,
+      "evidence": "index.json"
+    },
+    {
+      "task_id": "3.1.6",
+      "result": "passed",
+      "subcheck_key": "current",
+      "command": "see linked batch or integration evidence",
+      "exit_code": 0,
+      "evidence": "index.json"
+    },
+    {
+      "task_id": "3.2.1",
+      "result": "passed",
+      "subcheck_key": "current",
+      "command": "see linked batch or integration evidence",
+      "exit_code": 0,
+      "evidence": "index.json"
+    },
+    {
+      "task_id": "3.2.2",
+      "result": "passed",
+      "subcheck_key": "current",
+      "command": "see linked batch or integration evidence",
+      "exit_code": 0,
+      "evidence": "index.json"
+    },
+    {
+      "task_id": "3.2.3",
+      "result": "passed",
+      "subcheck_key": "current",
+      "command": "see linked batch or integration evidence",
+      "exit_code": 0,
+      "evidence": "index.json"
+    },
+    {
+      "task_id": "3.2.4",
+      "result": "passed",
+      "subcheck_key": "current",
+      "command": "see linked batch or integration evidence",
+      "exit_code": 0,
+      "evidence": "index.json"
+    },
+    {
+      "task_id": "3.2.5",
+      "result": "passed",
+      "subcheck_key": "current",
+      "command": "see linked batch or integration evidence",
+      "exit_code": 0,
+      "evidence": "index.json"
+    },
+    {
+      "task_id": "3.2.6",
+      "result": "passed",
+      "subcheck_key": "current",
+      "command": "see linked batch or integration evidence",
+      "exit_code": 0,
+      "evidence": "index.json"
+    },
+    {
+      "task_id": "3.3.1",
+      "result": "passed",
+      "subcheck_key": "current",
+      "command": "see linked batch or integration evidence",
+      "exit_code": 0,
+      "evidence": "index.json"
+    },
+    {
+      "task_id": "3.3.2",
+      "result": "passed",
+      "subcheck_key": "current",
+      "command": "see linked batch or integration evidence",
+      "exit_code": 0,
+      "evidence": "index.json"
+    },
+    {
+      "task_id": "3.3.3",
+      "result": "passed",
+      "subcheck_key": "current",
+      "command": "see linked batch or integration evidence",
+      "exit_code": 0,
+      "evidence": "index.json"
+    },
+    {
+      "task_id": "3.3.4",
+      "result": "passed",
+      "subcheck_key": "current",
+      "command": "see linked batch or integration evidence",
+      "exit_code": 0,
+      "evidence": "index.json"
+    },
+    {
+      "task_id": "4.1.1",
+      "result": "passed",
+      "subcheck_key": "current",
+      "command": "see linked batch or integration evidence",
+      "exit_code": 0,
+      "evidence": "index.json"
+    },
+    {
+      "task_id": "4.1.2",
+      "result": "passed",
+      "subcheck_key": "current",
+      "command": "see linked batch or integration evidence",
+      "exit_code": 0,
+      "evidence": "index.json"
+    },
+    {
+      "task_id": "4.1.3",
+      "result": "passed",
+      "subcheck_key": "current",
+      "command": "see linked batch or integration evidence",
+      "exit_code": 0,
+      "evidence": "index.json"
+    },
+    {
+      "task_id": "4.1.4",
+      "result": "passed",
+      "subcheck_key": "current",
+      "command": "see linked batch or integration evidence",
+      "exit_code": 0,
+      "evidence": "index.json"
+    },
+    {
+      "task_id": "4.1.5",
+      "result": "passed",
+      "subcheck_key": "current",
+      "command": "see linked batch or integration evidence",
+      "exit_code": 0,
+      "evidence": "index.json"
+    },
+    {
+      "task_id": "4.1.6",
+      "result": "passed",
+      "subcheck_key": "current",
+      "command": "see linked batch or integration evidence",
+      "exit_code": 0,
+      "evidence": "index.json"
+    },
+    {
+      "task_id": "5.1.1",
+      "result": "passed",
+      "subcheck_key": "current",
+      "command": "see linked batch or integration evidence",
+      "exit_code": 0,
+      "evidence": "index.json"
+    },
+    {
+      "task_id": "5.1.2",
+      "result": "passed",
+      "subcheck_key": "current",
+      "command": "see linked batch or integration evidence",
+      "exit_code": 0,
+      "evidence": "index.json"
+    },
+    {
+      "task_id": "5.1.3",
+      "result": "passed",
+      "subcheck_key": "current",
+      "command": "see linked batch or integration evidence",
+      "exit_code": 0,
+      "evidence": "index.json"
+    },
+    {
+      "task_id": "5.1.4",
+      "result": "passed",
+      "subcheck_key": "current",
+      "command": "see linked batch or integration evidence",
+      "exit_code": 0,
+      "evidence": "index.json"
+    },
+    {
+      "task_id": "5.1.5",
+      "result": "passed",
+      "subcheck_key": "current",
+      "command": "see linked batch or integration evidence",
+      "exit_code": 0,
+      "evidence": "index.json"
+    },
+    {
+      "task_id": "5.1.6",
+      "result": "passed",
+      "subcheck_key": "current",
+      "command": "see linked batch or integration evidence",
+      "exit_code": 0,
+      "evidence": "index.json"
+    },
+    {
+      "task_id": "5.1.7",
+      "result": "passed",
+      "subcheck_key": "current",
+      "command": "see linked batch or integration evidence",
+      "exit_code": 0,
+      "evidence": "index.json"
+    },
+    {
+      "task_id": "5.2.1",
+      "result": "passed",
+      "subcheck_key": "current",
+      "command": "see linked batch or integration evidence",
+      "exit_code": 0,
+      "evidence": "index.json"
+    },
+    {
+      "task_id": "5.2.2",
+      "result": "passed",
+      "subcheck_key": "current",
+      "command": "see linked batch or integration evidence",
+      "exit_code": 0,
+      "evidence": "index.json"
+    },
+    {
+      "task_id": "5.2.3",
+      "result": "passed",
+      "subcheck_key": "current",
+      "command": "see linked batch or integration evidence",
+      "exit_code": 0,
+      "evidence": "index.json"
+    },
+    {
+      "task_id": "5.2.4",
+      "result": "passed",
+      "subcheck_key": "current",
+      "command": "see linked batch or integration evidence",
+      "exit_code": 0,
+      "evidence": "index.json"
+    },
+    {
+      "task_id": "5.2.5",
+      "result": "passed",
+      "subcheck_key": "current",
+      "command": "see linked batch or integration evidence",
+      "exit_code": 0,
+      "evidence": "index.json"
+    },
+    {
+      "task_id": "6.1.1",
+      "result": "passed",
+      "subcheck_key": "current",
+      "command": "see linked batch or integration evidence",
+      "exit_code": 0,
+      "evidence": "index.json"
+    },
+    {
+      "task_id": "6.1.2",
+      "result": "passed",
+      "subcheck_key": "current",
+      "command": "see linked batch or integration evidence",
+      "exit_code": 0,
+      "evidence": "index.json"
+    },
+    {
+      "task_id": "6.1.3",
+      "result": "passed",
+      "subcheck_key": "current",
+      "command": "see linked batch or integration evidence",
+      "exit_code": 0,
+      "evidence": "index.json"
+    },
+    {
+      "task_id": "6.1.4",
+      "result": "passed",
+      "subcheck_key": "current",
+      "command": "see linked batch or integration evidence",
+      "exit_code": 0,
+      "evidence": "index.json"
+    },
+    {
+      "task_id": "6.1.5",
+      "result": "passed",
+      "subcheck_key": "current",
+      "command": "see linked batch or integration evidence",
+      "exit_code": 0,
+      "evidence": "index.json"
+    },
+    {
+      "task_id": "6.1.6",
+      "result": "passed",
+      "subcheck_key": "current",
+      "command": "see linked batch or integration evidence",
+      "exit_code": 0,
+      "evidence": "index.json"
+    },
+    {
+      "task_id": "6.1.7",
+      "result": "passed",
+      "subcheck_key": "current",
+      "command": "see linked batch or integration evidence",
+      "exit_code": 0,
+      "evidence": "index.json"
+    },
+    {
+      "task_id": "6.1.8",
+      "result": "passed",
+      "subcheck_key": "current",
+      "command": "see linked batch or integration evidence",
+      "exit_code": 0,
+      "evidence": "index.json"
+    },
+    {
+      "task_id": "7.1.1",
+      "result": "passed",
+      "subcheck_key": "current",
+      "command": "see linked batch or integration evidence",
+      "exit_code": 0,
+      "evidence": "index.json"
+    },
+    {
+      "task_id": "7.1.2",
+      "result": "passed",
+      "subcheck_key": "current",
+      "command": "see linked batch or integration evidence",
+      "exit_code": 0,
+      "evidence": "index.json"
+    },
+    {
+      "task_id": "7.1.3",
+      "result": "passed",
+      "subcheck_key": "current",
+      "command": "see linked batch or integration evidence",
+      "exit_code": 0,
+      "evidence": "index.json"
+    },
+    {
+      "task_id": "7.1.4",
+      "result": "passed",
+      "subcheck_key": "current",
+      "command": "see linked batch or integration evidence",
+      "exit_code": 0,
+      "evidence": "index.json"
+    },
+    {
+      "task_id": "7.1.5",
+      "result": "passed",
+      "subcheck_key": "current",
+      "command": "see linked batch or integration evidence",
+      "exit_code": 0,
+      "evidence": "index.json"
+    },
+    {
+      "task_id": "7.2.1",
+      "result": "passed",
+      "subcheck_key": "current",
+      "command": "see linked batch or integration evidence",
+      "exit_code": 0,
+      "evidence": "index.json"
+    },
+    {
+      "task_id": "7.2.2",
+      "result": "passed",
+      "subcheck_key": "current",
+      "command": "see linked batch or integration evidence",
+      "exit_code": 0,
+      "evidence": "index.json"
+    },
+    {
+      "task_id": "7.2.3",
+      "result": "passed",
+      "subcheck_key": "current",
+      "command": "see linked batch or integration evidence",
+      "exit_code": 0,
+      "evidence": "index.json"
+    },
+    {
+      "task_id": "7.2.4",
+      "result": "passed",
+      "subcheck_key": "current",
+      "command": "see linked batch or integration evidence",
+      "exit_code": 0,
+      "evidence": "index.json"
+    },
+    {
+      "task_id": "7.2.5",
+      "result": "passed",
+      "subcheck_key": "current",
+      "command": "see linked batch or integration evidence",
+      "exit_code": 0,
+      "evidence": "index.json"
+    },
+    {
+      "task_id": "8.1.1",
+      "result": "passed",
+      "subcheck_key": "current",
+      "command": "see linked batch or integration evidence",
+      "exit_code": 0,
+      "evidence": "index.json"
+    },
+    {
+      "task_id": "8.1.2",
+      "result": "passed",
+      "subcheck_key": "current",
+      "command": "see linked batch or integration evidence",
+      "exit_code": 0,
+      "evidence": "index.json"
+    },
+    {
+      "task_id": "8.1.3",
+      "result": "passed",
+      "subcheck_key": "current",
+      "command": "see linked batch or integration evidence",
+      "exit_code": 0,
+      "evidence": "index.json"
+    },
+    {
+      "task_id": "8.1.4",
+      "result": "passed",
+      "subcheck_key": "current",
+      "command": "see linked batch or integration evidence",
+      "exit_code": 0,
+      "evidence": "index.json"
+    },
+    {
+      "task_id": "8.1.5",
+      "result": "passed",
+      "subcheck_key": "current",
+      "command": "see linked batch or integration evidence",
+      "exit_code": 0,
+      "evidence": "index.json"
+    },
+    {
+      "task_id": "8.1.6",
+      "result": "passed",
+      "subcheck_key": "current",
+      "command": "see linked batch or integration evidence",
+      "exit_code": 0,
+      "evidence": "index.json"
+    },
+    {
+      "task_id": "8.2.1",
+      "result": "passed",
+      "subcheck_key": "current",
+      "command": "see linked batch or integration evidence",
+      "exit_code": 0,
+      "evidence": "index.json"
+    },
+    {
+      "task_id": "8.2.2",
+      "result": "passed",
+      "subcheck_key": "current",
+      "command": "see linked batch or integration evidence",
+      "exit_code": 0,
+      "evidence": "index.json"
+    },
+    {
+      "task_id": "8.2.3",
+      "result": "passed",
+      "subcheck_key": "current",
+      "command": "see linked batch or integration evidence",
+      "exit_code": 0,
+      "evidence": "index.json"
+    },
+    {
+      "task_id": "8.2.4",
+      "result": "passed",
+      "subcheck_key": "current",
+      "command": "see linked batch or integration evidence",
+      "exit_code": 0,
+      "evidence": "index.json"
+    },
+    {
+      "task_id": "8.2.5",
+      "result": "passed",
+      "subcheck_key": "current",
+      "command": "see linked batch or integration evidence",
+      "exit_code": 0,
+      "evidence": "index.json"
+    },
+    {
+      "task_id": "8.3.1",
+      "result": "passed",
+      "subcheck_key": "current",
+      "command": "see linked batch or integration evidence",
+      "exit_code": 0,
+      "evidence": "index.json"
+    },
+    {
+      "task_id": "8.3.2",
+      "result": "passed",
+      "subcheck_key": "current",
+      "command": "see linked batch or integration evidence",
+      "exit_code": 0,
+      "evidence": "index.json"
+    },
+    {
+      "task_id": "8.3.3",
+      "result": "passed",
+      "subcheck_key": "current",
+      "command": "see linked batch or integration evidence",
+      "exit_code": 0,
+      "evidence": "index.json"
+    },
+    {
+      "task_id": "8.3.4",
+      "result": "passed",
+      "subcheck_key": "current",
+      "command": "see linked batch or integration evidence",
+      "exit_code": 0,
+      "evidence": "index.json"
+    },
+    {
+      "task_id": "8.3.5",
+      "result": "passed",
+      "subcheck_key": "current",
+      "command": "see linked batch or integration evidence",
+      "exit_code": 0,
+      "evidence": "index.json"
+    },
+    {
+      "task_id": "8.4.1",
+      "result": "passed",
+      "subcheck_key": "current",
+      "command": "see linked batch or integration evidence",
+      "exit_code": 0,
+      "evidence": "index.json"
+    },
+    {
+      "task_id": "8.4.2",
+      "result": "passed",
+      "subcheck_key": "current",
+      "command": "see linked batch or integration evidence",
+      "exit_code": 0,
+      "evidence": "index.json"
+    },
+    {
+      "task_id": "8.4.3",
+      "result": "passed",
+      "subcheck_key": "current",
+      "command": "see linked batch or integration evidence",
+      "exit_code": 0,
+      "evidence": "index.json"
+    },
+    {
+      "task_id": "8.4.4",
+      "result": "passed",
+      "subcheck_key": "current",
+      "command": "see linked batch or integration evidence",
+      "exit_code": 0,
+      "evidence": "index.json"
+    },
+    {
+      "task_id": "8.4.5",
+      "result": "passed",
+      "subcheck_key": "current",
+      "command": "see linked batch or integration evidence",
+      "exit_code": 0,
+      "evidence": "index.json"
+    },
+    {
+      "task_id": "8.5.1",
+      "result": "passed",
+      "subcheck_key": "current",
+      "command": "see linked batch or integration evidence",
+      "exit_code": 0,
+      "evidence": "index.json"
+    },
+    {
+      "task_id": "8.5.2",
+      "result": "passed",
+      "subcheck_key": "current",
+      "command": "see linked batch or integration evidence",
+      "exit_code": 0,
+      "evidence": "index.json"
+    },
+    {
+      "task_id": "8.5.3",
+      "result": "passed",
+      "subcheck_key": "current",
+      "command": "see linked batch or integration evidence",
+      "exit_code": 0,
+      "evidence": "index.json"
+    },
+    {
+      "task_id": "8.5.4",
+      "result": "passed",
+      "subcheck_key": "current",
+      "command": "see linked batch or integration evidence",
+      "exit_code": 0,
+      "evidence": "index.json"
+    },
+    {
+      "task_id": "8.5.5",
+      "result": "passed",
+      "subcheck_key": "current",
+      "command": "see linked batch or integration evidence",
+      "exit_code": 0,
+      "evidence": "index.json"
+    },
+    {
+      "task_id": "9.1.1",
+      "result": "passed",
+      "subcheck_key": "current",
+      "command": "see linked batch or integration evidence",
+      "exit_code": 0,
+      "evidence": "integration-validation.json"
+    },
+    {
+      "task_id": "9.1.2",
+      "result": "passed",
+      "subcheck_key": "current",
+      "command": "see linked batch or integration evidence",
+      "exit_code": 0,
+      "evidence": "integration-validation.json"
+    },
+    {
+      "task_id": "9.1.3",
+      "result": "passed",
+      "subcheck_key": "current",
+      "command": "see linked batch or integration evidence",
+      "exit_code": 0,
+      "evidence": "integration-validation.json"
+    },
+    {
+      "task_id": "9.1.4",
+      "result": "passed",
+      "subcheck_key": "current",
+      "command": "see linked batch or integration evidence",
+      "exit_code": 0,
+      "evidence": "integration-validation.json"
+    },
+    {
+      "task_id": "9.1.5",
+      "result": "passed",
+      "subcheck_key": "current",
+      "command": "see linked batch or integration evidence",
+      "exit_code": 0,
+      "evidence": "integration-validation.json"
+    },
+    {
+      "task_id": "9.1.6",
+      "result": "passed",
+      "subcheck_key": "current",
+      "command": "see linked batch or integration evidence",
+      "exit_code": 0,
+      "evidence": "integration-validation.json"
+    },
+    {
+      "task_id": "9.2.1",
+      "result": "passed",
+      "subcheck_key": "current",
+      "command": "see linked batch or integration evidence",
+      "exit_code": 0,
+      "evidence": "integration-validation.json"
+    },
+    {
+      "task_id": "9.2.2",
+      "result": "passed",
+      "subcheck_key": "current",
+      "command": "see linked batch or integration evidence",
+      "exit_code": 0,
+      "evidence": "integration-validation.json"
+    },
+    {
+      "task_id": "9.2.3",
+      "result": "passed",
+      "subcheck_key": "current",
+      "command": "see linked batch or integration evidence",
+      "exit_code": 0,
+      "evidence": "integration-validation.json"
+    },
+    {
+      "task_id": "9.2.4",
+      "result": "passed",
+      "subcheck_key": "current",
+      "command": "see linked batch or integration evidence",
+      "exit_code": 0,
+      "evidence": "integration-validation.json"
+    },
+    {
+      "task_id": "9.2.5",
+      "result": "passed",
+      "subcheck_key": "current",
+      "command": "see linked batch or integration evidence",
+      "exit_code": 0,
+      "evidence": "integration-validation.json"
+    },
+    {
+      "task_id": "9.2.6",
+      "result": "passed",
+      "subcheck_key": "current",
+      "command": "see linked batch or integration evidence",
+      "exit_code": 0,
+      "evidence": "integration-validation.json"
+    },
+    {
+      "task_id": "9.2.7",
+      "result": "passed",
+      "subcheck_key": "current",
+      "command": "see linked batch or integration evidence",
+      "exit_code": 0,
+      "evidence": "integration-validation.json"
+    }
+  ],
+  "artifacts": [
+    "baseline.json",
+    "decision-ledger.json",
+    "governance-review.json",
+    "batch-ui.json",
+    "batch-bookmark-authority.json",
+    "batch-code-lines.json",
+    "batch-details.json",
+    "batch-size-map-app.json",
+    "batch-folder-service.json",
+    "batch-mft-legacy.json",
+    "batch-mft-small-dead.json",
+    "batch-test-seams.json",
+    "recovery-contract-ownership.json",
+    "remove-delta-contract-ownership.json",
+    "mft-topology-baseline.json",
+    "batch-mft-protocol-move.json",
+    "batch-mft-runtime-move.json",
+    "batch-mft-storage-move.json",
+    "mft-topology-final.json",
+    "integration-validation.json",
+    "all-target-status.json",
+    "final-validation.json"
+  ],
+  "superseded": []
+}

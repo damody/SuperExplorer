@@ -1,0 +1,9 @@
+{
+  "schema_version": 1,
+  "batch": "6.1-test-seams",
+  "migration_test_only": ["cleanup_legacy_after_promotion", "cleanup_legacy_after_promotion_guarded", "quarantine_canonical", "quarantine_canonical_guarded", "sha256_file"],
+  "sqlite_test_only": ["migrate_snapshot", "commit_changes", "commit_changes_guarded", "truncate_wal", "truncate_wal_guarded"],
+  "sqlite_removed": ["migrate_snapshot_guarded", "rebuild_snapshot_guarded", "snapshot_linearized", "snapshot_focused_linearized", "telemetry_cached", "commit_changes_linearized", "truncate_wal_linearized"],
+  "verification": ["cargo check -p explorer-app --tests"],
+  "result": "pass"
+}

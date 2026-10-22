@@ -1,0 +1,9 @@
+{
+  "schema_version": 1,
+  "package": "explorer-mft",
+  "publish": false,
+  "dependencies": ["explorer-model", "rusqlite", "serde", "serde_json", "tracing", "windows"],
+  "consumers": ["explorer-app library", "superexplorer-mft-helper", "superexplorer-mft-service"],
+  "module_groups": {"protocol": ["mft_query", "mft_focus"], "runtime": ["mft_journal", "mft_persistence", "mft_runtime"], "storage": ["mft_size_map", "mft_migration", "mft_sqlite"]},
+  "lock_sha256": "9baba1b5e75e4fc218092132c59921809d9a1c24efc59a7f7e809db70aaf6c9e"
+}

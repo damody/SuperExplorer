@@ -1,0 +1,86 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Dead code governance evidence",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "revision",
+    "items",
+    "task_records"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 1
+    },
+    "revision": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$"
+    },
+    "items": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "id",
+          "source_path",
+          "source_sha256",
+          "disposition"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "pattern": "^DCI-[0-9a-f]{16}$"
+          },
+          "source_path": {
+            "type": "string",
+            "minLength": 1
+          },
+          "source_sha256": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
+          },
+          "disposition": {
+            "enum": [
+              "remove-superseded",
+              "remove-unreferenced",
+              "retain-cross-target-live",
+              "test-only",
+              "retain-required-contract",
+              "retain-narrow-suppression"
+            ]
+          }
+        }
+      }
+    },
+    "task_records": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "task_id",
+          "result",
+          "subcheck_key",
+          "command",
+          "exit_code",
+          "evidence"
+        ],
+        "properties": {
+          "result": {
+            "enum": [
+              "passed",
+              "not-applicable",
+              "superseded"
+            ]
+          },
+          "subcheck_key": {
+            "type": "string",
+            "minLength": 1
+          },
+          "exit_code": {
+            "type": "integer"
+          }
+        }
+      }
+    }
+  }
+}

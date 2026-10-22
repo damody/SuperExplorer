@@ -1,0 +1,1 @@
+{"schema_version":1,"modules":{"mft_focus":"9084ed5aa3a908e284ea3260b264abe50c611d43358311b30b91487f70d5a38f","mft_query":"68ed1cee4b8c309223d28442e57cafbc309892be433668a0921f7c5388920f95"},"consumer_imports":"explorer_mft","path_duplication":false,"tests":"explorer-mft 85 tests: 83 pass, 2 opt-in ignored","result":"pass"}

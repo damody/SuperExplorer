@@ -1,0 +1,43 @@
+{
+  "schema_version": 1,
+  "gate": "DCG-OBSOLETE",
+  "result": "passed",
+  "source": {
+    "path": "crates/explorer-app/src/application.rs",
+    "pre_sha256": "272e960107645b57b8d5a5a35d16e7a9d092d2e8e840ab1d637d4dd3e03f44d7",
+    "post_sha256": "b4832a594931a3277d193b8213d27726ce7708b930f5551ffef80d8312514f2e"
+  },
+  "removed_closure": [
+    "directory cache constants and key",
+    "read/store/prune/path/hash helpers",
+    "MoveFileExW atomic cache publication",
+    "direct main-language and all-language directory scans",
+    "three tests owned only by the obsolete closure"
+  ],
+  "production_replacement": "read_code_lines_path_bounded filters recognized regular files, enforces the Host input limit, and publishes a sealed SECLDIR1 snapshot to the Rust/Lua providers.",
+  "dependency": {
+    "decision": "retain",
+    "crate": "tokei",
+    "reason": "The production Host snapshot classifier still calls tokei::LanguageType::from_path; removing the dependency would break the supported-source admission contract.",
+    "remaining_consumers": ["tokei::Config::default", "tokei::LanguageType::from_path"]
+  },
+  "commands": [
+    {"subcheck_key":"format","command":"cargo fmt --all -- --check","exit_code":0,"result":"passed"},
+    {"subcheck_key":"oversize-file","command":"cargo test -p explorer-app --lib oversized_code_lines_source_is_unsupported_not_an_error_or_zero --locked --offline -- --nocapture","exit_code":0,"result":"passed"},
+    {"subcheck_key":"directory-admission","command":"cargo test -p explorer-app --lib directory_rows_are_recognized_before_admitted_recursive_measurement --locked --offline -- --nocapture","exit_code":0,"result":"passed"},
+    {"subcheck_key":"bounded-folder","command":"cargo test -p explorer-app --lib code_lines_directory_source_is_bounded_and_contains_recursive_file_names --locked --offline -- --nocapture","exit_code":0,"result":"passed"},
+    {"subcheck_key":"binary-filter","command":"cargo test -p explorer-app --lib code_lines_directory_pack_ignores_large_binary_payloads_before_snapshotting --locked --offline -- --nocapture","exit_code":0,"result":"passed"},
+    {"subcheck_key":"empty-and-overflow","command":"cargo test -p explorer-app --lib code_lines_directory_pack_rejects_empty_and_single_stream_overflow --locked --offline -- --nocapture","exit_code":0,"result":"passed"},
+    {"subcheck_key":"row-isolation","command":"cargo test -p explorer-app --lib code_lines_batch_preparation_isolates_an_invalid_row --locked --offline -- --nocapture","exit_code":0,"result":"passed"},
+    {"subcheck_key":"app-check","command":"cargo check -p explorer-app --locked --offline","exit_code":0,"dead_code_warning_delta":-13,"result":"passed"},
+    {"subcheck_key":"standalone-provider-packages","command":"cargo test -p rust-tokei-code-lines-column --locked --offline","exit_code":101,"result":"not-applicable","reason":"The SDK fixture is intentionally outside the workspace package graph; parity is exercised through the shared Host snapshot preparation contract in this batch."}
+  ],
+  "task_records": [
+    {"task_id":"3.1.1","subcheck_key":"closure","result":"passed"},
+    {"task_id":"3.1.2","subcheck_key":"replacement","result":"passed"},
+    {"task_id":"3.1.3","subcheck_key":"remove-obsolete","result":"passed"},
+    {"task_id":"3.1.4","subcheck_key":"retain-tokei","result":"passed"},
+    {"task_id":"3.1.5","subcheck_key":"focused-contracts","result":"passed"},
+    {"task_id":"3.1.6","subcheck_key":"locked-offline-check","result":"passed"}
+  ]
+}

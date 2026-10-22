@@ -1,0 +1,93 @@
+{
+  "schema_version": 1,
+  "revision": "26f145d76a4e916e760aeb5630dd3ab2d0472433",
+  "items": [],
+  "task_records": [
+    {
+      "task_id": "9.2.1",
+      "result": "passed",
+      "subcheck_key": "current",
+      "command": "see linked batch or integration evidence",
+      "exit_code": 0,
+      "evidence": "integration-validation.json"
+    },
+    {
+      "task_id": "9.2.2",
+      "result": "passed",
+      "subcheck_key": "current",
+      "command": "see linked batch or integration evidence",
+      "exit_code": 0,
+      "evidence": "integration-validation.json"
+    },
+    {
+      "task_id": "9.2.3",
+      "result": "passed",
+      "subcheck_key": "current",
+      "command": "see linked batch or integration evidence",
+      "exit_code": 0,
+      "evidence": "integration-validation.json"
+    },
+    {
+      "task_id": "9.2.4",
+      "result": "passed",
+      "subcheck_key": "current",
+      "command": "see linked batch or integration evidence",
+      "exit_code": 0,
+      "evidence": "integration-validation.json"
+    },
+    {
+      "task_id": "9.2.5",
+      "result": "passed",
+      "subcheck_key": "current",
+      "command": "see linked batch or integration evidence",
+      "exit_code": 0,
+      "evidence": "integration-validation.json"
+    },
+    {
+      "task_id": "9.2.6",
+      "result": "passed",
+      "subcheck_key": "current",
+      "command": "see linked batch or integration evidence",
+      "exit_code": 0,
+      "evidence": "integration-validation.json"
+    },
+    {
+      "task_id": "9.2.7",
+      "result": "passed",
+      "subcheck_key": "current",
+      "command": "see linked batch or integration evidence",
+      "exit_code": 0,
+      "evidence": "integration-validation.json"
+    }
+  ],
+  "toolchain": {
+    "rustc": "rustc 1.97.1 (8bab26f4f 2026-07-14)",
+    "cargo": "cargo 1.97.1 (c980f4866 2026-06-30)"
+  },
+  "baseline": {
+    "dead_code": 417,
+    "canonical_dead_code": 322,
+    "items": 438,
+    "target_local": 251,
+    "other_warnings": 26
+  },
+  "final_counts": {
+    "dead_code": 0,
+    "unsafe_code": 0,
+    "normal_other_warnings": 17,
+    "all_target_warnings": 62,
+    "errors": 0
+  },
+  "narrow_suppressions": [
+    "RecoveryReasonV1",
+    "MigrationStateV1",
+    "FolderSnapshotDeltaV1::Remove",
+    "test-build-only Folder Size acceleration"
+  ],
+  "removed_dependency_edges": [],
+  "added_internal_package": "explorer-mft",
+  "remaining_risks": [
+    "two environment-dependent MFT tests remain opt-in ignored"
+  ],
+  "result": "passed"
+}
