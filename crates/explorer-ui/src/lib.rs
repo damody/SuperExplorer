@@ -3918,6 +3918,9 @@ impl ExplorerRoot {
                 &entries
             };
             for entry in requested_entries {
+                if !runtime.supports_entry(entry) {
+                    continue;
+                }
                 if state::deletion_contains_item(&deleting_items, &entry.id, &entry.location) {
                     continue;
                 }
@@ -12552,12 +12555,20 @@ mod tests {
     #[derive(Default)]
     struct RecordingCodeLinesRuntimeV1 {
         visible_only: bool,
+        unsupported_extension: Option<&'static str>,
         requests: Mutex<Vec<super::code_lines_column::CodeLinesRequestV1>>,
         cancels: Mutex<Vec<explorer_model::RequestContext>>,
         results: Mutex<Vec<super::code_lines_column::CodeLinesResultV1>>,
     }
 
     impl super::code_lines_column::CodeLinesRuntimePortV1 for RecordingCodeLinesRuntimeV1 {
+        fn supports_entry(&self, entry: &explorer_model::FileEntry) -> bool {
+            entry.is_container
+                || !self.unsupported_extension.is_some_and(|unsupported| {
+                    entry.location.path().and_then(|path| path.extension())
+                        .is_some_and(|extension| extension.eq_ignore_ascii_case(unsupported))
+                })
+        }
         fn visible_entries_only(&self) -> bool {
             self.visible_only
         }
@@ -12868,6 +12879,31 @@ mod tests {
                 .iter()
                 .all(|request| request.require_directory_facts)
         );
+    }
+
+    #[test]
+    fn code_lines_unsupported_media_never_enters_request_queue() {
+        let runtime = Arc::new(RecordingCodeLinesRuntimeV1 {
+            visible_only: true,
+            unsupported_extension: Some("mp4"),
+            ..Default::default()
+        });
+        let mut root = ExplorerRoot::default();
+        seed_active_visual_tab(&mut root.state, "Media", true, false);
+        let mut files = root.state.tabs().active_tab().visible_snapshot().unwrap().entries()
+            .iter()
+            .filter(|entry| !entry.is_container)
+            .cloned()
+            .collect::<Vec<_>>();
+        files[0].location = explorer_model::LocationDescriptor::file_system(r"C:\media\movie.MP4");
+        files[1].location = explorer_model::LocationDescriptor::file_system(r"C:\media\main.rs");
+        root.attach_code_lines_runtime(runtime.clone());
+        root.submit_code_lines_requests(&files);
+        root.submit_code_lines_requests(&files);
+        let requests = runtime.requests.lock().unwrap();
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0].path, files[1].location.path().unwrap());
+        assert!(!root.code_lines_requested.iter().any(|(_, _, _, id)| id == &files[0].id));
     }
 
     #[test]

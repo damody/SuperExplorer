@@ -16520,7 +16520,7 @@ fn folder_size_detail_cell(
 )]
 fn code_lines_detail_column_cell(
     column: CodeLinesDetailColumn,
-    entry_id: &explorer_model::ShellItemId,
+    entry: &explorer_model::FileEntry,
     selected: bool,
     shell_icon_dpi: u16,
     visual_column_theme: explorer_extension_ui_api::CellThemeV1,
@@ -16538,6 +16538,15 @@ fn code_lines_detail_column_cell(
                 host_admission_detail_cell(
                     &visuals.config.descriptor,
                     *admission,
+            if !runtime.supports_entry(entry) {
+                return unavailable_detail_cell(
+                    &visuals.config.descriptor,
+                    view_settings,
+                    visible_index,
+                    layout,
+                );
+            }
+            let entry_id = &entry.id;
                     view_settings,
                     visible_index,
                     layout,

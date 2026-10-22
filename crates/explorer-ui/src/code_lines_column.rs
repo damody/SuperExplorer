@@ -154,6 +154,10 @@ pub struct CodeLinesResultV1 {
 
 pub trait CodeLinesRuntimePortV1: Send + Sync {
     fn config(&self) -> CodeLinesColumnConfigV1;
+    /// Pure admission check used before scheduling and rendering. Must not do I/O.
+    fn supports_entry(&self, _entry: &explorer_model::FileEntry) -> bool {
+        true
+    }
     /// Expensive live queries can limit work to the realized viewport.
     fn visible_entries_only(&self) -> bool {
         false

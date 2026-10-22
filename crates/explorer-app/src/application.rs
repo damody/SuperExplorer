@@ -2575,18 +2575,26 @@ fn read_code_lines_file_bounded(path: &Path) -> Result<Option<Vec<u8>>, String> 
 
 const CODE_LINES_DIRECTORY_MAGIC_V1: &[u8; 8] = b"SECLDIR1";
 
-fn tokei_language_type_quiet(path: &Path, config: &tokei::Config) -> Option<tokei::LanguageType> {
+fn code_lines_path_may_be_supported(path: &Path) -> bool {
+    static EXTENSIONS: OnceLock<HashSet<String>> = OnceLock::new();
     if let Some(extension) = path.extension().and_then(|value| value.to_str()) {
         let extension = extension.to_ascii_lowercase();
-        let known = tokei::LanguageType::list().iter().any(|(_, extensions)| {
-            extensions
+        let extensions = EXTENSIONS.get_or_init(|| {
+            tokei::LanguageType::list()
                 .iter()
-                .copied()
-                .any(|candidate| candidate == extension)
+                .flat_map(|(_, extensions)| extensions.iter().map(|value| value.to_string()))
+                .collect()
         });
-        if !known {
-            return None;
+        if !extensions.contains(&extension) {
+            return false;
         }
+    }
+    true
+}
+
+fn tokei_language_type_quiet(path: &Path, config: &tokei::Config) -> Option<tokei::LanguageType> {
+    if !code_lines_path_may_be_supported(path) {
+        return None;
     }
     tokei::LanguageType::from_path(path, config)
 }
@@ -2597,6 +2605,9 @@ fn read_code_lines_path_bounded(path: &Path) -> Result<Option<Vec<u8>>, String> 
         return Ok(None);
     }
     if metadata.is_file() {
+        if !code_lines_path_may_be_supported(path) {
+            return Ok(None);
+        }
         return read_code_lines_file_bounded(path);
     }
     if !metadata.is_dir() {
@@ -3092,6 +3103,15 @@ fn parse_code_lines_value(
 }
 
 impl explorer_ui::code_lines_column::CodeLinesRuntimePortV1 for ApplicationCodeLinesRuntimeV1 {
+    fn supports_entry(&self, entry: &explorer_model::FileEntry) -> bool {
+        self.mode == BatchDetailsColumnModeV1::LockOwner
+            || entry.is_container
+            || entry
+                .location
+                .path()
+                .is_some_and(code_lines_path_may_be_supported)
+    }
+
     fn visible_entries_only(&self) -> bool {
         self.mode == BatchDetailsColumnModeV1::LockOwner
     }
@@ -3224,8 +3244,14 @@ impl explorer_ui::code_lines_column::CodeLinesRuntimePortV1 for ApplicationCodeL
         &self,
         context: explorer_extension_ui_api::CellRenderContextV1,
     ) -> explorer_extension_ui_api::CellRenderPlanV1 {
-        self.renderer
-            .render_or_enqueue(context, "Loading code lines")
+        let loading_label = if !context.loading {
+            ""
+        } else if self.mode == BatchDetailsColumnModeV1::LockOwner {
+            "Loading lock owners"
+        } else {
+            "Loading code lines"
+        };
+        self.renderer.render_or_enqueue(context, loading_label)
     }
 }
 
@@ -8139,6 +8165,26 @@ mod tests {
                 .any(|bytes| bytes == b"script.py")
         );
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn code_lines_media_files_are_rejected_before_reading_contents() {
+        let directory = tempfile::tempdir().unwrap();
+        for name in [
+            "movie.mp4", "movie.MP4", "photo.png", "music.mp3", "archive.zip",
+        ] {
+            let path = directory.path().join(name);
+            fs::write(&path, b"fn main() {}\n").unwrap();
+            assert!(!super::code_lines_path_may_be_supported(&path));
+            assert_eq!(read_code_lines_path_bounded(&path).unwrap(), None);
+        }
+        for name in ["main.rs", "MAIN.RS", "script.py", "Makefile", "script"] {
+            assert!(super::code_lines_path_may_be_supported(Path::new(name)));
+        }
+        let folder = directory.path().join("sources.mp4");
+        fs::create_dir(&folder).unwrap();
+        fs::write(folder.join("main.rs"), b"fn main() {}\n").unwrap();
+        assert!(read_code_lines_path_bounded(&folder).unwrap().is_some());
     }
 
     #[test]
