@@ -213,5 +213,6 @@ status-paste-read-only = Cannot paste: this location is not writable.
 status-paste-no-destination = Cannot paste: no destination folder is available.
 status-paste-empty = Cannot paste: the clipboard is empty.
 status-paste-unsupported = Cannot paste: the clipboard does not contain supported files.
+status-paste-orphaned = Cannot paste: the app the files were copied from has closed, so the clipboard no longer holds them. Copy them again.
 status-paste-modal = Cannot paste: close the active dialog first.
 status-paste-focus = Cannot paste files here: focus the destination file list first.

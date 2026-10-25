@@ -630,6 +630,17 @@ impl Default for ClipboardState {
     }
 }
 
+impl ClipboardState {
+    /// `ExplorerError::operation` of an Unsupported clipboard whose source app exited before
+    /// rendering its files, leaving only OLE stubs behind.
+    pub const ORPHANED_OPERATION: &'static str = "inspect orphaned clipboard";
+
+    #[must_use]
+    pub fn is_orphaned(&self) -> bool {
+        matches!(self, Self::Unsupported { error, .. } if error.operation == Self::ORPHANED_OPERATION)
+    }
+}
+
 /// Exactly-one terminal for an auxiliary column listing. It never mutates tab history.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ColumnListingTerminal {

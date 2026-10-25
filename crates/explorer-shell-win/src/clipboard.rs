@@ -328,6 +328,8 @@ const fn background_paste_still_owns_clipboard(expected: u32, current: u32) -> b
 
 pub(crate) struct ClipboardRuntime {
     owned: Option<IDataObject>,
+    /// The owned object is still delay-rendered because its eager flush failed.
+    unflushed: bool,
     pending_pastes: HashMap<RequestId, PendingPaste>,
     state: ClipboardState,
     generation: u64,
@@ -340,6 +342,7 @@ impl ClipboardRuntime {
         let sequence = unsafe { GetClipboardSequenceNumber() }.wrapping_sub(1);
         Self {
             owned: None,
+            unflushed: false,
             pending_pastes: HashMap::new(),
             state: ClipboardState::None { generation: 0 },
             generation: 0,
@@ -372,6 +375,14 @@ impl ClipboardRuntime {
         set_drop_effect(&data, CFSTR_PREFERREDDROPEFFECT, effect)?;
         // SAFETY: this thread initialized OLE; OLE retains its own IDataObject reference.
         set_clipboard_with_retry(&data)?;
+        // Render every format now. Delay-rendered formats die with this STA's clipboard window,
+        // so a crash or forced exit would otherwise leave only "DataObject"/"Ole Private Data"
+        // behind and other apps (or our next process) could no longer paste the files.
+        self.unflushed = flush_clipboard_with_retry()
+            .inspect_err(|error| {
+                tracing::warn!(%error, "failed to flush owned OLE clipboard after copy");
+            })
+            .is_err();
         self.owned = Some(data);
         self.generation = self.generation.saturating_add(1);
         // SAFETY: sequence is sampled after OleSetClipboard to identify later ownership changes.
@@ -402,6 +413,16 @@ impl ClipboardRuntime {
             // SAFETY: the count distinguishes a genuinely empty clipboard from unsupported data.
             self.state = if unsafe { CountClipboardFormats() } == 0 {
                 ClipboardState::None {
+                    generation: self.generation,
+                }
+            } else if orphaned_ole_clipboard() {
+                ClipboardState::Unsupported {
+                    error: clipboard_error(
+                        ExplorerErrorKind::Availability,
+                        ClipboardState::ORPHANED_OPERATION,
+                        "複製來源程式已關閉，剪貼簿中的檔案已失效。",
+                        "clipboard owner exited without OleFlushClipboard; only OLE stubs remain",
+                    ),
                     generation: self.generation,
                 }
             } else {
@@ -549,7 +570,8 @@ impl ClipboardRuntime {
     }
 
     pub(crate) fn shutdown(&mut self) {
-        if self.owned.is_some() {
+        // Copy already flushed eagerly; this only covers a copy whose eager flush failed.
+        if self.owned.is_some() && self.unflushed {
             // SAFETY: flush asks OLE to render delayed formats before releasing our final ref.
             if let Err(error) = flush_clipboard_with_retry() {
                 tracing::warn!(%error, "failed to flush owned OLE clipboard during shutdown");
@@ -661,6 +683,22 @@ pub(crate) fn create_shell_data_object(
         )
     }
     .map_err(|error| native_clipboard_error("bind Shell IDataObject", &error))
+}
+
+/// An OLE clipboard whose owner exited without `OleFlushClipboard` loses every delay-rendered
+/// format, including `CF_HDROP`, and keeps nothing but OLE's own "DataObject"/"Ole Private Data".
+fn orphaned_ole_clipboard() -> bool {
+    let stubs = [
+        windows::core::w!("DataObject"),
+        windows::core::w!("Ole Private Data"),
+    ]
+    .into_iter()
+    // SAFETY: names are live NUL-terminated strings; availability does not open the clipboard.
+    .map(|name| unsafe { RegisterClipboardFormatW(name) })
+    .filter(|&format| format != 0 && unsafe { IsClipboardFormatAvailable(format) }.is_ok())
+    .count();
+    // SAFETY: counting formats neither opens nor retains the clipboard.
+    stubs > 0 && usize::try_from(unsafe { CountClipboardFormats() }).is_ok_and(|n| n == stubs)
 }
 
 fn external_clipboard_state(generation: u64) -> Result<ClipboardState, ExplorerError> {
@@ -1445,6 +1483,115 @@ mod tests {
             request.kind,
             explorer_model::FileOperationKind::Copy { .. }
         ));
+        unsafe { OleUninitialize() };
+    }
+
+    #[test]
+    fn owned_copy_survives_owner_thread_teardown_without_shutdown() {
+        let _guard = CLIPBOARD_TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let fixture = explorer_test_support::OwnedTempFixture::new().expect("fixture");
+        let folder = fixture.create_dir("Plugin").expect("folder");
+        let item = ItemDescriptor {
+            id: ShellItemId::from_provider_bytes([0x61]).expect("identity"),
+            location: LocationDescriptor::file_system(folder.clone()),
+        };
+        // A crashed or killed owner never reaches ClipboardRuntime::shutdown; the OLE clipboard
+        // window dies with its thread and only already-rendered formats survive.
+        std::thread::spawn(move || {
+            unsafe { OleInitialize(None) }.expect("initialize OLE");
+            let mut runtime = ClipboardRuntime::new();
+            runtime
+                .copy_or_cut(vec![item], ClipboardMode::Copy)
+                .expect("owned copy");
+            std::mem::forget(runtime);
+            unsafe { OleUninitialize() };
+        })
+        .join()
+        .expect("owner thread");
+        let (items, mode) = std::thread::spawn(super::read_native_file_clipboard)
+            .join()
+            .expect("reader thread")
+            .expect("native read")
+            .expect("copied folder must outlive its owner thread");
+        assert_eq!(mode, ClipboardMode::Copy);
+        assert_eq!(items.len(), 1);
+        assert_eq!(
+            items[0].location.path().expect("path").canonicalize().expect("canonical"),
+            folder.canonicalize().expect("canonical folder")
+        );
+    }
+
+    #[test]
+    fn unflushed_clipboard_from_a_dead_owner_is_reported_as_orphaned() {
+        let _guard = CLIPBOARD_TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let fixture = explorer_test_support::OwnedTempFixture::new().expect("fixture");
+        let path = fixture.create_file("lost.txt", b"lost").expect("file");
+        let mut runtime = ClipboardRuntime::new();
+        // Another app publishes a delay-rendered Shell object and exits without flushing.
+        std::thread::spawn(move || {
+            unsafe { OleInitialize(None) }.expect("initialize OLE");
+            let data = create_shell_data_object(&[ItemDescriptor {
+                id: ShellItemId::from_provider_bytes([0x63]).expect("identity"),
+                location: LocationDescriptor::file_system(path),
+            }])
+            .expect("Shell data object");
+            set_clipboard_with_retry(&data).expect("set OLE clipboard");
+            drop(data);
+            unsafe { OleUninitialize() };
+        })
+        .join()
+        .expect("dead owner thread");
+        let state = runtime.poll_change().expect("clipboard changed");
+        assert!(state.is_orphaned(), "{state:?}");
+        unsafe { OleInitialize(None) }.expect("initialize OLE");
+        clear_clipboard_with_retry().expect("clear OLE clipboard");
+        unsafe { OleUninitialize() };
+    }
+
+    #[test]
+    fn flushed_owned_cut_is_cleared_after_completed_paste() {
+        let _guard = CLIPBOARD_TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        unsafe { OleInitialize(None) }.expect("initialize OLE");
+        let fixture = explorer_test_support::OwnedTempFixture::new().expect("fixture");
+        let path = fixture.create_file("move.txt", b"move").expect("file");
+        let mut runtime = ClipboardRuntime::new();
+        runtime
+            .copy_or_cut(
+                vec![ItemDescriptor {
+                    id: ShellItemId::from_provider_bytes([0x62]).expect("identity"),
+                    location: LocationDescriptor::file_system(path),
+                }],
+                ClipboardMode::Cut,
+            )
+            .expect("owned cut");
+        assert_eq!(runtime.poll_change(), None);
+        let request_id = RequestId::new();
+        runtime
+            .begin_background_paste(
+                request_id,
+                LocationDescriptor::file_system(fixture.create_dir("dest").expect("dest")),
+                ConflictDecision::Prompt,
+            )
+            .expect("begin owned cut paste");
+        assert!(matches!(
+            runtime.complete_background_paste(request_id, &OperationTerminal::Finished),
+            Some(ClipboardState::None { .. })
+        ));
+        assert!(
+            unsafe {
+                windows::Win32::System::DataExchange::IsClipboardFormatAvailable(u32::from(
+                    windows::Win32::System::Ole::CF_HDROP.0,
+                ))
+            }
+            .is_err()
+        );
+        drop(runtime);
         unsafe { OleUninitialize() };
     }
 

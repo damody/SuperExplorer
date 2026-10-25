@@ -270,5 +270,6 @@ status-paste-read-only = 无法粘贴：此目录不允许写入。
 status-paste-no-destination = 无法粘贴：没有可用的目标目录。
 status-paste-empty = 无法粘贴：剪贴板为空。
 status-paste-unsupported = 无法粘贴：剪贴板没有支持的文件格式。
+status-paste-orphaned = 无法粘贴：复制来源程序已关闭，剪贴板中的文件已失效，请重新复制。
 status-paste-modal = 无法粘贴：请先关闭当前对话窗口。
 status-paste-focus = 无法在此粘贴文件：请先点击目标目录的文件列表。

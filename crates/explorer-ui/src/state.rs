@@ -9185,7 +9185,11 @@ impl AppViewState {
                 return None;
             }
             explorer_model::ClipboardState::Unsupported { .. } => {
-                self.reject_paste("status-paste-unsupported");
+                self.reject_paste(if self.clipboard.is_orphaned() {
+                    "status-paste-orphaned"
+                } else {
+                    "status-paste-unsupported"
+                });
                 return None;
             }
         };

@@ -181,5 +181,6 @@ status-paste-read-only = 無法貼上：此目錄不允許寫入。
 status-paste-no-destination = 無法貼上：沒有可用的目標目錄。
 status-paste-empty = 無法貼上：剪貼簿是空的。
 status-paste-unsupported = 無法貼上：剪貼簿沒有支援的檔案格式。
+status-paste-orphaned = 無法貼上：複製來源程式已關閉，剪貼簿中的檔案已失效，請重新複製。
 status-paste-modal = 無法貼上：請先關閉目前的對話視窗。
 status-paste-focus = 無法在此貼上檔案：請先點選目標目錄的檔案列表。
