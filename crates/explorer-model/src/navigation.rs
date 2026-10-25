@@ -413,8 +413,14 @@ impl DirectorySnapshot {
         &mut self,
         entries: impl IntoIterator<Item = FileEntry>,
     ) -> Vec<PresentationChange> {
-        let changes = entries
-            .into_iter()
+        let iter = entries.into_iter();
+        let (lower_bound, _) = iter.size_hint();
+        if lower_bound > 0 {
+            Arc::make_mut(&mut self.entries).reserve(lower_bound);
+            Arc::make_mut(&mut self.sort_keys).reserve(lower_bound);
+            Arc::make_mut(&mut self.indices).reserve(lower_bound);
+        }
+        let changes = iter
             .map(|entry| self.upsert_without_revision(entry))
             .collect::<Vec<_>>();
         if changes
@@ -454,11 +460,14 @@ impl DirectorySnapshot {
         let Some(index) = self.indices.get(id).copied() else {
             return PresentationChange::Unchanged;
         };
-        Arc::make_mut(&mut self.indices).remove(id);
         let removed = Arc::make_mut(&mut self.entries).remove(index).id;
         Arc::make_mut(&mut self.sort_keys).remove(index);
+        let indices = Arc::make_mut(&mut self.indices);
+        indices.remove(id);
         for (offset, entry) in self.entries[index..].iter().enumerate() {
-            Arc::make_mut(&mut self.indices).insert(entry.id.clone(), index + offset);
+            if let Some(slot) = indices.get_mut(&entry.id) {
+                *slot = index + offset;
+            }
         }
         self.advance_revision();
         PresentationChange::Removed(removed)

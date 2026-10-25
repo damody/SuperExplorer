@@ -187,6 +187,7 @@ pub struct CodeLinesColumnVisuals {
     pub values: HashMap<ShellItemId, CodeLinesValueV1>,
     pub errors: HashMap<ShellItemId, String>,
     pub admissions: HashMap<ShellItemId, FolderAdmissionStateV1>,
+    cached_maximum: Option<u64>,
     location_key: Option<String>,
     directory_cache: HashMap<String, CodeLinesDirectorySnapshotV1>,
     directory_lru: VecDeque<String>,
@@ -211,6 +212,7 @@ impl CodeLinesColumnVisuals {
         snapshot.values = self.values.clone();
         snapshot.errors = self.errors.clone();
         snapshot.admissions = self.admissions.clone();
+        snapshot.cached_maximum = Some(self.compute_maximum_value());
         snapshot
     }
 
@@ -221,6 +223,7 @@ impl CodeLinesColumnVisuals {
             values: HashMap::new(),
             errors: HashMap::new(),
             admissions: HashMap::new(),
+            cached_maximum: None,
             location_key: None,
             directory_cache: HashMap::new(),
             directory_lru: VecDeque::new(),
@@ -360,18 +363,38 @@ impl CodeLinesColumnVisuals {
             .chain(self.errors.keys())
             .cloned()
             .collect::<Vec<_>>();
-        for item_id in item_ids {
-            self.item_cache.remove(&item_id);
-            self.item_error_cache.remove(&item_id);
-            self.item_lru.retain(|cached| cached != &item_id);
+        for item_id in &item_ids {
+            self.item_cache.remove(item_id);
+            self.item_error_cache.remove(item_id);
         }
+        self.item_lru.retain(|cached| {
+            self.item_cache.contains_key(cached) || self.item_error_cache.contains_key(cached)
+        });
+    }
+
+    fn compact_item_lru(&mut self) {
+        let live_len = self.item_cache.len() + self.item_error_cache.len();
+        if self.item_lru.len() <= live_len {
+            return;
+        }
+        let mut seen = std::collections::HashSet::with_capacity(live_len);
+        let mut compacted = VecDeque::with_capacity(live_len);
+        while let Some(id) = self.item_lru.pop_back() {
+            let is_live =
+                self.item_cache.contains_key(&id) || self.item_error_cache.contains_key(&id);
+            if is_live && seen.insert(id.clone()) {
+                compacted.push_front(id);
+            }
+        }
+        self.item_lru = compacted;
     }
 
     fn touch_item(&mut self, item_id: &ShellItemId) {
-        if self.item_cache.contains_key(item_id) || self.item_error_cache.contains_key(item_id) {
-            self.item_lru.retain(|cached| cached != item_id);
-        } else {
-            while self.item_lru.len() >= 8_192 {
+        let already_cached =
+            self.item_cache.contains_key(item_id) || self.item_error_cache.contains_key(item_id);
+        if !already_cached && (self.item_cache.len() + self.item_error_cache.len()) >= 8_192 {
+            self.compact_item_lru();
+            while (self.item_cache.len() + self.item_error_cache.len()) >= 8_192 {
                 if let Some(oldest) = self.item_lru.pop_front() {
                     self.item_cache.remove(&oldest);
                     self.item_error_cache.remove(&oldest);
@@ -381,6 +404,9 @@ impl CodeLinesColumnVisuals {
             }
         }
         self.item_lru.push_back(item_id.clone());
+        if self.item_lru.len() >= 8_192 * 2 {
+            self.compact_item_lru();
+        }
     }
 
     fn remember_directory(&mut self, key: String, snapshot: CodeLinesDirectorySnapshotV1) {
@@ -429,12 +455,17 @@ impl CodeLinesColumnVisuals {
             .collect()
     }
 
-    pub fn maximum_value(&self) -> u64 {
+    fn compute_maximum_value(&self) -> u64 {
         self.values
             .values()
             .map(|value| value.code)
             .max()
             .unwrap_or(0)
+    }
+
+    pub fn maximum_value(&self) -> u64 {
+        self.cached_maximum
+            .unwrap_or_else(|| self.compute_maximum_value())
     }
 }
 

@@ -1268,7 +1268,11 @@ fn column_row(
         .role(Role::ListItem)
         .aria_label(format!("{} {name}", catalog.t("a11y-column-row")))
         .aria_selected(selected)
-        .opacity(crate::file_view::item_opacity(&row.name, &row.metadata, false))
+        .opacity(crate::file_view::item_opacity(
+            &row.name,
+            &row.metadata,
+            false,
+        ))
         .h(px(COLUMN_ROW_HEIGHT))
         .min_h(px(COLUMN_ROW_HEIGHT))
         .max_h(px(COLUMN_ROW_HEIGHT))
@@ -1549,19 +1553,43 @@ fn column_row_icon(
     if let Some(texture) = icons.get(&key) {
         return Some(Arc::clone(texture));
     }
-    if let Some(texture) = icons.iter().find_map(|(candidate, texture)| {
-        (candidate.item_id.as_ref() == Some(&row.id)).then(|| Arc::clone(texture))
-    }) {
-        return Some(texture);
+    for candidate_logical in [16_u16, 20, 24, 32, 48] {
+        if candidate_logical == icon_logical {
+            continue;
+        }
+        let candidate_key = crate::navigation_pane::file_icon_key_for_size(
+            &entry,
+            theme,
+            icon_dpi,
+            candidate_logical,
+        );
+        if let Some(texture) = icons.get(&candidate_key) {
+            return Some(Arc::clone(texture));
+        }
     }
-    row.is_container
-        .then(|| {
-            icons.iter().find_map(|(candidate, texture)| {
+    if row.is_container {
+        let generic_key =
+            crate::navigation_pane::generic_breadcrumb_folder_icon_key(theme, icon_dpi, 1);
+        if let Some(texture) = icons.get(&generic_key) {
+            return Some(Arc::clone(texture));
+        }
+    }
+    if icons.len() <= 64 {
+        if let Some(texture) = icons.iter().find_map(|(candidate, texture)| {
+            (candidate.item_id.as_ref() == Some(&row.id)).then(|| Arc::clone(texture))
+        }) {
+            return Some(texture);
+        }
+        if row.is_container
+            && let Some(texture) = icons.iter().find_map(|(candidate, texture)| {
                 crate::navigation_pane::is_generic_breadcrumb_folder_icon_key(candidate)
                     .then(|| Arc::clone(texture))
             })
-        })
-        .flatten()
+        {
+            return Some(texture);
+        }
+    }
+    None
 }
 
 fn column_row_icon_element(
@@ -1888,6 +1916,9 @@ fn column_preview(
                 .bottom_0()
                 .w(px(tokens.layout.divider_width.value().max(6.0)))
                 .cursor_col_resize()
+                .bg(colors.divider.to_gpui())
+                .hover(move |style| style.bg(colors.accent.to_gpui()))
+                .active(move |style| style.bg(colors.accent.to_gpui()))
                 .when_some(on_action.clone(), |divider, callback| {
                     divider.on_mouse_down(MouseButton::Left, move |event, window, cx| {
                         cx.stop_propagation();
@@ -2028,6 +2059,8 @@ fn native_preview_content(
     catalog: Catalog,
 ) -> impl IntoElement {
     use crate::preview_content::PreviewContent;
+    use explorer_i18n::AppLocale;
+    let locale = catalog.locale();
     let mut body = div()
         .flex()
         .flex_col()
@@ -2041,11 +2074,20 @@ fn native_preview_content(
             encoding,
         }) => {
             let count = text.chars().count();
+            let summary = match locale {
+                AppLocale::ZhTw | AppLocale::ZhCn => format!("{encoding} · {count} 字"),
+                _ => format!("{encoding} · {count} chars"),
+            };
+            let empty_text = match locale {
+                AppLocale::ZhTw => "（空白檔案）",
+                AppLocale::ZhCn => "（空白文件）",
+                _ => "(Empty file)",
+            };
             body = body
                 .child(
                     div()
                         .text_color(colors.text_secondary.to_gpui())
-                        .child(format!("{encoding} · {count} 字")),
+                        .child(summary),
                 )
                 .child(
                     div()
@@ -2053,17 +2095,22 @@ fn native_preview_content(
                         .debug_selector(|| "column-preview-plain-text".to_owned())
                         .text_color(colors.text_primary.to_gpui())
                         .child(if text.is_empty() {
-                            "（空白檔案）".to_owned()
+                            empty_text.to_owned()
                         } else {
                             text
                         }),
                 );
             if truncated {
+                let truncated_notice = match locale {
+                    AppLocale::ZhTw => "僅顯示前 3000 字",
+                    AppLocale::ZhCn => "仅显示前 3000 字",
+                    _ => "Showing first 3000 characters",
+                };
                 body = body.child(
                     div()
                         .id("column-preview-text-limit")
                         .text_color(colors.text_secondary.to_gpui())
-                        .child("僅顯示前 3000 字"),
+                        .child(truncated_notice),
                 );
             }
         }
@@ -2076,18 +2123,45 @@ fn native_preview_content(
             exif,
             metadata_note,
         }) => {
+            let unknown_label = match locale {
+                AppLocale::ZhTw | AppLocale::ZhCn => "未知",
+                _ => "Unknown",
+            };
             let size = size.map_or_else(
-                || "未知".to_owned(),
+                || unknown_label.to_owned(),
                 |size| format!("{size} bytes ({:.2} MiB)", size as f64 / 1_048_576.0),
             );
+            let (dim_label, size_label, depth_label, format_label, sep) = match locale {
+                AppLocale::ZhTw => (
+                    format!("尺寸：{width} × {height} px"),
+                    format!("檔案大小：{size}"),
+                    format!("色彩深度：{bits_per_pixel} bits/pixel"),
+                    format!("色彩格式：{color}"),
+                    "：",
+                ),
+                AppLocale::ZhCn => (
+                    format!("尺寸：{width} × {height} px"),
+                    format!("文件大小：{size}"),
+                    format!("色彩深度：{bits_per_pixel} bits/pixel"),
+                    format!("色彩格式：{color}"),
+                    "：",
+                ),
+                _ => (
+                    format!("Dimensions: {width} × {height} px"),
+                    format!("File size: {size}"),
+                    format!("Color depth: {bits_per_pixel} bits/pixel"),
+                    format!("Color format: {color}"),
+                    ": ",
+                ),
+            };
             body = body
-                .child(div().child(format!("尺寸：{width} × {height} px")))
-                .child(div().child(format!("檔案大小：{size}")))
-                .child(div().child(format!("色彩深度：{bits_per_pixel} bits/pixel")))
-                .child(div().child(format!("色彩格式：{color}")))
+                .child(div().child(dim_label))
+                .child(div().child(size_label))
+                .child(div().child(depth_label))
+                .child(div().child(format_label))
                 .child(div().child("EXIF"));
             for (tag, value) in exif {
-                body = body.child(div().child(format!("{tag}：{value}")));
+                body = body.child(div().child(format!("{tag}{sep}{value}")));
             }
             if let Some(note) = metadata_note {
                 body = body.child(
@@ -2104,15 +2178,19 @@ fn native_preview_content(
             body = body.child(div().child(catalog.t("status-preview-loading")));
         }
     }
+    let aria_label = match (image, locale) {
+        (true, AppLocale::ZhTw) => "圖片資訊與 EXIF",
+        (true, AppLocale::ZhCn) => "图片信息与 EXIF",
+        (true, _) => "Image information and EXIF",
+        (false, AppLocale::ZhTw) => "純文字預覽",
+        (false, AppLocale::ZhCn) => "纯文本预览",
+        (false, _) => "Plain text preview",
+    };
     div()
         .id("column-preview-native-content")
         .debug_selector(|| "column-preview-native-content".to_owned())
         .role(Role::Group)
-        .aria_label(if image {
-            "圖片資訊與 EXIF"
-        } else {
-            "純文字預覽"
-        })
+        .aria_label(aria_label)
         .w_full()
         .min_h(px(0.0))
         .overflow_y_scroll()

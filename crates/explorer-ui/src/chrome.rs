@@ -766,6 +766,8 @@ pub(crate) fn explorer_file_viewport_height_for_window(
 
 /// Top-level presentation component. It receives copied view state and tokens
 /// and deliberately has no access to Shell or filesystem services.
+type SharedShellIcons = Arc<HashMap<explorer_model::ShellIconKey, Arc<RenderImage>>>;
+
 #[derive(IntoElement)]
 pub struct ExplorerWindow {
     tokens: UiTokens,
@@ -779,7 +781,7 @@ pub struct ExplorerWindow {
     rename_input: Option<gpui::WeakEntity<EditableTextState>>,
     breadcrumb_menu_focus: Option<gpui::FocusHandle>,
     command_menu_focus: Option<gpui::FocusHandle>,
-    shell_icons: HashMap<explorer_model::ShellIconKey, Arc<RenderImage>>,
+    shell_icons: SharedShellIcons,
     thumbnail_icon_keys: HashSet<explorer_model::ShellIconKey>,
     shell_icon_dpi: u16,
     file_presentation: Option<crate::file_view::DirectoryPresentation>,
@@ -812,7 +814,7 @@ impl ExplorerWindow {
             rename_input: None,
             breadcrumb_menu_focus: None,
             command_menu_focus: None,
-            shell_icons: HashMap::new(),
+            shell_icons: Arc::new(HashMap::new()),
             thumbnail_icon_keys: HashSet::new(),
             shell_icon_dpi: 96,
             file_presentation: None,
@@ -888,7 +890,7 @@ impl ExplorerWindow {
         thumbnail_icon_keys: HashSet<explorer_model::ShellIconKey>,
         shell_icon_dpi: u16,
     ) -> Self {
-        self.shell_icons = shell_icons;
+        self.shell_icons = Arc::new(shell_icons);
         self.thumbnail_icon_keys = thumbnail_icon_keys;
         self.shell_icon_dpi = shell_icon_dpi;
         self
@@ -989,10 +991,10 @@ impl ExplorerWindow {
 impl RenderOnce for ExplorerWindow {
     fn render(self, window: &mut Window, _cx: &mut App) -> impl IntoElement {
         let window_active = window.is_window_active();
-        let file_icons = self.shell_icons.clone();
+        let file_icons = Arc::clone(&self.shell_icons);
         let thumbnail_icon_keys = self.thumbnail_icon_keys;
-        let navigation_icons = self.shell_icons.clone();
-        let tab_icons = self.shell_icons.clone();
+        let navigation_icons = Arc::clone(&self.shell_icons);
+        let tab_icons = Arc::clone(&self.shell_icons);
         let view_settings = self.state.view_settings();
         let column_registry = self.state.column_registry().clone();
         let size_map_menu_view = self
@@ -1128,7 +1130,7 @@ impl RenderOnce for ExplorerWindow {
                 CommandBar::new(self.tokens, self.state.clone(), self.on_action.clone())
                     .with_menu_focus(self.command_menu_focus)
                     .with_extension_view(size_map_menu_view)
-                    .with_shell_icons(self.shell_icons.clone(), self.shell_icon_dpi),
+                    .with_shell_icons(Arc::clone(&self.shell_icons), self.shell_icon_dpi),
             )
             .child(
                 div()
@@ -1145,7 +1147,7 @@ impl RenderOnce for ExplorerWindow {
                                 self.tokens,
                                 self.state.clone(),
                                 self.navigation_scroll.clone(),
-                                self.shell_icons.clone(),
+                                Arc::clone(&self.shell_icons),
                                 self.shell_icon_dpi,
                                 self.on_action.clone(),
                             ))
@@ -1179,7 +1181,7 @@ impl RenderOnce for ExplorerWindow {
                                         model,
                                         self.state.catalog(),
                                         f32::from(window.viewport_size().height),
-                                        self.shell_icons.clone(),
+                                        (*self.shell_icons).clone(),
                                         self.shell_icon_dpi,
                                         explorer_model::effective_icon_size(
                                             &self.state.view_settings(),
@@ -1234,15 +1236,13 @@ impl RenderOnce for ExplorerWindow {
                                         self.state.details_column_menu_anchor(),
                                         self.state.details_filter_menu(),
                                         self.state.active_details_filters(),
-                                        explorer_model::ColumnId::BUILT_INS
-                                            .into_iter()
-                                            .map(|column| {
-                                                (
-                                                    column.clone(),
-                                                    self.state.details_filter_options(column),
-                                                )
-                                            })
-                                            .collect(),
+                                        if let Some(column) = self.state.details_filter_menu() {
+                                            let options =
+                                                self.state.details_filter_options(column.clone());
+                                            HashMap::from([(column, options)])
+                                        } else {
+                                            HashMap::new()
+                                        },
                                         self.folder_size_visuals,
                                         self.visual_column_runtime,
                                         self.code_lines_visuals,
@@ -8512,7 +8512,7 @@ pub struct CommandBar {
     on_action: Option<ActionCallback>,
     menu_focus: Option<gpui::FocusHandle>,
     extension_view: Option<crate::size_map_view::SizeMapViewConfigV1>,
-    shell_icons: HashMap<explorer_model::ShellIconKey, Arc<RenderImage>>,
+    shell_icons: SharedShellIcons,
     shell_icon_dpi: u16,
 }
 
@@ -8528,17 +8528,13 @@ impl CommandBar {
             on_action,
             menu_focus: None,
             extension_view: None,
-            shell_icons: HashMap::new(),
+            shell_icons: Arc::new(HashMap::new()),
             shell_icon_dpi: 96,
         }
     }
 
     #[must_use]
-    pub fn with_shell_icons(
-        mut self,
-        shell_icons: HashMap<explorer_model::ShellIconKey, Arc<RenderImage>>,
-        shell_icon_dpi: u16,
-    ) -> Self {
+    pub fn with_shell_icons(mut self, shell_icons: SharedShellIcons, shell_icon_dpi: u16) -> Self {
         self.shell_icons = shell_icons;
         self.shell_icon_dpi = shell_icon_dpi;
         self
@@ -8975,11 +8971,7 @@ fn app_menu_panel(
             AppMenuSlot::Recent { label, location } => {
                 let index = focus_index;
                 focus_index = focus_index.saturating_add(1);
-                let icon = if location.path().is_some_and(|path| path.is_file()) {
-                    "📄"
-                } else {
-                    "📁"
-                };
+                let icon = "📁";
                 rows.push(
                     app_menu_icon_row(
                         format!("app-menu-recent-{index}"),
@@ -10924,7 +10916,7 @@ pub struct NavigationBar {
     address_input: Option<gpui::WeakEntity<EditableTextState>>,
     search_input: Option<gpui::WeakEntity<EditableTextState>>,
     breadcrumb_menu_focus: Option<gpui::FocusHandle>,
-    shell_icons: HashMap<explorer_model::ShellIconKey, Arc<RenderImage>>,
+    shell_icons: SharedShellIcons,
     shell_icon_dpi: u16,
 }
 
@@ -10935,7 +10927,7 @@ impl NavigationBar {
         address_input: Option<gpui::WeakEntity<EditableTextState>>,
         search_input: Option<gpui::WeakEntity<EditableTextState>>,
         breadcrumb_menu_focus: Option<gpui::FocusHandle>,
-        shell_icons: HashMap<explorer_model::ShellIconKey, Arc<RenderImage>>,
+        shell_icons: SharedShellIcons,
         shell_icon_dpi: u16,
         on_action: Option<ActionCallback>,
     ) -> Self {
@@ -11069,7 +11061,7 @@ pub struct BreadcrumbAddressEditor {
     on_action: Option<ActionCallback>,
     input: Option<gpui::WeakEntity<EditableTextState>>,
     menu_focus: Option<gpui::FocusHandle>,
-    shell_icons: HashMap<explorer_model::ShellIconKey, Arc<RenderImage>>,
+    shell_icons: SharedShellIcons,
     shell_icon_dpi: u16,
 }
 
@@ -11079,7 +11071,7 @@ impl BreadcrumbAddressEditor {
         state: NavigationAddressViewModel,
         input: Option<gpui::WeakEntity<EditableTextState>>,
         menu_focus: Option<gpui::FocusHandle>,
-        shell_icons: HashMap<explorer_model::ShellIconKey, Arc<RenderImage>>,
+        shell_icons: SharedShellIcons,
         shell_icon_dpi: u16,
         on_action: Option<ActionCallback>,
     ) -> Self {
@@ -11173,7 +11165,7 @@ fn breadcrumb_browse_field(
     address: explorer_model::AddressBarState,
     window_width: f32,
     menu_focus: Option<gpui::FocusHandle>,
-    shell_icons: HashMap<explorer_model::ShellIconKey, Arc<RenderImage>>,
+    shell_icons: SharedShellIcons,
     shell_icon_dpi: u16,
     on_action: Option<ActionCallback>,
 ) -> impl IntoElement {
@@ -11486,7 +11478,7 @@ fn breadcrumb_overflow(
     catalog: Catalog,
     hidden: Vec<explorer_model::BreadcrumbSegment>,
     open: bool,
-    shell_icons: HashMap<explorer_model::ShellIconKey, Arc<RenderImage>>,
+    shell_icons: SharedShellIcons,
     generic_shell_icon: Option<Arc<RenderImage>>,
     shell_icon_theme: explorer_model::ShellIconTheme,
     shell_icon_dpi: u16,
@@ -11642,7 +11634,7 @@ fn breadcrumb_child_menu(
     loading: bool,
     keyboard_menu_index: Option<usize>,
     menu_focus: Option<gpui::FocusHandle>,
-    shell_icons: HashMap<explorer_model::ShellIconKey, Arc<RenderImage>>,
+    shell_icons: SharedShellIcons,
     generic_shell_icon: Option<Arc<RenderImage>>,
     shell_icon_theme: explorer_model::ShellIconTheme,
     shell_icon_dpi: u16,
@@ -11854,7 +11846,7 @@ fn breadcrumb_child_overlay(
     loading: bool,
     keyboard_menu_index: Option<usize>,
     menu_focus: Option<gpui::FocusHandle>,
-    shell_icons: HashMap<explorer_model::ShellIconKey, Arc<RenderImage>>,
+    shell_icons: SharedShellIcons,
     generic_shell_icon: Option<Arc<RenderImage>>,
     shell_icon_theme: explorer_model::ShellIconTheme,
     shell_icon_dpi: u16,
@@ -11912,7 +11904,7 @@ fn breadcrumb_root(
     menu_loading: bool,
     keyboard_menu_index: Option<usize>,
     menu_focus: Option<gpui::FocusHandle>,
-    shell_icons: HashMap<explorer_model::ShellIconKey, Arc<RenderImage>>,
+    shell_icons: SharedShellIcons,
     shell_icon_theme: explorer_model::ShellIconTheme,
     shell_icon_dpi: u16,
     on_action: Option<ActionCallback>,
@@ -12241,7 +12233,7 @@ pub struct NavigationPane {
     state: NavigationPaneViewModel,
     on_action: Option<ActionCallback>,
     scroll_handle: Option<gpui::ScrollHandle>,
-    shell_icons: HashMap<explorer_model::ShellIconKey, Arc<RenderImage>>,
+    shell_icons: SharedShellIcons,
     shell_icon_dpi: u16,
 }
 
@@ -12368,7 +12360,7 @@ impl NavigationPane {
         tokens: UiTokens,
         state: NavigationPaneViewModel,
         scroll_handle: Option<gpui::ScrollHandle>,
-        shell_icons: HashMap<explorer_model::ShellIconKey, Arc<RenderImage>>,
+        shell_icons: SharedShellIcons,
         shell_icon_dpi: u16,
         on_action: Option<ActionCallback>,
     ) -> Self {
@@ -13296,7 +13288,7 @@ pub struct FileViewHost {
     column_registry: explorer_model::ColumnRegistry,
     viewport_width: f32,
     scroll_handle: Option<gpui::ScrollHandle>,
-    shell_icons: HashMap<explorer_model::ShellIconKey, Arc<RenderImage>>,
+    shell_icons: SharedShellIcons,
     thumbnail_icon_keys: HashSet<explorer_model::ShellIconKey>,
     shell_icon_dpi: u16,
     details_column_menu: Option<explorer_model::ColumnId>,
@@ -13345,7 +13337,7 @@ impl FileViewHost {
         column_registry: explorer_model::ColumnRegistry,
         viewport_width: f32,
         scroll_handle: Option<gpui::ScrollHandle>,
-        shell_icons: HashMap<explorer_model::ShellIconKey, Arc<RenderImage>>,
+        shell_icons: SharedShellIcons,
         thumbnail_icon_keys: HashSet<explorer_model::ShellIconKey>,
         shell_icon_dpi: u16,
         details_column_menu: Option<explorer_model::ColumnId>,
@@ -13800,7 +13792,7 @@ impl RenderOnce for FileViewHost {
         let details_name_width =
             view_settings.details_column_width(&explorer_model::ColumnId::Name);
         let drive_view = presentation.as_ref().is_some_and(|presentation| {
-            (0..presentation.len()).any(|index| {
+            (0..presentation.len().min(32)).any(|index| {
                 presentation
                     .entry(index)
                     .is_some_and(|(_, entry)| entry.metadata.drive.is_some())
@@ -14287,39 +14279,30 @@ impl RenderOnce for FileViewHost {
                     selection.contains(&entry.id) && selection.len() > 1;
                 let context_item_id = entry.id.clone();
                 let kind = if entry.is_container { "Folder" } else { "File" };
-                let modified = entry.metadata.modified_display.clone().unwrap_or_default();
-                let type_display = crate::formatting::localized_entry_type(&entry, catalog);
-                let size_bytes = crate::folder_size_column::builtin_size_bytes(
-                    entry.is_container,
-                    entry.metadata.size_bytes,
-                    folder_size_visuals
-                        .as_ref()
-                        .and_then(|visuals| visuals.value_for(&entry.id)),
-                );
-                let size_display = size_bytes
+                let content_mode =
+                    view_settings.mode == explorer_model::ViewMode::Content && !drive_view;
+                let modified = if content_mode {
+                    entry.metadata.modified_display.clone().unwrap_or_default()
+                } else {
+                    String::new()
+                };
+                let size_display = if content_mode && !entry.is_container {
+                    crate::folder_size_column::builtin_size_bytes(
+                        entry.is_container,
+                        entry.metadata.size_bytes,
+                        folder_size_visuals
+                            .as_ref()
+                            .and_then(|visuals| visuals.value_for(&entry.id)),
+                    )
                     .map(|bytes| format_explorer_size(bytes, catalog))
-                    .unwrap_or_default();
-                let created = entry.metadata.created_display.clone().unwrap_or_default();
-                let authors = entry.metadata.authors_display.clone().unwrap_or_default();
-                let tags = entry.metadata.tags_display.clone().unwrap_or_default();
-                let title = entry.metadata.title_display.clone().unwrap_or_default();
-                let permissions = explorer_model::format_unix_mode(entry.metadata.unix_mode);
+                    .unwrap_or_default()
+                } else {
+                    String::new()
+                };
                 // File Count and Folder Count are directory facts. Some shell
                 // providers report a synthetic size for directories, which is
                 // relevant to Folder Size but must not suppress count requests.
                 let count_eligible = entry.is_container;
-                let file_count = builtin_count_display(
-                    count_eligible,
-                    folder_size_visuals
-                        .as_ref()
-                        .and_then(|visuals| visuals.file_count_for(&entry.id)),
-                );
-                let folder_count = builtin_count_display(
-                    count_eligible,
-                    folder_size_visuals
-                        .as_ref()
-                        .and_then(|visuals| visuals.folder_count_for(&entry.id)),
-                );
                 let mut ordered_detail_cells = Vec::new();
                 if view_settings.mode == explorer_model::ViewMode::Details && !drive_view {
                     let mut deletion_status_shown = false;
@@ -14354,16 +14337,50 @@ impl RenderOnce for FileViewHost {
                             continue;
                         }
                         let builtin_text = match &column_id {
-                            explorer_model::ColumnId::DateModified => Some(modified.clone()),
-                            explorer_model::ColumnId::Type => Some(type_display.clone()),
-                            explorer_model::ColumnId::Size => Some(size_display.clone()),
-                            explorer_model::ColumnId::DateCreated => Some(created.clone()),
-                            explorer_model::ColumnId::Authors => Some(authors.clone()),
-                            explorer_model::ColumnId::Tags => Some(tags.clone()),
-                            explorer_model::ColumnId::Title => Some(title.clone()),
-                            explorer_model::ColumnId::FileCount => Some(file_count.clone()),
-                            explorer_model::ColumnId::FolderCount => Some(folder_count.clone()),
-                            explorer_model::ColumnId::Permissions => Some(permissions.clone()),
+                            explorer_model::ColumnId::DateModified => {
+                                Some(entry.metadata.modified_display.clone().unwrap_or_default())
+                            }
+                            explorer_model::ColumnId::Type => {
+                                Some(crate::formatting::localized_entry_type(&entry, catalog))
+                            }
+                            explorer_model::ColumnId::Size => Some(
+                                crate::folder_size_column::builtin_size_bytes(
+                                    entry.is_container,
+                                    entry.metadata.size_bytes,
+                                    folder_size_visuals
+                                        .as_ref()
+                                        .and_then(|visuals| visuals.value_for(&entry.id)),
+                                )
+                                .map(|bytes| format_explorer_size(bytes, catalog))
+                                .unwrap_or_default(),
+                            ),
+                            explorer_model::ColumnId::DateCreated => {
+                                Some(entry.metadata.created_display.clone().unwrap_or_default())
+                            }
+                            explorer_model::ColumnId::Authors => {
+                                Some(entry.metadata.authors_display.clone().unwrap_or_default())
+                            }
+                            explorer_model::ColumnId::Tags => {
+                                Some(entry.metadata.tags_display.clone().unwrap_or_default())
+                            }
+                            explorer_model::ColumnId::Title => {
+                                Some(entry.metadata.title_display.clone().unwrap_or_default())
+                            }
+                            explorer_model::ColumnId::FileCount => Some(builtin_count_display(
+                                count_eligible,
+                                folder_size_visuals
+                                    .as_ref()
+                                    .and_then(|visuals| visuals.file_count_for(&entry.id)),
+                            )),
+                            explorer_model::ColumnId::FolderCount => Some(builtin_count_display(
+                                count_eligible,
+                                folder_size_visuals
+                                    .as_ref()
+                                    .and_then(|visuals| visuals.folder_count_for(&entry.id)),
+                            )),
+                            explorer_model::ColumnId::Permissions => {
+                                Some(explorer_model::format_unix_mode(entry.metadata.unix_mode))
+                            }
                             _ => None,
                         };
                         if let Some(text) = builtin_text {
@@ -14428,6 +14445,7 @@ impl RenderOnce for FileViewHost {
                                         visible_index,
                                         layout,
                                         colors,
+                                        catalog,
                                     ));
                                 }
                                 (Some(visuals), None) => {
@@ -14476,10 +14494,19 @@ impl RenderOnce for FileViewHost {
                     }
                 }
                 let drive = entry.metadata.drive.clone();
-                let this_pc_type_display = if drive_view && drive.is_none() && entry.is_container {
-                    catalog.t("chrome-system-folder")
+                let this_pc_type_display = if drive_view && details_mode {
+                    if drive.is_none() && entry.is_container {
+                        catalog.t("chrome-system-folder")
+                    } else {
+                        crate::formatting::localized_entry_type(&entry, catalog)
+                    }
                 } else {
-                    type_display.clone()
+                    String::new()
+                };
+                let content_type_display = if content_mode && !entry.is_container {
+                    crate::formatting::localized_entry_type(&entry, catalog)
+                } else {
+                    String::new()
                 };
                 let drive_capacity_text = drive
                     .as_ref()
@@ -15246,7 +15273,7 @@ impl RenderOnce for FileViewHost {
                                                 .text_color(colors.text_secondary.to_gpui())
                                                 .child({
                                                     let mut args = FluentArgs::new();
-                                                    args.set("value", type_display.clone());
+                                                    args.set("value", content_type_display.clone());
                                                     catalog.t_args("chrome-type-label", &args)
                                                 }),
                                         )
@@ -15359,7 +15386,8 @@ impl RenderOnce for FileViewHost {
             .when_some(marquee, |element, marquee| {
                 let rect = marquee_content_rect(
                     marquee.origin_x,
-                    marquee.origin_y,
+                    marquee.origin_y + marquee.origin_scroll_y.unwrap_or(scroll_offset)
+                        - scroll_offset,
                     marquee.current_x,
                     marquee.current_y,
                     horizontal_scroll_offset,
@@ -16074,7 +16102,7 @@ fn explorer_vertical_scrollbar(
             let offset = click_handle.offset();
             click_handle.set_offset(point(offset.x, px(-target)));
             cx.stop_propagation();
-            cx.refresh_windows();
+            window.refresh();
         })
         .when(folder_menu, |element| {
             element.when_some(menu_callback, |element, callback| {
@@ -16220,7 +16248,7 @@ fn explorer_horizontal_scrollbar(
                 let offset = click_handle.offset();
                 click_handle.set_offset(point(px(-target), offset.y));
                 cx.stop_propagation();
-                cx.refresh_windows();
+                window.refresh();
             })
         })
         .child(
@@ -16398,6 +16426,7 @@ fn folder_size_detail_cell(
     visible_index: usize,
     layout: crate::layout::LayoutTokens,
     colors: crate::theme::SemanticColors,
+    catalog: Catalog,
 ) -> gpui::AnyElement {
     let descriptor = &visuals.config.descriptor;
     let exact_bytes = visuals.value_for(entry_id);
@@ -16409,7 +16438,11 @@ fn folder_size_detail_cell(
         || partial_bytes.is_some()
         || measurement_error.is_some()
     {
-        let label = "Unavailable";
+        let label = match catalog.locale() {
+            explorer_i18n::AppLocale::En => "Unavailable",
+            explorer_i18n::AppLocale::ZhCn => "不可用",
+            _ => "無法使用",
+        };
         let width = f32::from(view_settings.details_column_width(&descriptor.id));
         return div()
             .id(format!("folder-size-column-{visible_index}"))
@@ -16955,7 +16988,12 @@ fn details_column_menu(
             element.child(column_menu_row(
                 tokens,
                 "details-column-menu-auto-size-current".to_owned(),
-                "Auto size this column".to_owned(),
+                match catalog.locale() {
+                    explorer_i18n::AppLocale::En => "Auto size this column",
+                    explorer_i18n::AppLocale::ZhCn => "自动调整此列宽度",
+                    _ => "自動調整此欄寬度",
+                }
+                .to_owned(),
                 false,
                 true,
                 ExplorerAction::AutoSizeDetailsColumn {
@@ -16968,7 +17006,12 @@ fn details_column_menu(
             element.child(column_menu_row(
                 tokens,
                 "details-column-menu-auto-size-all".to_owned(),
-                "Auto size all columns".to_owned(),
+                match catalog.locale() {
+                    explorer_i18n::AppLocale::En => "Auto size all columns",
+                    explorer_i18n::AppLocale::ZhCn => "自动调整所有列宽度",
+                    _ => "自動調整所有欄寬度",
+                }
+                .to_owned(),
                 false,
                 true,
                 ExplorerAction::AutoSizeAllDetailsColumns,
@@ -16982,7 +17025,12 @@ fn details_column_menu(
                     element.child(column_menu_row(
                         tokens,
                         "details-column-menu-folder-size-bar".to_owned(),
-                        "Show proportional bar".to_owned(),
+                        match catalog.locale() {
+                            explorer_i18n::AppLocale::En => "Show proportional bar",
+                            explorer_i18n::AppLocale::ZhCn => "显示比例条",
+                            _ => "顯示比例列",
+                        }
+                        .to_owned(),
                         visuals.config.folder_size_display.shows_bar(),
                         true,
                         ExplorerAction::ToggleFolderSizeProportionalBar,
@@ -16998,7 +17046,12 @@ fn details_column_menu(
                     element.child(column_menu_row(
                         tokens,
                         "details-column-menu-code-lines-detail".to_owned(),
-                        "Show comment and blank detail".to_owned(),
+                        match catalog.locale() {
+                            explorer_i18n::AppLocale::En => "Show comment and blank detail",
+                            explorer_i18n::AppLocale::ZhCn => "显示注释与空行明细",
+                            _ => "顯示註解與空白行明細",
+                        }
+                        .to_owned(),
                         visuals.config.display.shows_detail(),
                         true,
                         ExplorerAction::ToggleCodeLinesDetail,
@@ -17353,6 +17406,9 @@ fn details_header_column(
                 .h_full()
                 .flex_1()
                 .min_w_0()
+                .overflow_hidden()
+                .whitespace_nowrap()
+                .text_ellipsis()
                 .flex()
                 .items_center()
                 .px(px(tokens.layout.content_spacing.value() / 2.0))
@@ -17428,7 +17484,14 @@ fn details_header_column(
                         cx.stop_propagation();
                     })
                 })
-                .child(format!("{label}{indicator}")),
+                .child(
+                    div()
+                        .min_w_0()
+                        .overflow_hidden()
+                        .whitespace_nowrap()
+                        .text_ellipsis()
+                        .child(format!("{label}{indicator}")),
+                ),
         )
         .child(
             div()
@@ -19270,7 +19333,7 @@ pub struct WindowChrome {
     tokens: UiTokens,
     state: WindowChromeViewModel,
     window_active: bool,
-    shell_icons: HashMap<explorer_model::ShellIconKey, Arc<RenderImage>>,
+    shell_icons: SharedShellIcons,
     shell_icon_dpi: u16,
     tab_scroll: Option<gpui::ScrollHandle>,
     on_action: Option<ActionCallback>,
@@ -19287,7 +19350,7 @@ impl WindowChrome {
             tokens,
             state,
             window_active,
-            shell_icons: HashMap::new(),
+            shell_icons: Arc::new(HashMap::new()),
             shell_icon_dpi: 96,
             tab_scroll: None,
             on_action,
@@ -19301,11 +19364,7 @@ impl WindowChrome {
     }
 
     #[must_use]
-    pub fn with_shell_icons(
-        mut self,
-        shell_icons: HashMap<explorer_model::ShellIconKey, Arc<RenderImage>>,
-        shell_icon_dpi: u16,
-    ) -> Self {
+    pub fn with_shell_icons(mut self, shell_icons: SharedShellIcons, shell_icon_dpi: u16) -> Self {
         self.shell_icons = shell_icons;
         self.shell_icon_dpi = shell_icon_dpi;
         self
@@ -19621,7 +19680,7 @@ fn tab_strip_scrollbar(
                 let offset = click_handle.offset();
                 click_handle.set_offset(point(px(-target), offset.y));
                 cx.stop_propagation();
-                cx.refresh_windows();
+                window.refresh();
             })
         })
         .child(

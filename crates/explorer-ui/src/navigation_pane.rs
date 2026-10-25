@@ -2,7 +2,11 @@
 
 use std::{
     path::PathBuf,
-    sync::{OnceLock, RwLock},
+    sync::{
+        Mutex, OnceLock, RwLock,
+        atomic::{AtomicBool, Ordering},
+    },
+    time::{Duration, Instant},
 };
 
 use explorer_i18n::{Catalog, FluentArgs};
@@ -525,6 +529,73 @@ fn drive_root_display_letter(display_name: &str) -> Option<char> {
         .then(|| char::from(suffix[1]).to_ascii_uppercase())
 }
 
+struct NavigationFilesystemSnapshot {
+    updated_at: Instant,
+    onedrive: Option<PathBuf>,
+    drives: Vec<u8>,
+}
+
+static NAVIGATION_FILESYSTEM_CACHE: OnceLock<Mutex<Option<NavigationFilesystemSnapshot>>> =
+    OnceLock::new();
+static NAVIGATION_FILESYSTEM_REFRESHING: AtomicBool = AtomicBool::new(false);
+
+const NAVIGATION_FILESYSTEM_TTL: Duration = Duration::from_secs(2);
+
+fn probe_navigation_filesystem() -> NavigationFilesystemSnapshot {
+    let onedrive = std::env::var_os("OneDrive")
+        .map(PathBuf::from)
+        .filter(|path| path.is_dir());
+    let mut drives = Vec::with_capacity(24);
+    for letter in b'C'..=b'Z' {
+        let root = PathBuf::from(format!("{}:\\", char::from(letter)));
+        if root.is_dir() {
+            drives.push(letter);
+        }
+    }
+    NavigationFilesystemSnapshot {
+        updated_at: Instant::now(),
+        onedrive,
+        drives,
+    }
+}
+
+fn cached_navigation_filesystem() -> (Option<PathBuf>, Vec<u8>) {
+    let cache = NAVIGATION_FILESYSTEM_CACHE.get_or_init(|| Mutex::new(None));
+    {
+        let guard = cache
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(snapshot) = guard.as_ref() {
+            if snapshot.updated_at.elapsed() >= NAVIGATION_FILESYSTEM_TTL
+                && !NAVIGATION_FILESYSTEM_REFRESHING.swap(true, Ordering::AcqRel)
+            {
+                if std::thread::Builder::new()
+                    .name("nav-fs-probe".into())
+                    .spawn(|| {
+                        let fresh = probe_navigation_filesystem();
+                        if let Some(cache) = NAVIGATION_FILESYSTEM_CACHE.get() {
+                            *cache
+                                .lock()
+                                .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(fresh);
+                        }
+                        NAVIGATION_FILESYSTEM_REFRESHING.store(false, Ordering::Release);
+                    })
+                    .is_err()
+                {
+                    NAVIGATION_FILESYSTEM_REFRESHING.store(false, Ordering::Release);
+                }
+            }
+            return (snapshot.onedrive.clone(), snapshot.drives.clone());
+        }
+    }
+    let initial = probe_navigation_filesystem();
+    let result = (initial.onedrive.clone(), initial.drives.clone());
+    *cache
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(initial);
+    result
+}
+
 pub fn windows_navigation_items(catalog: Catalog) -> Vec<NavigationItem> {
     windows_navigation_items_with_pins(catalog, std::iter::empty())
 }
@@ -536,6 +607,7 @@ pub fn windows_navigation_items_with_pins(
     pins: impl IntoIterator<Item = (String, LocationDescriptor)>,
 ) -> Vec<NavigationItem> {
     let pins = pins.into_iter().collect::<Vec<_>>();
+    let (onedrive_path, present_drives) = cached_navigation_filesystem();
     let quick_access_availability = if pins.is_empty() {
         NavigationItemAvailability::Unavailable
     } else {
@@ -569,10 +641,7 @@ pub fn windows_navigation_items_with_pins(
         ),
     ];
     let onedrive_label = catalog.t("nav-onedrive");
-    if let Some(path) = std::env::var_os("OneDrive")
-        .map(PathBuf::from)
-        .filter(|path| path.is_dir())
-    {
+    if let Some(path) = onedrive_path {
         items.push(
             NavigationItem::location(
                 "onedrive",
@@ -680,25 +749,23 @@ pub fn windows_navigation_items_with_pins(
         NavigationIcon::Computer,
         LocationDescriptor::ParsingName("shell:MyComputerFolder".into()),
     ));
-    for letter in b'C'..=b'Z' {
+    for letter in present_drives {
         let root = PathBuf::from(format!("{}:\\", char::from(letter)));
-        if root.is_dir() {
-            let mut args = FluentArgs::new();
-            args.set("letter", char::from(letter).to_string());
-            let label = if letter == b'C' {
-                catalog.t_args("nav-local-disk", &args)
-            } else {
-                catalog.t_args("nav-new-volume", &args)
-            };
-            items.push(NavigationItem::location(
-                format!("drive-{}", char::from(letter).to_ascii_lowercase()),
-                label,
-                NavigationIcon::Drive,
-                LocationDescriptor::file_system(root),
-                1,
-                false,
-            ));
-        }
+        let mut args = FluentArgs::new();
+        args.set("letter", char::from(letter).to_string());
+        let label = if letter == b'C' {
+            catalog.t_args("nav-local-disk", &args)
+        } else {
+            catalog.t_args("nav-new-volume", &args)
+        };
+        items.push(NavigationItem::location(
+            format!("drive-{}", char::from(letter).to_ascii_lowercase()),
+            label,
+            NavigationIcon::Drive,
+            LocationDescriptor::file_system(root),
+            1,
+            false,
+        ));
     }
     items.push(NavigationItem::location(
         "network",

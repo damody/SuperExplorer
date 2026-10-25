@@ -200,6 +200,7 @@ pub struct FolderSizeColumnVisuals {
     /// keeps measured aggregates so the Details cells do not flash empty.
     pub context: Option<explorer_model::RequestContext>,
     pub values: HashMap<ShellItemId, FolderSizeValueV1>,
+    cached_maximum: Option<u64>,
     snapshots: HashMap<FolderSizeSnapshotKeyV1, HashMap<ShellItemId, FolderSizeValueV1>>,
     location_key: Option<String>,
     directory_cache: HashMap<String, HashMap<ShellItemId, FolderSizeValueV1>>,
@@ -215,6 +216,7 @@ impl FolderSizeColumnVisuals {
         let mut snapshot = Self::new(self.config.clone());
         snapshot.context = self.context.clone();
         snapshot.values = self.values.clone();
+        snapshot.cached_maximum = Some(self.compute_maximum_value());
         snapshot
     }
 
@@ -223,6 +225,7 @@ impl FolderSizeColumnVisuals {
             config,
             context: None,
             values: HashMap::new(),
+            cached_maximum: None,
             snapshots: HashMap::new(),
             location_key: None,
             directory_cache: HashMap::new(),
@@ -279,8 +282,9 @@ impl FolderSizeColumnVisuals {
         }
         for item_id in self.values.keys() {
             self.item_cache.remove(item_id);
-            self.item_lru.retain(|cached| cached != item_id);
         }
+        self.item_lru
+            .retain(|cached| self.item_cache.contains_key(cached));
         self.values.clear();
         self.snapshots.clear();
         self.context = None;
@@ -346,11 +350,26 @@ impl FolderSizeColumnVisuals {
         self.directory_cache.insert(key, values);
     }
 
+    fn compact_item_lru(&mut self) {
+        if self.item_lru.len() <= self.item_cache.len() {
+            return;
+        }
+        let mut seen = std::collections::HashSet::with_capacity(self.item_cache.len());
+        let mut compacted = VecDeque::with_capacity(self.item_cache.len());
+        while let Some(id) = self.item_lru.pop_back() {
+            if self.item_cache.contains_key(&id) && seen.insert(id.clone()) {
+                compacted.push_front(id);
+            }
+        }
+        self.item_lru = compacted;
+    }
+
     fn remember_item(&mut self, item_id: ShellItemId, value: FolderSizeValueV1) {
-        if self.item_cache.contains_key(&item_id) {
-            self.item_lru.retain(|cached| cached != &item_id);
-        } else {
-            while self.item_lru.len() >= ITEM_VALUE_CACHE_LIMIT {
+        if !self.item_cache.contains_key(&item_id)
+            && self.item_cache.len() >= ITEM_VALUE_CACHE_LIMIT
+        {
+            self.compact_item_lru();
+            while self.item_cache.len() >= ITEM_VALUE_CACHE_LIMIT {
                 if let Some(oldest) = self.item_lru.pop_front() {
                     self.item_cache.remove(&oldest);
                 } else {
@@ -360,6 +379,9 @@ impl FolderSizeColumnVisuals {
         }
         self.item_lru.push_back(item_id.clone());
         self.item_cache.insert(item_id, value);
+        if self.item_lru.len() >= ITEM_VALUE_CACHE_LIMIT * 2 {
+            self.compact_item_lru();
+        }
     }
 
     pub fn insert_result(&mut self, result: FolderSizeResultV1) -> bool {
@@ -530,13 +552,18 @@ impl FolderSizeColumnVisuals {
             .collect()
     }
 
-    pub fn maximum_value(&self) -> u64 {
+    fn compute_maximum_value(&self) -> u64 {
         self.values
             .values()
             .filter(|value| !value.partial)
             .filter_map(|value| value.exact_bytes)
             .max()
             .unwrap_or_default()
+    }
+
+    pub fn maximum_value(&self) -> u64 {
+        self.cached_maximum
+            .unwrap_or_else(|| self.compute_maximum_value())
     }
 }
 

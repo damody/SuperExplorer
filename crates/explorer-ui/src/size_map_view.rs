@@ -173,10 +173,10 @@ impl ViewSelectionBridgeV1 {
 
     #[must_use]
     pub fn authorize_selection(&self, request: &ViewSelectionRequestV1) -> Option<usize> {
-        let known = self.rows.keys().copied().collect();
-        if request.operation != ViewSelectionOperationV1::REPLACE
+        if request.snapshot != self.snapshot
+            || !self.snapshot.is_valid()
+            || request.operation != ViewSelectionOperationV1::REPLACE
             || request.node_ids.len() != 1
-            || !request.validate_for_snapshot(self.snapshot, &known)
         {
             return None;
         }
@@ -188,8 +188,7 @@ impl ViewSelectionBridgeV1 {
         &self,
         request: &NavigationRequestV1,
     ) -> Option<AuthorizedViewNavigationV1> {
-        let known = self.rows.keys().copied().collect();
-        if !request.is_authorized_for(self.snapshot, &known) {
+        if !request.is_well_formed() || request.snapshot != self.snapshot {
             return None;
         }
         Some(AuthorizedViewNavigationV1 {
@@ -258,6 +257,22 @@ impl SizeMapVisualsV1 {
     }
 
     pub fn recursive_nodes_for(&self, entries: &[explorer_model::FileEntry]) -> Vec<SizeMapNodeV1> {
+        thread_local! {
+            static RECURSIVE_NODES_CACHE: std::cell::RefCell<Option<((usize, usize, u64), Vec<SizeMapNodeV1>)>> =
+                const { std::cell::RefCell::new(None) };
+        }
+        let cache_key = (
+            entries.len(),
+            self.tree_nodes.len(),
+            self.recursive_nodes_fingerprint(entries),
+        );
+        if let Some(cached) = RECURSIVE_NODES_CACHE.with(|slot| {
+            slot.borrow()
+                .as_ref()
+                .and_then(|(key, nodes)| (*key == cache_key).then(|| nodes.clone()))
+        }) {
+            return cached;
+        }
         let mut nodes = entries
             .iter()
             .map(|entry| self.node_for(entry))
@@ -267,7 +282,7 @@ impl SizeMapVisualsV1 {
             .iter()
             .map(|node| node.item_id.clone())
             .collect::<std::collections::HashSet<_>>();
-        let mut remaining = self.tree_nodes.values().cloned().collect::<Vec<_>>();
+        let mut remaining = self.tree_nodes.values().collect::<Vec<_>>();
         remaining.sort_by(|left, right| {
             left.display_name.cmp(&right.display_name).then_with(|| {
                 left.item_id
@@ -285,16 +300,16 @@ impl SizeMapVisualsV1 {
                 }
                 emitted.insert(node.item_id.clone());
                 nodes.push(SizeMapNodeV1 {
-                    item_id: node.item_id,
-                    selection_item_id: node.root_item_id,
-                    parent_item_id: Some(node.parent_item_id),
-                    location: node.location,
-                    display_name: node.display_name,
-                    type_name: node.type_name,
+                    item_id: node.item_id.clone(),
+                    selection_item_id: node.root_item_id.clone(),
+                    parent_item_id: Some(node.parent_item_id.clone()),
+                    location: node.location.clone(),
+                    display_name: node.display_name.clone(),
+                    type_name: node.type_name.clone(),
                     is_container: node.is_container,
                     exact_bytes: node.exact_bytes,
                     partial: node.partial,
-                    error: node.error,
+                    error: node.error.clone(),
                 });
             }
             if deferred.len() == before {
@@ -302,7 +317,53 @@ impl SizeMapVisualsV1 {
             }
             remaining = deferred;
         }
+        RECURSIVE_NODES_CACHE.with(|slot| {
+            *slot.borrow_mut() = Some((cache_key, nodes.clone()));
+        });
         nodes
+    }
+
+    fn recursive_nodes_fingerprint(&self, entries: &[explorer_model::FileEntry]) -> u64 {
+        use std::hash::{Hash as _, Hasher as _};
+        let mut state = std::collections::hash_map::DefaultHasher::new();
+        for entry in entries {
+            entry.id.hash(&mut state);
+            entry.display_name.hash(&mut state);
+            entry.location.hash(&mut state);
+            entry.is_container.hash(&mut state);
+            entry.metadata.size_bytes.hash(&mut state);
+            entry.metadata.type_display.hash(&mut state);
+            if let Some(measured) = self.values.get(&entry.id) {
+                true.hash(&mut state);
+                measured.exact_bytes.hash(&mut state);
+                measured.partial.hash(&mut state);
+                measured.error.hash(&mut state);
+            } else {
+                false.hash(&mut state);
+            }
+        }
+        let mut tree_xor = 0_u64;
+        let mut tree_sum = 0_u64;
+        for (id, node) in &self.tree_nodes {
+            let mut item_hasher = std::collections::hash_map::DefaultHasher::new();
+            id.hash(&mut item_hasher);
+            node.item_id.hash(&mut item_hasher);
+            node.root_item_id.hash(&mut item_hasher);
+            node.parent_item_id.hash(&mut item_hasher);
+            node.location.hash(&mut item_hasher);
+            node.display_name.hash(&mut item_hasher);
+            node.type_name.hash(&mut item_hasher);
+            node.is_container.hash(&mut item_hasher);
+            node.exact_bytes.hash(&mut item_hasher);
+            node.partial.hash(&mut item_hasher);
+            node.error.hash(&mut item_hasher);
+            let h = item_hasher.finish();
+            tree_xor ^= h;
+            tree_sum = tree_sum.wrapping_add(h);
+        }
+        tree_xor.hash(&mut state);
+        tree_sum.hash(&mut state);
+        state.finish()
     }
 }
 

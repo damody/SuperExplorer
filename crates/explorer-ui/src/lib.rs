@@ -554,6 +554,12 @@ fn coalesce_directory_events(
 
 struct VisibleItemIconCache {
     entries: HashMap<explorer_model::ShellIconKey, Arc<RenderImage>>,
+    by_item_id:
+        HashMap<explorer_model::ShellItemId, smallvec::SmallVec<[explorer_model::ShellIconKey; 2]>>,
+    by_location: HashMap<
+        explorer_model::LocationDescriptor,
+        smallvec::SmallVec<[explorer_model::ShellIconKey; 2]>,
+    >,
     // Keep the final owner until the window can remove the corresponding atlas tiles.
     // Dropping CPU pixels alone does not release GPUI's GPU allocation.
     atlas_images: HashMap<gpui::ImageId, Arc<RenderImage>>,
@@ -562,7 +568,8 @@ struct VisibleItemIconCache {
     protected_keys: HashSet<explorer_model::ShellIconKey>,
     thumbnail_byte_budget: usize,
     thumbnail_capacity: usize,
-    order: VecDeque<explorer_model::ShellIconKey>,
+    access_order: HashMap<explorer_model::ShellIconKey, u64>,
+    next_access_tick: u64,
     latest_association: HashMap<explorer_model::LocationDescriptor, u64>,
     latest_overlay: HashMap<explorer_model::LocationDescriptor, u64>,
     capacity: usize,
@@ -594,13 +601,16 @@ impl Default for VisibleItemIconCache {
     fn default() -> Self {
         Self {
             entries: HashMap::new(),
+            by_item_id: HashMap::new(),
+            by_location: HashMap::new(),
             atlas_images: HashMap::new(),
             costs: HashMap::new(),
             thumbnail_entries: HashSet::new(),
             protected_keys: HashSet::new(),
             thumbnail_byte_budget: default_thumbnail_byte_budget(),
             thumbnail_capacity: THUMBNAIL_SCHEDULER_QUEUE_CAPACITY,
-            order: VecDeque::new(),
+            access_order: HashMap::new(),
+            next_access_tick: 0,
             latest_association: HashMap::new(),
             latest_overlay: HashMap::new(),
             capacity: SHELL_TEXTURE_CACHE_CAPACITY,
@@ -616,6 +626,50 @@ impl Default for VisibleItemIconCache {
 }
 
 impl VisibleItemIconCache {
+    fn index_key(&mut self, key: &explorer_model::ShellIconKey) {
+        if let Some(item_id) = &key.item_id {
+            let keys = self.by_item_id.entry(item_id.clone()).or_default();
+            if !keys.contains(key) {
+                keys.push(key.clone());
+            }
+        }
+        let keys = self.by_location.entry(key.location.clone()).or_default();
+        if !keys.contains(key) {
+            keys.push(key.clone());
+        }
+    }
+
+    fn unindex_key(&mut self, key: &explorer_model::ShellIconKey) {
+        if let Some(item_id) = &key.item_id
+            && let Some(keys) = self.by_item_id.get_mut(item_id)
+        {
+            keys.retain(|candidate| candidate != key);
+            if keys.is_empty() {
+                self.by_item_id.remove(item_id);
+            }
+        }
+        if let Some(keys) = self.by_location.get_mut(&key.location) {
+            keys.retain(|candidate| candidate != key);
+            if keys.is_empty() {
+                self.by_location.remove(&key.location);
+            }
+        }
+        self.access_order.remove(key);
+    }
+
+    fn prune_indices(&mut self) {
+        self.access_order
+            .retain(|candidate, _| self.entries.contains_key(candidate));
+        self.by_item_id.retain(|_, keys| {
+            keys.retain(|candidate| self.entries.contains_key(candidate));
+            !keys.is_empty()
+        });
+        self.by_location.retain(|_, keys| {
+            keys.retain(|candidate| self.entries.contains_key(candidate));
+            !keys.is_empty()
+        });
+    }
+
     fn track_atlas_image(&mut self, texture: &Arc<RenderImage>) {
         self.atlas_images
             .entry(texture.id)
@@ -649,9 +703,11 @@ impl VisibleItemIconCache {
 
     fn clear_overlay_dependent(&mut self) {
         self.entries.clear();
+        self.by_item_id.clear();
+        self.by_location.clear();
         self.costs.clear();
         self.thumbnail_entries.clear();
-        self.order.clear();
+        self.access_order.clear();
         self.latest_association.clear();
         self.latest_overlay.clear();
         self.current_bytes = 0;
@@ -696,14 +752,19 @@ impl VisibleItemIconCache {
                 }
             };
             let victim = self
-                .order
-                .iter()
-                .filter(eligible)
-                .find(|key| !self.protected_keys.contains(*key))
-                .or_else(|| self.order.iter().find(eligible))
+                .entries
+                .keys()
+                .filter(|key| eligible(key) && !self.protected_keys.contains(*key))
+                .min_by_key(|key| self.access_order.get(*key).copied().unwrap_or(0))
+                .or_else(|| {
+                    self.entries
+                        .keys()
+                        .filter(eligible)
+                        .min_by_key(|key| self.access_order.get(*key).copied().unwrap_or(0))
+                })
                 .cloned();
             let Some(victim) = victim else { break };
-            self.order.retain(|key| key != &victim);
+            self.unindex_key(&victim);
             self.entries.remove(&victim);
             let cost = self.costs.remove(&victim).unwrap_or_default();
             if self.thumbnail_entries.remove(&victim) {
@@ -760,13 +821,15 @@ impl VisibleItemIconCache {
             });
             self.thumbnail_entries
                 .retain(|candidate| self.entries.contains_key(candidate));
-            self.order
-                .retain(|candidate| self.entries.contains_key(candidate));
+            self.prune_indices();
             self.recalculate_bytes();
         }
         let cost = render_image_bytes(&texture);
         self.track_atlas_image(&texture);
         let replaced = self.entries.insert(key.clone(), texture);
+        if replaced.is_none() {
+            self.index_key(key);
+        }
         let previous_cost = self.costs.insert(key.clone(), cost).unwrap_or_default();
         match provenance {
             FileVisualProvenance::Shell => {
@@ -776,7 +839,6 @@ impl VisibleItemIconCache {
                 self.thumbnail_entries.insert(key.clone());
             }
         }
-        let _ = replaced;
         self.current_bytes = self
             .current_bytes
             .saturating_sub(previous_cost)
@@ -817,11 +879,12 @@ impl VisibleItemIconCache {
         let candidate = if self.entries.contains_key(key) {
             key.clone()
         } else {
-            self.entries
-                .keys()
+            let item_id = key.item_id.as_ref()?;
+            self.by_item_id
+                .get(item_id)?
+                .iter()
                 .filter(|candidate| {
-                    key.item_id.is_some()
-                        && candidate.item_id == key.item_id
+                    self.entries.contains_key(*candidate)
                         && candidate.location == key.location
                         && candidate.dpi == key.dpi
                         && candidate.theme == key.theme
@@ -852,9 +915,12 @@ impl VisibleItemIconCache {
         let key = if self.entries.contains_key(&exact) {
             exact
         } else {
-            self.entries
-                .keys()
-                .filter(|key| key.location == *location && key.theme == theme && key.dpi == dpi)
+            self.by_location
+                .get(location)?
+                .iter()
+                .filter(|key| {
+                    self.entries.contains_key(*key) && key.theme == theme && key.dpi == dpi
+                })
                 .max_by_key(|key| {
                     (
                         key.association_generation,
@@ -878,9 +944,12 @@ impl VisibleItemIconCache {
         let key = if self.entries.contains_key(&exact) {
             exact
         } else {
-            self.entries
-                .keys()
-                .filter(|key| key.location == *location && key.theme == theme && key.dpi == dpi)
+            self.by_location
+                .get(location)?
+                .iter()
+                .filter(|key| {
+                    self.entries.contains_key(*key) && key.theme == theme && key.dpi == dpi
+                })
                 .max_by_key(|key| {
                     (
                         key.association_generation,
@@ -914,9 +983,10 @@ impl VisibleItemIconCache {
     }
 
     fn has_item_thumbnail(&self, item_id: &explorer_model::ShellItemId) -> bool {
-        self.thumbnail_entries
-            .iter()
-            .any(|key| key.item_id.as_ref() == Some(item_id))
+        self.by_item_id.get(item_id).is_some_and(|keys| {
+            keys.iter()
+                .any(|key| self.thumbnail_entries.contains(key) && self.entries.contains_key(key))
+        })
     }
 
     fn has_thumbnail_presentation(&self, key: &explorer_model::ShellIconKey) -> bool {
@@ -925,38 +995,48 @@ impl VisibleItemIconCache {
 
     fn remove_item_thumbnails(&mut self, item_id: &explorer_model::ShellItemId) {
         let remove = self
-            .thumbnail_entries
-            .iter()
-            .filter(|key| key.item_id.as_ref() == Some(item_id))
+            .by_item_id
+            .get(item_id)
+            .into_iter()
+            .flatten()
+            .filter(|key| self.thumbnail_entries.contains(*key))
             .cloned()
             .collect::<Vec<_>>();
         if remove.is_empty() {
             return;
         }
         for key in remove {
+            self.unindex_key(&key);
             self.entries.remove(&key);
             self.costs.remove(&key);
             self.thumbnail_entries.remove(&key);
-            self.order.retain(|candidate| candidate != &key);
         }
         self.recalculate_bytes();
     }
 
     fn gallery_textures(&self) -> Vec<(explorer_model::ShellIconKey, Arc<RenderImage>)> {
-        self.order
+        let mut ordered = self
+            .entries
             .iter()
-            .rev()
-            .filter_map(|key| {
-                self.entries
-                    .get(key)
-                    .map(|texture| (key.clone(), Arc::clone(texture)))
+            .map(|(key, texture)| {
+                let tick = self.access_order.get(key).copied().unwrap_or(0);
+                (tick, key.clone(), Arc::clone(texture))
             })
+            .collect::<Vec<_>>();
+        ordered.sort_by(|left, right| right.0.cmp(&left.0));
+        ordered
+            .into_iter()
+            .map(|(_, key, texture)| (key, texture))
             .collect()
     }
 
     fn touch(&mut self, key: &explorer_model::ShellIconKey) {
-        self.order.retain(|candidate| candidate != key);
-        self.order.push_back(key.clone());
+        self.next_access_tick = self.next_access_tick.wrapping_add(1);
+        if let Some(slot) = self.access_order.get_mut(key) {
+            *slot = self.next_access_tick;
+        } else {
+            self.access_order.insert(key.clone(), self.next_access_tick);
+        }
     }
 
     fn invalidate_environment(&mut self, dpi: u16, theme: explorer_model::ShellIconTheme) {
@@ -964,7 +1044,7 @@ impl VisibleItemIconCache {
             .retain(|key, _| key.dpi == dpi && key.theme == theme);
         self.thumbnail_entries
             .retain(|key| self.entries.contains_key(key));
-        self.order.retain(|key| self.entries.contains_key(key));
+        self.prune_indices();
         self.recalculate_bytes();
     }
 
@@ -1034,7 +1114,8 @@ struct BaseIconCache {
     entries: HashMap<explorer_model::BaseIconKey, Arc<RenderImage>>,
     hashes: HashMap<explorer_model::BaseIconKey, u64>,
     costs: HashMap<explorer_model::BaseIconKey, usize>,
-    order: VecDeque<explorer_model::BaseIconKey>,
+    access_order: HashMap<explorer_model::BaseIconKey, u64>,
+    next_access_tick: u64,
     current_bytes: usize,
     byte_budget: usize,
     hits: u64,
@@ -1048,7 +1129,8 @@ impl Default for BaseIconCache {
             entries: HashMap::new(),
             hashes: HashMap::new(),
             costs: HashMap::new(),
-            order: VecDeque::new(),
+            access_order: HashMap::new(),
+            next_access_tick: 0,
             current_bytes: 0,
             byte_budget: SHELL_TEXTURE_CACHE_BYTE_BUDGET / BASE_ICON_CACHE_SHARE_DIVISOR,
             hits: 0,
@@ -1059,6 +1141,15 @@ impl Default for BaseIconCache {
 }
 
 impl BaseIconCache {
+    fn touch(&mut self, key: &explorer_model::BaseIconKey) {
+        self.next_access_tick = self.next_access_tick.wrapping_add(1);
+        if let Some(slot) = self.access_order.get_mut(key) {
+            *slot = self.next_access_tick;
+        } else {
+            self.access_order.insert(key.clone(), self.next_access_tick);
+        }
+    }
+
     fn set_byte_budget(&mut self, byte_budget: usize) {
         self.byte_budget = byte_budget.max(1024 * 1024);
         self.evict_to_budget();
@@ -1067,9 +1158,15 @@ impl BaseIconCache {
     fn evict_to_budget(&mut self) {
         while self.entries.len() > BASE_ICON_CACHE_CAPACITY || self.current_bytes > self.byte_budget
         {
-            let Some(oldest) = self.order.pop_front() else {
+            let Some(oldest) = self
+                .entries
+                .keys()
+                .min_by_key(|key| self.access_order.get(*key).copied().unwrap_or(0))
+                .cloned()
+            else {
                 break;
             };
+            self.access_order.remove(&oldest);
             if self.entries.remove(&oldest).is_some() {
                 self.current_bytes = self
                     .current_bytes
@@ -1089,16 +1186,14 @@ impl BaseIconCache {
             .current_bytes
             .saturating_sub(previous_cost)
             .saturating_add(cost);
-        self.order.retain(|candidate| candidate != &key);
-        self.order.push_back(key);
+        self.touch(&key);
         self.evict_to_budget();
     }
 
     fn get(&mut self, key: &explorer_model::BaseIconKey) -> Option<Arc<RenderImage>> {
         if let Some(texture) = self.entries.get(key).cloned() {
             self.hits = self.hits.saturating_add(1);
-            self.order.retain(|candidate| candidate != key);
-            self.order.push_back(key.clone());
+            self.touch(key);
             Some(texture)
         } else {
             self.misses = self.misses.saturating_add(1);
@@ -1131,7 +1226,8 @@ impl BaseIconCache {
             .retain(|key, _| key.dpi == dpi && key.theme == theme);
         self.hashes.retain(|key, _| self.entries.contains_key(key));
         self.costs.retain(|key, _| self.entries.contains_key(key));
-        self.order.retain(|key| self.entries.contains_key(key));
+        self.access_order
+            .retain(|key, _| self.entries.contains_key(key));
         self.current_bytes = self.costs.values().copied().sum();
     }
 }
@@ -2204,7 +2300,7 @@ impl ExplorerRoot {
         let context = explorer_model::RequestContext::new(tab.id, tab.generation);
         let entries = tab
             .visible_snapshot()
-            .map(|snapshot| snapshot.entries().to_vec())
+            .map(|snapshot| snapshot.shared_entries())
             .unwrap_or_default();
         self.submit_file_icon_loads(&context, &entries);
         self.submit_navigation_icon_loads();
@@ -3464,7 +3560,7 @@ impl ExplorerRoot {
             let Some(snapshot) = tab.visible_snapshot() else {
                 return;
             };
-            (tab.id, tab.generation, snapshot.entries().to_vec())
+            (tab.id, tab.generation, snapshot.shared_entries())
         };
         let context_is_current = self
             .size_map_visual_context
@@ -4535,7 +4631,7 @@ impl ExplorerRoot {
         let context = explorer_model::RequestContext::new(tab.id, tab.generation);
         let entries = tab
             .visible_snapshot()
-            .map(|snapshot| snapshot.entries().to_vec())
+            .map(|snapshot| snapshot.shared_entries())
             .unwrap_or_default();
         self.submit_file_icon_loads(&context, &entries);
         self.submit_navigation_icon_loads();
@@ -5210,57 +5306,46 @@ impl ExplorerRoot {
             let mut pump_interval = Duration::from_millis(16);
             loop {
                 cx.background_executor().timer(pump_interval).await;
-                if this
-                    .update(cx, |this, cx| {
-                        // Each pump owns side effects. Evaluate all of them;
-                        // boolean short-circuiting can otherwise starve later
-                        // extension views whenever an earlier pump is busy.
-                        let extension_changed =
-                            extension_ui_pump_due(this.extension_ui_pump.as_mut(), Instant::now());
-                        let sftp_login_changed = this.pump_sftp_address_login();
-                        let ftp_login_changed = this.pump_ftp_address_login();
-                        let gdrive_login_changed = this.pump_gdrive_address_login();
-                        let network_login_changed = this.pump_network_login();
-                        let remote_runtime_changed = this.pump_remote_runtime(cx);
-                        let visual_column_changed = this.pump_visual_column_runtime();
-                        let code_lines_changed = this.pump_code_lines_runtime();
-                        let size_map_changed = this.pump_size_map_runtime();
-                        let preview_content_changed = this.preview_content.poll();
-                        let operation_notice_changed =
-                            this.state.operation_notice_needs_repaint(Instant::now());
-                        let paste_notice_changed = this.state.expire_paste_notice(Instant::now());
-                        let apk_notice_changed =
-                            this.state.apk_notice_needs_repaint(Instant::now());
-                        if extension_changed
-                            || sftp_login_changed
-                            || ftp_login_changed
-                            || gdrive_login_changed
-                            || network_login_changed
-                            || remote_runtime_changed
-                            || visual_column_changed
-                            || code_lines_changed
-                            || size_map_changed
-                            || preview_content_changed
-                            || operation_notice_changed
-                            || paste_notice_changed
-                            || apk_notice_changed
-                        {
-                            this.service_pump_last_activity = Instant::now();
-                            cx.notify();
-                        }
-                    })
-                    .is_err()
-                {
-                    break;
-                }
-                if this
-                    .update(cx, |this, _| this.poll_preview_handler())
-                    .is_err()
-                {
-                    break;
-                }
-                if last_namespace_refresh.elapsed() >= Duration::from_secs(30) {
-                    let refreshed = this.update(cx, |this, _| {
+                let check_namespace_refresh =
+                    last_namespace_refresh.elapsed() >= Duration::from_secs(30);
+                let foreground_room = match this.update(cx, |this, cx| {
+                    // Each pump owns side effects. Evaluate all of them;
+                    // boolean short-circuiting can otherwise starve later
+                    // extension views whenever an earlier pump is busy.
+                    let extension_changed =
+                        extension_ui_pump_due(this.extension_ui_pump.as_mut(), Instant::now());
+                    let sftp_login_changed = this.pump_sftp_address_login();
+                    let ftp_login_changed = this.pump_ftp_address_login();
+                    let gdrive_login_changed = this.pump_gdrive_address_login();
+                    let network_login_changed = this.pump_network_login();
+                    let remote_runtime_changed = this.pump_remote_runtime(cx);
+                    let visual_column_changed = this.pump_visual_column_runtime();
+                    let code_lines_changed = this.pump_code_lines_runtime();
+                    let size_map_changed = this.pump_size_map_runtime();
+                    let preview_content_changed = this.preview_content.poll();
+                    let operation_notice_changed =
+                        this.state.operation_notice_needs_repaint(Instant::now());
+                    let paste_notice_changed = this.state.expire_paste_notice(Instant::now());
+                    let apk_notice_changed = this.state.apk_notice_needs_repaint(Instant::now());
+                    if extension_changed
+                        || sftp_login_changed
+                        || ftp_login_changed
+                        || gdrive_login_changed
+                        || network_login_changed
+                        || remote_runtime_changed
+                        || visual_column_changed
+                        || code_lines_changed
+                        || size_map_changed
+                        || preview_content_changed
+                        || operation_notice_changed
+                        || paste_notice_changed
+                        || apk_notice_changed
+                    {
+                        this.service_pump_last_activity = Instant::now();
+                        cx.notify();
+                    }
+                    this.poll_preview_handler();
+                    if check_namespace_refresh {
                         let is_non_path = this
                             .state
                             .tabs()
@@ -5275,17 +5360,16 @@ impl ExplorerRoot {
                             tracing::debug!("bounded refresh for namespace without notifications");
                             this.submit_command(command);
                         }
-                    });
-                    if refreshed.is_err() {
-                        break;
                     }
-                    last_namespace_refresh = Instant::now();
-                }
-                let foreground_room = match this.update(cx, |this, _| {
                     FOREGROUND_SERVICE_EVENT_CAPACITY
                         .saturating_sub(this.pending_foreground_events.len())
                 }) {
-                    Ok(room) => room,
+                    Ok(room) => {
+                        if check_namespace_refresh {
+                            last_namespace_refresh = Instant::now();
+                        }
+                        room
+                    }
                     Err(_) => break,
                 };
                 let receive_limit =
@@ -9252,6 +9336,9 @@ impl ExplorerRoot {
                 }
             }
             ExplorerAction::BeginMarquee { .. } if self.state.marquee_session().is_some() => {
+                self.state.set_marquee_origin_scroll_y(
+                    (-f32::from(self.file_scroll.offset().y)).max(0.0),
+                );
                 self.pointer_capture.take();
                 self.pointer_capture = self.acquire_pointer_capture(window);
             }
@@ -9339,7 +9426,6 @@ impl ExplorerRoot {
                         .unwrap_or(pointer_y);
                     if self.update_scrollbar_drag(pointer_axis) {
                         cx.notify();
-                        cx.refresh_windows();
                     }
                 }
             }
@@ -9544,7 +9630,7 @@ impl ExplorerRoot {
             let context = explorer_model::RequestContext::new(tab.id, tab.generation);
             let entries = tab
                 .visible_snapshot()
-                .map(|snapshot| snapshot.entries().to_vec())
+                .map(|snapshot| snapshot.shared_entries())
                 .unwrap_or_default();
             self.submit_offscreen_file_icon_loads(&context, &entries);
         }
@@ -12565,7 +12651,10 @@ mod tests {
         fn supports_entry(&self, entry: &explorer_model::FileEntry) -> bool {
             entry.is_container
                 || !self.unsupported_extension.is_some_and(|unsupported| {
-                    entry.location.path().and_then(|path| path.extension())
+                    entry
+                        .location
+                        .path()
+                        .and_then(|path| path.extension())
                         .is_some_and(|extension| extension.eq_ignore_ascii_case(unsupported))
                 })
         }
@@ -12618,28 +12707,45 @@ mod tests {
         seed_active_visual_tab(&mut root.state, "Deleting", true, false);
         root.attach_directory_facts_runtime(directory_runtime.clone());
         root.attach_code_lines_runtime(code_runtime.clone());
-        if !root.state.details_column_visible(explorer_model::ColumnId::FileCount) {
-            root.state.toggle_details_column(explorer_model::ColumnId::FileCount);
+        if !root
+            .state
+            .details_column_visible(explorer_model::ColumnId::FileCount)
+        {
+            root.state
+                .toggle_details_column(explorer_model::ColumnId::FileCount);
         }
-        let entries = root.state.tabs().active_tab().visible_snapshot().unwrap().shared_entries();
-        let command = root.state.begin_file_operation(explorer_model::FileOperationRequest {
-            kind: explorer_model::FileOperationKind::PermanentDelete {
-                items: entries.iter().map(|entry| explorer_model::ItemDescriptor {
-                    id: entry.id.clone(), location: entry.location.clone(),
-                }).collect(),
-                confirmed: true,
-            },
-            flags: explorer_model::FileOperationFlags::default(),
-        });
+        let entries = root
+            .state
+            .tabs()
+            .active_tab()
+            .visible_snapshot()
+            .unwrap()
+            .shared_entries();
+        let command = root
+            .state
+            .begin_file_operation(explorer_model::FileOperationRequest {
+                kind: explorer_model::FileOperationKind::PermanentDelete {
+                    items: entries
+                        .iter()
+                        .map(|entry| explorer_model::ItemDescriptor {
+                            id: entry.id.clone(),
+                            location: entry.location.clone(),
+                        })
+                        .collect(),
+                    confirmed: true,
+                },
+                flags: explorer_model::FileOperationFlags::default(),
+            });
         root.submit_folder_size_requests();
         root.submit_code_lines_requests(&entries);
         assert!(directory_runtime.requests.lock().unwrap().is_empty());
         assert!(code_runtime.requests.lock().unwrap().is_empty());
 
-        root.state.apply_service_event(explorer_model::ExplorerEvent::OperationFinished {
-            context: command.context().unwrap().clone(),
-            outcome: explorer_model::OperationTerminal::Cancelled,
-        });
+        root.state
+            .apply_service_event(explorer_model::ExplorerEvent::OperationFinished {
+                context: command.context().unwrap().clone(),
+                outcome: explorer_model::OperationTerminal::Cancelled,
+            });
         root.submit_folder_size_requests();
         root.submit_code_lines_requests(&entries);
         assert!(!directory_runtime.requests.lock().unwrap().is_empty());
@@ -12890,7 +12996,13 @@ mod tests {
         });
         let mut root = ExplorerRoot::default();
         seed_active_visual_tab(&mut root.state, "Media", true, false);
-        let mut files = root.state.tabs().active_tab().visible_snapshot().unwrap().entries()
+        let mut files = root
+            .state
+            .tabs()
+            .active_tab()
+            .visible_snapshot()
+            .unwrap()
+            .entries()
             .iter()
             .filter(|entry| !entry.is_container)
             .cloned()
@@ -12903,7 +13015,12 @@ mod tests {
         let requests = runtime.requests.lock().unwrap();
         assert_eq!(requests.len(), 1);
         assert_eq!(requests[0].path, files[1].location.path().unwrap());
-        assert!(!root.code_lines_requested.iter().any(|(_, _, _, id)| id == &files[0].id));
+        assert!(
+            !root
+                .code_lines_requested
+                .iter()
+                .any(|(_, _, _, id)| id == &files[0].id)
+        );
     }
 
     #[test]

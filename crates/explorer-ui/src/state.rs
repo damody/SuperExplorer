@@ -411,7 +411,7 @@ fn bookmark_target_for_current_location(
     location: &LocationDescriptor,
 ) -> Option<explorer_model::BookmarkTarget> {
     match location {
-        LocationDescriptor::FileSystem(path) if path.is_dir() => {
+        LocationDescriptor::FileSystem(path) if !path.as_os_str().is_empty() => {
             Some(explorer_model::BookmarkTarget::Folder {
                 location: location.clone(),
             })
@@ -1099,8 +1099,8 @@ pub struct AppViewState {
     thumbnail_quota_notice: Option<String>,
     quick_access: QuickAccessPins,
     bookmarks: explorer_model::Bookmarks,
-    recent_items: RecentItems,
-    run_log: Vec<RunRecord>,
+    recent_items: Arc<RecentItems>,
+    run_log: Arc<Vec<RunRecord>>,
     quick_access_notice: Option<String>,
     bookmark_notice: Option<String>,
     bookmark_overflow_open: bool,
@@ -1118,8 +1118,8 @@ pub struct AppViewState {
     bookmark_editor: Option<BookmarkEditorDraft>,
     bookmark_folder_editor: Option<BookmarkFolderEditorDraft>,
     bookmark_folder_editor_token: u64,
-    bookmark_undo: Vec<explorer_model::Bookmarks>,
-    bookmark_redo: Vec<explorer_model::Bookmarks>,
+    bookmark_undo: Arc<Vec<explorer_model::Bookmarks>>,
+    bookmark_redo: Arc<Vec<explorer_model::Bookmarks>>,
     bookmark_clipboard: Option<explorer_model::Bookmarks>,
     broker_health: BrokerUiHealth,
     session_reset_confirmation: Option<explorer_model::SessionResetScope>,
@@ -1134,7 +1134,7 @@ pub struct AppViewState {
     ancestry_requests: HashMap<TabId, RequestContext>,
     breadcrumb_menu_requests: HashMap<TabId, PendingBreadcrumbMenu>,
     navigation_history_menu: Option<NavigationHistoryMenuState>,
-    navigation_trees: HashMap<TabId, NavigationTreeState>,
+    navigation_trees: Arc<HashMap<TabId, NavigationTreeState>>,
     /// Intended destination of the most recent navigation per tab, keyed with its request identity.
     /// A failed UNC navigation keeps the old history entry, so the rejected target is recovered
     /// from here for credential recovery.
@@ -1231,6 +1231,7 @@ struct FileViewTypeAhead {
 pub(crate) struct MarqueeSelectionSession {
     pub origin_x: f32,
     pub origin_y: f32,
+    pub origin_scroll_y: Option<f32>,
     pub current_x: f32,
     pub current_y: f32,
     base_selection: explorer_model::SelectionModel,
@@ -1722,8 +1723,8 @@ impl AppViewState {
             thumbnail_quota_notice: None,
             quick_access: QuickAccessPins::default(),
             bookmarks: explorer_model::Bookmarks::default(),
-            recent_items: load_recent_visits(),
-            run_log: load_run_log(),
+            recent_items: Arc::new(load_recent_visits()),
+            run_log: Arc::new(load_run_log()),
             quick_access_notice: None,
             bookmark_notice: None,
             bookmark_overflow_open: false,
@@ -1741,8 +1742,8 @@ impl AppViewState {
             bookmark_editor: None,
             bookmark_folder_editor: None,
             bookmark_folder_editor_token: 0,
-            bookmark_undo: Vec::new(),
-            bookmark_redo: Vec::new(),
+            bookmark_undo: Arc::new(Vec::new()),
+            bookmark_redo: Arc::new(Vec::new()),
             bookmark_clipboard: None,
             broker_health: BrokerUiHealth::Healthy,
             session_reset_confirmation: None,
@@ -1757,7 +1758,10 @@ impl AppViewState {
             ancestry_requests: HashMap::new(),
             breadcrumb_menu_requests: HashMap::new(),
             navigation_history_menu: None,
-            navigation_trees: HashMap::from([(initial_tab_id, NavigationTreeState::default())]),
+            navigation_trees: Arc::new(HashMap::from([(
+                initial_tab_id,
+                NavigationTreeState::default(),
+            )])),
             navigation_targets: HashMap::new(),
             sort_menu_open: false,
             sort_menu_index: 0,
@@ -1987,27 +1991,28 @@ impl AppViewState {
     }
 
     pub(crate) fn push_bookmark_undo(&mut self) {
-        self.bookmark_undo.push(self.bookmarks.clone());
-        self.bookmark_redo.clear();
-        if self.bookmark_undo.len() > 50 {
-            self.bookmark_undo.remove(0);
+        let undo = Arc::make_mut(&mut self.bookmark_undo);
+        undo.push(self.bookmarks.clone());
+        Arc::make_mut(&mut self.bookmark_redo).clear();
+        if undo.len() > 50 {
+            undo.remove(0);
         }
     }
 
     pub(crate) fn undo_bookmarks(&mut self) -> bool {
-        let Some(previous) = self.bookmark_undo.pop() else {
+        let Some(previous) = Arc::make_mut(&mut self.bookmark_undo).pop() else {
             return false;
         };
-        self.bookmark_redo.push(self.bookmarks.clone());
+        Arc::make_mut(&mut self.bookmark_redo).push(self.bookmarks.clone());
         self.bookmarks = previous;
         true
     }
 
     pub(crate) fn redo_bookmarks(&mut self) -> bool {
-        let Some(next) = self.bookmark_redo.pop() else {
+        let Some(next) = Arc::make_mut(&mut self.bookmark_redo).pop() else {
             return false;
         };
-        self.bookmark_undo.push(self.bookmarks.clone());
+        Arc::make_mut(&mut self.bookmark_undo).push(self.bookmarks.clone());
         self.bookmarks = next;
         true
     }
@@ -2364,7 +2369,9 @@ impl AppViewState {
             return !self.system_bookmarks_nav_collapsed;
         }
         let tab_id = self.tabs.active_tab_id();
-        let tree = self.navigation_trees.entry(tab_id).or_default();
+        let tree = Arc::make_mut(&mut self.navigation_trees)
+            .entry(tab_id)
+            .or_default();
         if tree.expanded.remove(&location) {
             if let Some(node) = tree.nodes.get_mut(&location) {
                 if let Some(request) = node.request.take() {
@@ -2403,7 +2410,9 @@ impl AppViewState {
             .iter()
             .find(|tab| tab.id == tab_id)?
             .generation;
-        let tree = self.navigation_trees.entry(tab_id).or_default();
+        let tree = Arc::make_mut(&mut self.navigation_trees)
+            .entry(tab_id)
+            .or_default();
         let node = tree.nodes.entry(parent.clone()).or_default();
         if node.loaded || node.loading || !tree.expanded.contains(&parent) {
             return None;
@@ -2424,7 +2433,9 @@ impl AppViewState {
     }
 
     fn invalidate_navigation_node(&mut self, tab_id: TabId, location: &LocationDescriptor) {
-        let tree = self.navigation_trees.entry(tab_id).or_default();
+        let tree = Arc::make_mut(&mut self.navigation_trees)
+            .entry(tab_id)
+            .or_default();
         let node = tree.nodes.entry(location.clone()).or_default();
         if let Some(request) = node.request.take() {
             request.cancellation.cancel();
@@ -2626,7 +2637,7 @@ impl AppViewState {
         let Some(stable_id) = ShellItemId::from_provider_bytes(payload.as_bytes().to_vec()) else {
             return false;
         };
-        let changed = self.recent_items.record(
+        let changed = Arc::make_mut(&mut self.recent_items).record(
             ShellIdentity {
                 stable_id,
                 descriptor: location,
@@ -2688,11 +2699,12 @@ impl AppViewState {
             .find(|entry| entry.location.editable_text() == key)
             .map(|entry| entry.open_count)
             .unwrap_or(0);
-        self.run_log.retain(|entry| {
+        let run_log = Arc::make_mut(&mut self.run_log);
+        run_log.retain(|entry| {
             now_epoch_seconds.saturating_sub(entry.opened_epoch_seconds) <= year
                 && entry.location.editable_text() != key
         });
-        self.run_log.insert(
+        run_log.insert(
             0,
             RunRecord {
                 display_name,
@@ -2703,7 +2715,7 @@ impl AppViewState {
                 open_count: previous.saturating_add(1),
             },
         );
-        self.run_log.truncate(5000);
+        run_log.truncate(5000);
         save_run_log(&self.run_log);
         true
     }
@@ -3161,11 +3173,20 @@ impl AppViewState {
         self.marquee = Some(MarqueeSelectionSession {
             origin_x: x,
             origin_y: y,
+            origin_scroll_y: None,
             current_x: x,
             current_y: y,
             base_selection,
         });
         true
+    }
+
+    pub(crate) fn set_marquee_origin_scroll_y(&mut self, scroll_y: f32) {
+        if scroll_y.is_finite()
+            && let Some(session) = self.marquee.as_mut()
+        {
+            session.origin_scroll_y = Some(scroll_y.max(0.0));
+        }
     }
 
     #[allow(
@@ -3185,29 +3206,44 @@ impl AppViewState {
         if !x.is_finite() || !y.is_finite() {
             return false;
         }
-        let Some((origin_x, origin_y, base_selection)) = self.marquee.as_mut().map(|session| {
-            session.current_x = x;
-            session.current_y = y;
-            (
-                session.origin_x,
-                session.origin_y,
-                session.base_selection.clone(),
-            )
-        }) else {
+        let scroll_y = if scroll_y.is_finite() {
+            scroll_y.max(0.0)
+        } else {
+            0.0
+        };
+        let Some((origin_x, origin_y, origin_scroll_y, base_selection)) =
+            self.marquee.as_mut().map(|session| {
+                let origin_scroll_y = *session.origin_scroll_y.get_or_insert(scroll_y);
+                session.current_x = x;
+                session.current_y = y;
+                (
+                    session.origin_x,
+                    session.origin_y,
+                    origin_scroll_y,
+                    session.base_selection.clone(),
+                )
+            })
+        else {
             return false;
         };
-        if (x - origin_x).abs() < 4.0 && (y - origin_y).abs() < 4.0 {
+        let anchor_y = origin_y + origin_scroll_y;
+        let current_y = y + scroll_y;
+        if (x - origin_x).abs() < 4.0 && (current_y - anchor_y).abs() < 4.0 {
             return true;
         }
         let left = origin_x.min(x);
         let right = origin_x.max(x);
-        let top = origin_y.min(y) + scroll_y.max(0.0);
-        let bottom = origin_y.max(y) + scroll_y.max(0.0);
+        let top = anchor_y.min(current_y);
+        let bottom = anchor_y.max(current_y);
         let settings = self.view_settings();
-        let order = self.presentation_ids();
         let mut selected = base_selection;
+        let Some(presentation) = self.directory_presentation() else {
+            self.tabs.active_tab_mut().selection = selected;
+            return true;
+        };
+        let item_count = presentation.len();
         let metrics = crate::chrome::spatial_grid_metrics(&settings, layout);
-        let grid = crate::chrome::spatial_grid_layout(metrics, viewport_width, order.len());
+        let grid = crate::chrome::spatial_grid_layout(metrics, viewport_width, item_count);
         let metrics = grid.metrics;
         let item_width = metrics.cell_width.max(1.0);
         let item_height = metrics.cell_height.max(1.0);
@@ -3216,25 +3252,38 @@ impl AppViewState {
         } else {
             0.0
         };
-        let columns = grid.columns;
-        for (index, id) in order.iter().enumerate() {
-            let column = index % columns;
-            let row = index / columns;
-            let item_left = if columns == 1 {
-                0.0
-            } else {
-                column as f32 * item_width
-            };
-            let item_top = header + row as f32 * item_height;
-            let item_right = if columns == 1 {
-                viewport_width.max(item_width)
-            } else {
-                item_left + item_width
-            };
-            let item_bottom = item_top + item_height;
-            if left <= item_right && right >= item_left && top <= item_bottom && bottom >= item_top
-            {
-                selected.select_additive(id.clone());
+        let columns = grid.columns.max(1);
+        let total_rows = item_count.div_ceil(columns);
+        if total_rows > 0 && bottom >= header {
+            let first_row = (((top - header).max(0.0) / item_height).floor() as usize)
+                .min(total_rows.saturating_sub(1));
+            let last_row = (((bottom - header).max(0.0) / item_height).floor() as usize)
+                .min(total_rows.saturating_sub(1));
+            for row in first_row..=last_row {
+                let item_top = header + row as f32 * item_height;
+                let item_bottom = item_top + item_height;
+                if top > item_bottom || bottom < item_top {
+                    continue;
+                }
+                for column in 0..columns {
+                    let index = row * columns + column;
+                    let Some((_, entry)) = presentation.entry(index) else {
+                        break;
+                    };
+                    let item_left = if columns == 1 {
+                        0.0
+                    } else {
+                        column as f32 * item_width
+                    };
+                    let item_right = if columns == 1 {
+                        viewport_width.max(item_width)
+                    } else {
+                        item_left + item_width
+                    };
+                    if left <= item_right && right >= item_left {
+                        selected.select_additive(entry.id.clone());
+                    }
+                }
             }
         }
         self.tabs.active_tab_mut().selection = selected;
@@ -4074,7 +4123,9 @@ impl AppViewState {
         let id = self
             .tabs
             .reopen_tab(closed.history, closed.settings, closed.index)?;
-        self.navigation_trees.entry(id).or_default();
+        Arc::make_mut(&mut self.navigation_trees)
+            .entry(id)
+            .or_default();
         self.details_filters.entry(id).or_default();
         self.tab_focus.insert(id, FocusSurface::TabStrip);
         self.activate_tab(id);
@@ -4206,7 +4257,7 @@ impl AppViewState {
     }
 
     pub(crate) fn clear_recent_visits(&mut self) {
-        self.recent_items.clear();
+        Arc::make_mut(&mut self.recent_items).clear();
         save_recent_visits(&self.recent_items);
     }
 
@@ -4572,7 +4623,7 @@ impl AppViewState {
         &mut self,
         entries: Vec<explorer_model::RecentNamespaceItem>,
     ) {
-        self.recent_items.replace_entries(entries);
+        Arc::make_mut(&mut self.recent_items).replace_entries(entries);
     }
 
     pub(crate) fn move_view_menu_focus(&mut self, direction: i8) {
@@ -6690,7 +6741,9 @@ impl AppViewState {
                 let navigation_location =
                     self.navigation_request_location(context, *segment_id, *menu_generation);
                 if let Some(location) = navigation_location {
-                    let Some(tree) = self.navigation_trees.get_mut(&context.tab_id) else {
+                    let Some(tree) =
+                        Arc::make_mut(&mut self.navigation_trees).get_mut(&context.tab_id)
+                    else {
                         return WindowEventOutcome::IgnoredStale;
                     };
                     let existing_node_count = tree.nodes.len();
@@ -6726,8 +6779,7 @@ impl AppViewState {
                 let navigation_location =
                     self.navigation_request_location(context, *segment_id, *menu_generation);
                 if let Some(location) = navigation_location {
-                    let Some(node) = self
-                        .navigation_trees
+                    let Some(node) = Arc::make_mut(&mut self.navigation_trees)
                         .get_mut(&context.tab_id)
                         .and_then(|tree| tree.nodes.get_mut(&location))
                     else {
@@ -6750,7 +6802,9 @@ impl AppViewState {
                 if !self.validate_ancestry_context(context) {
                     return WindowEventOutcome::IgnoredStale;
                 }
-                let tree = self.navigation_trees.entry(context.tab_id).or_default();
+                let tree = Arc::make_mut(&mut self.navigation_trees)
+                    .entry(context.tab_id)
+                    .or_default();
                 for pair in segments.windows(2) {
                     let parent = &pair[0];
                     let child = &pair[1];
@@ -7187,6 +7241,36 @@ impl AppViewState {
                 }),
             _ => None,
         };
+        let will_mutate_snapshot = match &event {
+            ExplorerEvent::DirectoryBatch { context, entries } if !entries.is_empty() => self
+                .tabs
+                .tabs()
+                .iter()
+                .any(|tab| tab.id == context.tab_id && tab.directory.accepts(context).is_ok()),
+            ExplorerEvent::SearchBatch {
+                context, entries, ..
+            } if !entries.is_empty() => self
+                .tabs
+                .tabs()
+                .iter()
+                .any(|tab| tab.id == context.tab_id && tab.generation == context.generation),
+            ExplorerEvent::DirectoryChanged {
+                tab_id,
+                generation,
+                changes,
+            } if !changes.is_empty() => self
+                .tabs
+                .tabs()
+                .iter()
+                .any(|tab| tab.id == *tab_id && tab.generation == *generation),
+            _ => false,
+        };
+        if will_mutate_snapshot {
+            self.presentation_cache
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .clear();
+        }
         let outcome = self.tabs.apply_event(event);
         if outcome == WindowEventOutcome::Applied {
             if let Some((tab_id, location)) = completed_directory
@@ -9555,7 +9639,9 @@ impl AppViewState {
         self.tab_focus
             .insert(self.tabs.active_tab_id(), self.focus.current());
         let id = self.tabs.new_tab();
-        self.navigation_trees.entry(id).or_default();
+        Arc::make_mut(&mut self.navigation_trees)
+            .entry(id)
+            .or_default();
         self.details_filters.entry(id).or_default();
         self.details_column_menu = None;
         self.details_filter_menu = None;
@@ -9652,7 +9738,7 @@ impl AppViewState {
             self.details_filters.remove(&id);
             self.details_column_menu = None;
             self.details_filter_menu = None;
-            if let Some(tree) = self.navigation_trees.remove(&id) {
+            if let Some(tree) = Arc::make_mut(&mut self.navigation_trees).remove(&id) {
                 for node in tree.nodes.into_values() {
                     if let Some(request) = node.request {
                         request.cancellation.cancel();
@@ -10117,6 +10203,10 @@ impl AppViewState {
         &self,
         location: &LocationDescriptor,
     ) -> explorer_model::DriveKind {
+        static PROBED_DRIVE_KINDS: std::sync::LazyLock<
+            Mutex<HashMap<std::path::PathBuf, explorer_model::DriveKind>>,
+        > = std::sync::LazyLock::new(|| Mutex::new(HashMap::new()));
+
         let Some(path) = location.path() else {
             return explorer_model::DriveKind::Unknown;
         };
@@ -10130,7 +10220,34 @@ impl AppViewState {
         {
             return *kind;
         }
-        crate::column_view::probe_drive_kind(path)
+        let mut root = std::path::PathBuf::new();
+        for component in path.components() {
+            match component {
+                std::path::Component::Prefix(_) | std::path::Component::RootDir => {
+                    root.push(component.as_os_str());
+                }
+                _ => break,
+            }
+        }
+        let cache_key = if root.as_os_str().is_empty() {
+            path.to_path_buf()
+        } else {
+            root
+        };
+        if let Some(cached) = PROBED_DRIVE_KINDS
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(&cache_key)
+            .copied()
+        {
+            return cached;
+        }
+        let probed = crate::column_view::probe_drive_kind(path);
+        PROBED_DRIVE_KINDS
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(cache_key, probed);
+        probed
     }
 
     pub(crate) fn columns_menu_enabled(&self) -> bool {
@@ -12367,7 +12484,9 @@ impl AppViewState {
         if let Some(branch) = self.column_branches.get_mut(tab_id) {
             let _ = branch.apply_cached_snapshot(index, snapshot.clone());
         }
-        self.directory_cache.insert(&history, snapshot);
+        if matches!(self.tabs.active_tab().directory, DirectoryState::Ready(_)) {
+            self.directory_cache.insert(&history, snapshot);
+        }
     }
 
     pub(crate) fn plan_column_loads(&mut self) -> Vec<ExplorerCommand> {
@@ -13050,15 +13169,8 @@ mod tests {
 
     #[test]
     fn bookmark_star_targets_local_adb_and_sftp_folders() {
-        let fixture = std::env::temp_dir().join(format!(
-            "superexplorer-bookmark-star-{}",
-            std::process::id()
-        ));
-        std::fs::create_dir_all(&fixture).expect("create bookmark star fixture"); // architecture-check: allow test fixture
-        let file = fixture.join("selected-child.txt");
-        std::fs::write(&file, b"fixture").expect("create selected child fixture"); // architecture-check: allow test fixture
-
-        let folder_location = explorer_model::LocationDescriptor::file_system(&fixture);
+        let folder_location =
+            explorer_model::LocationDescriptor::file_system(r"C:\superexplorer-bookmark-star");
         assert_eq!(
             bookmark_target_for_current_location(&folder_location),
             Some(explorer_model::BookmarkTarget::Folder {
@@ -13067,7 +13179,7 @@ mod tests {
         );
         assert!(
             bookmark_target_for_current_location(&explorer_model::LocationDescriptor::file_system(
-                &file
+                ""
             ))
             .is_none()
         );
@@ -13091,9 +13203,6 @@ mod tests {
                 Some(explorer_model::BookmarkTarget::Folder { location })
             );
         }
-
-        std::fs::remove_file(file).expect("remove selected child fixture"); // architecture-check: allow test fixture
-        std::fs::remove_dir(fixture).expect("remove bookmark star fixture"); // architecture-check: allow test fixture
     }
 
     #[test]
@@ -17678,7 +17787,9 @@ mod tests {
                     "Delete failed",
                     "test failure",
                 )),
-                OperationTerminal::Partial { outcomes: Vec::new() },
+                OperationTerminal::Partial {
+                    outcomes: Vec::new(),
+                },
             ] {
                 let mut state = state_with_rows();
                 assert!(state.select_row(1));
@@ -17699,7 +17810,9 @@ mod tests {
                 let command = state.begin_file_operation(request);
                 let context = command.context().unwrap().clone();
                 assert!(super::deletion_contains_item(
-                    &state.deleting_items(), &item.id, &item.location,
+                    &state.deleting_items(),
+                    &item.id,
+                    &item.location,
                 ));
                 state.apply_service_event(ExplorerEvent::OperationFinished { context, outcome });
                 assert!(state.deleting_items().is_empty());
@@ -17715,13 +17828,19 @@ mod tests {
             location: LocationDescriptor::file_system(r"C:\fixture\Deleting"),
         }];
         let other_id = ShellItemId::from_provider_bytes([2]).unwrap();
-        for path in [r"c:\FIXTURE\deleting", r"C:\fixture\Deleting\nested\file.txt"] {
+        for path in [
+            r"c:\FIXTURE\deleting",
+            r"C:\fixture\Deleting\nested\file.txt",
+        ] {
             assert!(super::deletion_contains_item(
-                &deleting, &other_id, &LocationDescriptor::file_system(path),
+                &deleting,
+                &other_id,
+                &LocationDescriptor::file_system(path),
             ));
         }
         assert!(!super::deletion_contains_item(
-            &deleting, &other_id,
+            &deleting,
+            &other_id,
             &LocationDescriptor::file_system(r"C:\fixture\Deleting-other\file.txt"),
         ));
     }
@@ -17848,12 +17967,14 @@ mod tests {
             ShellItemId, SortDescriptor, SortDirection, ViewMode,
         };
         let mut state = AppViewState::with_initial_location(HistoryEntry::new(
-            LocationDescriptor::ParsingName("shell:MyComputerFolder".into()), "This PC",
+            LocationDescriptor::ParsingName("shell:MyComputerFolder".into()),
+            "This PC",
         ));
         let mut snapshot = DirectorySnapshot::default();
         for (letter, bytes) in [('E', 20), ('D', 30), ('C', 10)] {
             let id = ShellItemId::from_provider_bytes([letter as u8]).unwrap();
-            std::sync::Arc::make_mut(&mut state.folder_size_sort_values).insert(id.clone(), Some(bytes));
+            std::sync::Arc::make_mut(&mut state.folder_size_sort_values)
+                .insert(id.clone(), Some(bytes));
             snapshot.upsert(FileEntry {
                 id,
                 display_name: format!("Disk ({letter}:)"),
@@ -17861,9 +17982,12 @@ mod tests {
                 is_container: true,
                 metadata: FileEntryMetadata {
                     drive: Some(DriveMetadata {
-                        kind: DriveKind::Fixed, availability: DriveAvailability::Available,
-                        volume_label: None, filesystem_name: None,
-                        total_bytes: Some(100), available_bytes: Some(bytes),
+                        kind: DriveKind::Fixed,
+                        availability: DriveAvailability::Available,
+                        volume_label: None,
+                        filesystem_name: None,
+                        total_bytes: Some(100),
+                        available_bytes: Some(bytes),
                     }),
                     ..Default::default()
                 },
@@ -17871,12 +17995,20 @@ mod tests {
         }
         state.tabs.active_tab_mut().directory = DirectoryState::Ready(snapshot);
         state.tabs.active_tab_mut().view.settings.sort = SortDescriptor {
-            column: ColumnId::Size, direction: SortDirection::Descending,
+            column: ColumnId::Size,
+            direction: SortDirection::Descending,
         };
-        for mode in [ViewMode::Details, ViewMode::ExtraLargeIcons, ViewMode::LargeIcons,
-            ViewMode::MediumIcons, ViewMode::SmallIcons, ViewMode::List,
-            ViewMode::Tiles, ViewMode::Content, ViewMode::Details]
-        {
+        for mode in [
+            ViewMode::Details,
+            ViewMode::ExtraLargeIcons,
+            ViewMode::LargeIcons,
+            ViewMode::MediumIcons,
+            ViewMode::SmallIcons,
+            ViewMode::List,
+            ViewMode::Tiles,
+            ViewMode::Content,
+            ViewMode::Details,
+        ] {
             state.set_view_mode(mode);
             let presentation = state.directory_presentation().unwrap();
             let names = (0..presentation.len())
@@ -23908,8 +24040,8 @@ mod tests {
             assert_eq!(actual.1, expected.1);
             assert_eq!(actual.2, expected.2);
         }
-        assert!(hidden_items ||
-            actual.iter().all(|row| row.1 != "system.dat"),
+        assert!(
+            hidden_items || actual.iter().all(|row| row.1 != "system.dat"),
             "system items stay hidden when hidden items are disabled"
         );
     }

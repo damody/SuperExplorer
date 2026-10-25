@@ -1,6 +1,7 @@
 //! Cached directory presentation and deterministic viewport realization geometry.
 
 use std::{
+    borrow::Cow,
     cmp::Ordering,
     collections::{HashMap, HashSet},
     ops::Range,
@@ -77,28 +78,43 @@ impl DetailsFilters {
         column: &ColumnId,
         catalog: Catalog,
     ) -> Vec<DetailsFilterOption> {
-        let mut options = snapshot
-            .entries()
-            .iter()
-            .map(|entry| filter_value(entry, column, catalog))
-            .collect::<Vec<_>>();
-        options.sort_by(|left, right| left.1.cmp(&right.1));
-        options.dedup_by(|left, right| left.0 == right.0);
+        let now_secs = current_unix_seconds();
+        let mut seen = HashSet::new();
+        let mut options = Vec::new();
+        for entry in snapshot.entries() {
+            let key = filter_key(entry, column, now_secs);
+            if seen.insert(key.clone()) {
+                let label = filter_label(entry, column, key.as_ref(), catalog);
+                options.push(DetailsFilterOption {
+                    key: key.into_owned(),
+                    label,
+                });
+            }
+        }
+        options.sort_by(|left, right| left.label.cmp(&right.label));
+        options.dedup_by(|left, right| left.key == right.key);
         options
-            .into_iter()
-            .map(|(key, label)| DetailsFilterOption { key, label })
-            .collect()
     }
 
-    fn matches(&self, entry: &FileEntry) -> bool {
+    fn matches(&self, entry: &FileEntry, now_secs: u64) -> bool {
+        if self.selected.is_empty() {
+            return true;
+        }
         self.selected.iter().all(|(column, selected)| {
-            let (key, _) = filter_value(entry, column, Catalog::new(explorer_i18n::AppLocale::En));
-            selected.contains(&key)
+            let key = filter_key(entry, column, now_secs);
+            selected.contains(key.as_ref())
         })
     }
 }
 
-fn filter_value(entry: &FileEntry, column: &ColumnId, catalog: Catalog) -> (String, String) {
+fn current_unix_seconds() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
+}
+
+fn filter_key(entry: &FileEntry, column: &ColumnId, now_secs: u64) -> Cow<'static, str> {
     match column {
         ColumnId::Name => match entry
             .display_name
@@ -106,80 +122,137 @@ fn filter_value(entry: &FileEntry, column: &ColumnId, catalog: Catalog) -> (Stri
             .next()
             .map(|c| c.to_ascii_uppercase())
         {
-            Some('A'..='H') => ("name:a-h".into(), "A–H".into()),
-            Some('I'..='P') => ("name:i-p".into(), "I–P".into()),
-            Some('Q'..='Z') => ("name:q-z".into(), "Q–Z".into()),
-            _ => ("name:other".into(), catalog.t("filter-other")),
+            Some('A'..='H') => Cow::Borrowed("name:a-h"),
+            Some('I'..='P') => Cow::Borrowed("name:i-p"),
+            Some('Q'..='Z') => Cow::Borrowed("name:q-z"),
+            _ => Cow::Borrowed("name:other"),
         },
         ColumnId::Size => match entry.metadata.size_bytes {
-            Some(bytes) if bytes <= 16 * 1024 => ("size:tiny".into(), catalog.t("filter-tiny")),
-            Some(bytes) if bytes <= 1024 * 1024 => ("size:small".into(), catalog.t("filter-small")),
-            Some(bytes) if bytes <= 128 * 1024 * 1024 => {
-                ("size:medium".into(), catalog.t("filter-medium"))
-            }
-            Some(_) => ("size:large".into(), catalog.t("filter-large")),
-            None => ("size:none".into(), catalog.t("filter-unspecified")),
+            Some(bytes) if bytes <= 16 * 1024 => Cow::Borrowed("size:tiny"),
+            Some(bytes) if bytes <= 1024 * 1024 => Cow::Borrowed("size:small"),
+            Some(bytes) if bytes <= 128 * 1024 * 1024 => Cow::Borrowed("size:medium"),
+            Some(_) => Cow::Borrowed("size:large"),
+            None => Cow::Borrowed("size:none"),
         },
-        ColumnId::DateModified => date_filter_value(entry.metadata.modified_sort_key, catalog),
-        ColumnId::DateCreated => date_filter_value(entry.metadata.created_sort_key, catalog),
-        ColumnId::Type => (
-            crate::formatting::type_filter_key(entry),
-            crate::formatting::localized_entry_type(entry, catalog),
-        ),
-        ColumnId::Authors => text_filter_value(
+        ColumnId::DateModified => {
+            Cow::Borrowed(date_filter_key(entry.metadata.modified_sort_key, now_secs))
+        }
+        ColumnId::DateCreated => {
+            Cow::Borrowed(date_filter_key(entry.metadata.created_sort_key, now_secs))
+        }
+        ColumnId::Type => {
+            if entry.is_container {
+                Cow::Borrowed("type:file-folder")
+            } else {
+                Cow::Owned(crate::formatting::type_filter_key(entry))
+            }
+        }
+        ColumnId::Authors => text_filter_key(
             entry.metadata.authors_display.as_deref(),
             "authors",
-            catalog,
+            "authors:unspecified",
         ),
-        ColumnId::Tags => {
-            text_filter_value(entry.metadata.tags_display.as_deref(), "tags", catalog)
-        }
-        ColumnId::Title => {
-            text_filter_value(entry.metadata.title_display.as_deref(), "title", catalog)
-        }
-        ColumnId::Permissions => text_filter_value(
+        ColumnId::Tags => text_filter_key(
+            entry.metadata.tags_display.as_deref(),
+            "tags",
+            "tags:unspecified",
+        ),
+        ColumnId::Title => text_filter_key(
+            entry.metadata.title_display.as_deref(),
+            "title",
+            "title:unspecified",
+        ),
+        ColumnId::Permissions => text_filter_key(
             Some(explorer_model::format_unix_mode(entry.metadata.unix_mode).as_str()),
             "permissions",
-            catalog,
+            "permissions:unspecified",
         ),
-        ColumnId::FileCount | ColumnId::FolderCount | ColumnId::Extension { .. } => (
-            "extension:unavailable".into(),
-            catalog.t("filter-unavailable"),
-        ),
+        ColumnId::FileCount | ColumnId::FolderCount | ColumnId::Extension { .. } => {
+            Cow::Borrowed("extension:unavailable")
+        }
     }
 }
 
-fn text_filter_value(value: Option<&str>, prefix: &str, catalog: Catalog) -> (String, String) {
+fn filter_label(entry: &FileEntry, column: &ColumnId, key: &str, catalog: Catalog) -> String {
+    match column {
+        ColumnId::Name => match key {
+            "name:a-h" => "A–H".into(),
+            "name:i-p" => "I–P".into(),
+            "name:q-z" => "Q–Z".into(),
+            _ => catalog.t("filter-other"),
+        },
+        ColumnId::Size => match key {
+            "size:tiny" => catalog.t("filter-tiny"),
+            "size:small" => catalog.t("filter-small"),
+            "size:medium" => catalog.t("filter-medium"),
+            "size:large" => catalog.t("filter-large"),
+            _ => catalog.t("filter-unspecified"),
+        },
+        ColumnId::DateModified | ColumnId::DateCreated => match key {
+            "date:today" => catalog.t("filter-today"),
+            "date:yesterday" => catalog.t("filter-yesterday"),
+            "date:this-week" => catalog.t("filter-this-week"),
+            "date:earlier" => catalog.t("filter-earlier"),
+            _ => catalog.t("filter-unspecified"),
+        },
+        ColumnId::Type => crate::formatting::localized_entry_type(entry, catalog),
+        ColumnId::Authors => entry
+            .metadata
+            .authors_display
+            .as_deref()
+            .filter(|v| !v.is_empty())
+            .map_or_else(|| catalog.t("filter-unspecified"), str::to_owned),
+        ColumnId::Tags => entry
+            .metadata
+            .tags_display
+            .as_deref()
+            .filter(|v| !v.is_empty())
+            .map_or_else(|| catalog.t("filter-unspecified"), str::to_owned),
+        ColumnId::Title => entry
+            .metadata
+            .title_display
+            .as_deref()
+            .filter(|v| !v.is_empty())
+            .map_or_else(|| catalog.t("filter-unspecified"), str::to_owned),
+        ColumnId::Permissions => {
+            let mode = explorer_model::format_unix_mode(entry.metadata.unix_mode);
+            if mode.is_empty() {
+                catalog.t("filter-unspecified")
+            } else {
+                mode
+            }
+        }
+        ColumnId::FileCount | ColumnId::FolderCount | ColumnId::Extension { .. } => {
+            catalog.t("filter-unavailable")
+        }
+    }
+}
+
+fn text_filter_key(
+    value: Option<&str>,
+    prefix: &'static str,
+    unspecified_key: &'static str,
+) -> Cow<'static, str> {
     match value.filter(|value| !value.is_empty()) {
-        Some(label) => (
-            format!("{prefix}:{}", label.to_lowercase()),
-            label.to_owned(),
-        ),
-        None => (
-            format!("{prefix}:unspecified"),
-            catalog.t("filter-unspecified"),
-        ),
+        Some(label) => Cow::Owned(format!("{prefix}:{}", label.to_lowercase())),
+        None => Cow::Borrowed(unspecified_key),
     }
 }
 
-fn date_filter_value(filetime: Option<u64>, catalog: Catalog) -> (String, String) {
+fn date_filter_key(filetime: Option<u64>, now_secs: u64) -> &'static str {
     const WINDOWS_TO_UNIX_SECONDS: u64 = 11_644_473_600;
     const TICKS_PER_SECOND: u64 = 10_000_000;
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs();
     let Some(seconds) = filetime
         .and_then(|value| value.checked_div(TICKS_PER_SECOND))
         .and_then(|value| value.checked_sub(WINDOWS_TO_UNIX_SECONDS))
     else {
-        return ("date:none".into(), catalog.t("filter-unspecified"));
+        return "date:none";
     };
-    match now.saturating_sub(seconds) / 86_400 {
-        0 => ("date:today".into(), catalog.t("filter-today")),
-        1 => ("date:yesterday".into(), catalog.t("filter-yesterday")),
-        2..=6 => ("date:this-week".into(), catalog.t("filter-this-week")),
-        _ => ("date:earlier".into(), catalog.t("filter-earlier")),
+    match now_secs.saturating_sub(seconds) / 86_400 {
+        0 => "date:today",
+        1 => "date:yesterday",
+        2..=6 => "date:this-week",
+        _ => "date:earlier",
     }
 }
 
@@ -191,6 +264,7 @@ pub struct DirectoryPresentation {
     sort: SortDescriptor,
     filters: DetailsFilters,
     entries: Arc<Vec<FileEntry>>,
+    lower_names: Arc<Vec<Box<str>>>,
     ordered_indices: Arc<Vec<usize>>,
     visible_positions: Arc<OnceLock<HashMap<explorer_model::ShellItemId, usize>>>,
 }
@@ -207,9 +281,24 @@ impl DirectoryPresentation {
         filters: DetailsFilters,
     ) -> Self {
         let entries = snapshot.shared_entries();
+        let now_secs = if filters.selected.is_empty() {
+            0
+        } else {
+            current_unix_seconds()
+        };
+        let lower_names = Arc::new(
+            (0..entries.len())
+                .map(|index| {
+                    snapshot.sort_keys(index).map_or_else(
+                        || entries[index].display_name.to_lowercase().into_boxed_str(),
+                        |keys| keys.display_name().into(),
+                    )
+                })
+                .collect::<Vec<_>>(),
+        );
         let mut ordered_indices = (0..entries.len())
             .filter(|index| {
-                if !filters.matches(&entries[*index]) {
+                if !filters.matches(&entries[*index], now_secs) {
                     return false;
                 }
                 let metadata = &entries[*index].metadata;
@@ -230,6 +319,7 @@ impl DirectoryPresentation {
             sort,
             filters,
             entries,
+            lower_names,
             ordered_indices: Arc::new(ordered_indices),
             visible_positions: Arc::new(OnceLock::new()),
         }
@@ -320,6 +410,7 @@ impl DirectoryPresentation {
                 values.get(&right.id).copied().flatten(),
                 direction,
             )
+            .then_with(|| self.lower_names[*left_index].cmp(&self.lower_names[*right_index]))
             .then_with(|| left.display_name.cmp(&right.display_name))
             .then_with(|| left.id.provider_bytes().cmp(right.id.provider_bytes()))
         });
@@ -772,10 +863,14 @@ pub fn fixed_grid_virtual_range(
     );
     let visible_rows = (viewport_height / cell_height).ceil().max(1.0) as usize;
     let first_visible = (scroll_offset.max(0.0) / cell_height).floor() as usize;
-    let maximum_rows = MAX_STANDARD_REALIZED_ITEMS
+    let budget_rows = MAX_STANDARD_REALIZED_ITEMS
         .checked_div(columns)
-        .unwrap_or_default()
-        .max(visible_rows);
+        .unwrap_or_default();
+    let maximum_rows = if budget_rows >= visible_rows {
+        budget_rows
+    } else {
+        visible_rows.saturating_add(2)
+    };
     if rows.items.len() > maximum_rows {
         let extra_rows = maximum_rows.saturating_sub(visible_rows);
         let start = first_visible.saturating_sub(extra_rows / 2).min(total_rows);
