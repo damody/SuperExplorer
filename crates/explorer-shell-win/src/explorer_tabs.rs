@@ -29,19 +29,22 @@ use windows::{
         },
         UI::{
             Accessibility::{
-                CUIAutomation, IUIAutomation, IUIAutomationElement, TreeScope_Descendants,
-                UIA_ClassNamePropertyId,
+                CUIAutomation, HWINEVENTHOOK, IUIAutomation, IUIAutomationElement, SetWinEventHook,
+                TreeScope_Descendants, UIA_ClassNamePropertyId, UnhookWinEvent,
             },
             Shell::{
-                IFolderView, IPersistFolder2, IPersistIDList, IShellBrowser, IShellWindows,
-                IWebBrowser2, SHGetNameFromIDList, SIGDN_DESKTOPABSOLUTEPARSING, SIGDN_FILESYSPATH,
-                SIGDN_NORMALDISPLAY, ShellWindows,
+                IEnumIDList, IFolderView, ILCombine, IPersistFolder2, IPersistIDList,
+                IShellBrowser, IShellWindows, IWebBrowser2, SHGetNameFromIDList,
+                SIGDN_DESKTOPABSOLUTEPARSING, SIGDN_FILESYSPATH, SIGDN_NORMALDISPLAY,
+                SVGIO_SELECTION, ShellWindows,
             },
             WindowsAndMessaging::{
-                EnumWindows, FindWindowExW, GW_OWNER, GetClassNameW, GetWindow, GetWindowTextW,
-                GetWindowThreadProcessId, IsWindow, IsWindowVisible, PostMessageW, SC_CLOSE,
-                SMTO_ABORTIFHUNG, SW_RESTORE, SendMessageTimeoutW, ShowWindow, WM_CLOSE,
-                WM_COMMAND, WM_SYSCOMMAND,
+                DispatchMessageW, EVENT_OBJECT_CREATE, EVENT_OBJECT_SHOW, EnumWindows,
+                FindWindowExW, GW_OWNER, GetClassNameW, GetWindow, GetWindowTextW,
+                GetWindowThreadProcessId, IsWindow, IsWindowVisible, MSG, OBJID_WINDOW, PM_REMOVE,
+                PeekMessageW, PostMessageW, SC_CLOSE, SMTO_ABORTIFHUNG, SW_RESTORE,
+                SendMessageTimeoutW, ShowWindow, TranslateMessage, WINEVENT_OUTOFCONTEXT,
+                WINEVENT_SKIPOWNPROCESS, WM_CLOSE, WM_COMMAND, WM_SYSCOMMAND,
             },
         },
     },
@@ -62,6 +65,13 @@ pub struct ExplorerTabSnapshot {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub struct InterceptedExplorerTab {
+    pub location: LocationDescriptor,
+    pub display_title: String,
+    pub selected_item: Option<LocationDescriptor>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ExplorerWindowSnapshot {
     pub hwnd: isize,
     pub tabs: Vec<ExplorerTabSnapshot>,
@@ -74,6 +84,123 @@ pub(crate) struct RawShellTab {
     tab_hwnd: isize,
     location: LocationDescriptor,
     display_title: String,
+}
+
+static EXPLORER_WINDOW_EVENT_SEEN: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+unsafe extern "system" fn explorer_win_event_proc(
+    _hook: HWINEVENTHOOK,
+    _event: u32,
+    hwnd: HWND,
+    id_object: i32,
+    _id_child: i32,
+    _id_event_thread: u32,
+    _dwms_event_time: u32,
+) {
+    if id_object == OBJID_WINDOW.0 && !hwnd.0.is_null() && is_file_explorer_window(hwnd) {
+        EXPLORER_WINDOW_EVENT_SEEN.store(true, std::sync::atomic::Ordering::Release);
+    }
+}
+
+pub fn run_live_explorer_interceptor(
+    should_stop: impl Fn() -> bool,
+    is_paused: impl Fn() -> bool,
+    mut on_intercepted: impl FnMut(InterceptedExplorerTab),
+) {
+    let Ok(_apartment) = crate::sta::ApartmentGuard::initialize() else {
+        return;
+    };
+    let mut ignored_hwnds: std::collections::HashSet<isize> =
+        current_explorer_window_hwnds().into_iter().collect();
+    let hook = unsafe {
+        SetWinEventHook(
+            EVENT_OBJECT_CREATE,
+            EVENT_OBJECT_SHOW,
+            None,
+            Some(explorer_win_event_proc),
+            0,
+            0,
+            WINEVENT_OUTOFCONTEXT | WINEVENT_SKIPOWNPROCESS,
+        )
+    };
+    let mut ticks_since_scan = 0_u32;
+    let mut msg = MSG::default();
+    while !should_stop() {
+        while unsafe { PeekMessageW(&raw mut msg, None, 0, 0, PM_REMOVE) }.as_bool() {
+            unsafe {
+                let _ = TranslateMessage(&msg);
+                DispatchMessageW(&msg);
+            }
+        }
+        if is_paused() {
+            for hwnd in current_explorer_window_hwnds() {
+                ignored_hwnds.insert(hwnd);
+            }
+            EXPLORER_WINDOW_EVENT_SEEN.store(false, std::sync::atomic::Ordering::Release);
+            thread::sleep(Duration::from_millis(80));
+            continue;
+        }
+        ticks_since_scan = ticks_since_scan.saturating_add(1);
+        let event_seen =
+            EXPLORER_WINDOW_EVENT_SEEN.swap(false, std::sync::atomic::Ordering::AcqRel);
+        if event_seen || ticks_since_scan >= 5 {
+            ticks_since_scan = 0;
+            for tab in intercept_new_explorer_windows_on_sta(&mut ignored_hwnds) {
+                on_intercepted(tab);
+            }
+        }
+        thread::sleep(Duration::from_millis(30));
+    }
+    if !hook.is_invalid() {
+        let _ = unsafe { UnhookWinEvent(hook) };
+    }
+}
+
+pub fn current_explorer_window_hwnds() -> Vec<isize> {
+    explorer_windows()
+        .into_iter()
+        .map(|(hwnd, _)| hwnd)
+        .collect()
+}
+
+/// Captures newly opened File Explorer windows on an initialized STA thread,
+/// extracts their active location and optional `/select` item, and closes them.
+pub fn intercept_new_explorer_windows_on_sta(
+    ignored_hwnds: &mut std::collections::HashSet<isize>,
+) -> Vec<InterceptedExplorerTab> {
+    ignored_hwnds.retain(|hwnd| unsafe { IsWindow(Some(HWND(*hwnd as *mut c_void))) }.as_bool());
+    let windows = explorer_windows();
+    let mut intercepted = Vec::new();
+    for (parent_hwnd, _) in windows {
+        if ignored_hwnds.contains(&parent_hwnd) {
+            continue;
+        }
+        let mut captured = Vec::new();
+        for _ in 0..6 {
+            captured = collect_intercepted_tabs_for_window(parent_hwnd);
+            if !captured.is_empty() {
+                break;
+            }
+            thread::sleep(Duration::from_millis(35));
+        }
+        if captured.is_empty()
+            && let Some(fallback) = location_from_uia(parent_hwnd)
+        {
+            captured.push(InterceptedExplorerTab {
+                location: fallback.location,
+                display_title: fallback.display_title,
+                selected_item: None,
+            });
+        }
+        if !captured.is_empty() {
+            ignored_hwnds.insert(parent_hwnd);
+            post_close(HWND(parent_hwnd as *mut c_void));
+            win32_close_until_gone(&[parent_hwnd]);
+            intercepted.extend(captured);
+        }
+    }
+    intercepted
 }
 
 pub fn snapshot_open_explorer_windows() -> Result<Vec<ExplorerWindowSnapshot>, String> {
@@ -626,6 +753,91 @@ fn collect_shell_tabs() -> Result<Vec<RawShellTab>, String> {
         });
     }
     Ok(tabs)
+}
+
+fn collect_intercepted_tabs_for_window(target_parent_hwnd: isize) -> Vec<InterceptedExplorerTab> {
+    let Ok(windows): Result<IShellWindows, _> =
+        (unsafe { CoCreateInstance(&ShellWindows, None, CLSCTX_ALL) })
+    else {
+        return Vec::new();
+    };
+    let count = unsafe { windows.Count() }.unwrap_or(0);
+    let mut tabs = Vec::new();
+    for index in 0..count {
+        let Ok(dispatch) = (unsafe { windows.Item(&VARIANT::from(index)) }) else {
+            continue;
+        };
+        let Ok(browser) = dispatch.cast::<IWebBrowser2>() else {
+            continue;
+        };
+        let Ok(parent) = (unsafe { browser.HWND() }) else {
+            continue;
+        };
+        let parent_hwnd = parent.0 as isize;
+        if parent_hwnd != target_parent_hwnd {
+            continue;
+        }
+        let Ok(unknown) = dispatch.cast::<IUnknown>() else {
+            continue;
+        };
+        let Ok((location, display_title)) = tab_location(&browser, &unknown) else {
+            continue;
+        };
+        let selected_item = folder_view_selected_item(&unknown);
+        tabs.push(InterceptedExplorerTab {
+            location,
+            display_title,
+            selected_item,
+        });
+    }
+    tabs
+}
+
+fn folder_view_selected_item(dispatch: &IUnknown) -> Option<LocationDescriptor> {
+    let browser = shell_browser(dispatch)?;
+    let view = unsafe { browser.QueryActiveShellView() }.ok()?;
+    let folder_view = view.cast::<IFolderView>().ok()?;
+    let selected_count = unsafe { folder_view.ItemCount(SVGIO_SELECTION) }.ok()?;
+    if selected_count <= 0 {
+        return None;
+    }
+    let persist: IPersistFolder2 = unsafe { folder_view.GetFolder() }.ok()?;
+    let folder_pidl = unsafe { persist.GetCurFolder() }.ok()?;
+    if folder_pidl.is_null() {
+        return None;
+    }
+    let child_pidl = if let Ok(enum_list) =
+        unsafe { folder_view.Items::<IEnumIDList>(SVGIO_SELECTION) }
+    {
+        let mut child = std::ptr::null_mut();
+        let mut fetched = 0;
+        let ok = unsafe { enum_list.Next(std::slice::from_mut(&mut child), Some(&mut fetched)) };
+        if ok.is_ok() && fetched == 1 && !child.is_null() {
+            Some(child)
+        } else {
+            None
+        }
+    } else {
+        None
+    }
+    .or_else(|| {
+        let focused = unsafe { folder_view.GetFocusedItem() }
+            .ok()
+            .filter(|index| *index >= 0)?;
+        unsafe { folder_view.Item(focused) }
+            .ok()
+            .filter(|ptr| !ptr.is_null())
+    });
+    let combined = match child_pidl {
+        Some(child) => {
+            let combined = unsafe { ILCombine(Some(folder_pidl.cast()), Some(child.cast())) };
+            unsafe { CoTaskMemFree(Some(child.cast())) };
+            combined
+        }
+        None => std::ptr::null_mut(),
+    };
+    unsafe { CoTaskMemFree(Some(folder_pidl.cast())) };
+    names_from_pidl(combined).map(|entry| entry.location)
 }
 
 fn tab_hwnd_from_browser(dispatch: &IUnknown) -> Option<isize> {

@@ -81,8 +81,9 @@ pub use explorer_handoff::{
 };
 pub use explorer_pins::snapshot_windows_explorer_pinned_folders;
 pub use explorer_tabs::{
-    ExplorerTabSnapshot, ExplorerWindowSnapshot, close_explorer_windows,
-    location_from_explorer_path, snapshot_open_explorer_windows,
+    ExplorerTabSnapshot, ExplorerWindowSnapshot, InterceptedExplorerTab, close_explorer_windows,
+    descriptor_from_explorer_path, location_from_explorer_path, run_live_explorer_interceptor,
+    snapshot_open_explorer_windows,
 };
 pub use extension::tortoise_git_is_installed;
 pub use namespace::inspect_namespace_item;
