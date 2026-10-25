@@ -7211,18 +7211,12 @@ mod tests {
             super::closed_location_key(&LocationDescriptor::file_system("c:/"))
         );
         assert_eq!(
-            super::closed_location_key(&LocationDescriptor::file_system(
-                r"D:\AI_Pic\output\"
-            )),
-            super::closed_location_key(&LocationDescriptor::file_system(
-                r"D:\AI_Pic\output"
-            ))
+            super::closed_location_key(&LocationDescriptor::file_system(r"D:\AI_Pic\output\")),
+            super::closed_location_key(&LocationDescriptor::file_system(r"D:\AI_Pic\output"))
         );
         assert_ne!(
             super::closed_location_key(&LocationDescriptor::file_system(r"C:\")),
-            super::closed_location_key(&LocationDescriptor::file_system(
-                r"C:\portable"
-            ))
+            super::closed_location_key(&LocationDescriptor::file_system(r"C:\portable"))
         );
     }
 
@@ -8171,7 +8165,11 @@ mod tests {
     fn code_lines_media_files_are_rejected_before_reading_contents() {
         let directory = tempfile::tempdir().unwrap();
         for name in [
-            "movie.mp4", "movie.MP4", "photo.png", "music.mp3", "archive.zip",
+            "movie.mp4",
+            "movie.MP4",
+            "photo.png",
+            "music.mp3",
+            "archive.zip",
         ] {
             let path = directory.path().join(name);
             fs::write(&path, b"fn main() {}\n").unwrap();

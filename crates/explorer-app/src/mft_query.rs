@@ -956,7 +956,7 @@ pub fn serve_queries(
             if error != ERROR_PIPE_LISTENING && error != ERROR_NO_DATA {
                 break;
             }
-            std::thread::sleep(Duration::from_millis(20));
+            std::thread::sleep(Duration::from_millis(2));
         }
         let mut request = [0_u8; REQUEST_BYTES];
         if read_exact(pipe.0, &mut request, &stopped, CONTROL_RESPONSE_TIMEOUT).is_ok() {
@@ -1534,7 +1534,7 @@ fn read_exact(
             if std::time::Instant::now() >= deadline {
                 return Err("MFT query read timed out".to_owned());
             }
-            std::thread::sleep(Duration::from_millis(10));
+            std::thread::sleep(Duration::from_millis(1));
         }
     }
     (offset == bytes.len())
@@ -2036,7 +2036,7 @@ mod tests {
                 std::time::Instant::now() < deadline,
                 "detailed service error did not round-trip before deadline"
             );
-            std::thread::sleep(Duration::from_millis(20));
+            std::thread::sleep(Duration::from_millis(2));
         }
         let result = loop {
             if let Ok(result) = query_folder(&root, 64)
@@ -2048,7 +2048,7 @@ mod tests {
                 std::time::Instant::now() < deadline,
                 "test pipe instance was not selected before deadline"
             );
-            std::thread::sleep(Duration::from_millis(20));
+            std::thread::sleep(Duration::from_millis(2));
         };
         assert_eq!(result.logical_bytes, 1_250);
         assert_eq!(result.file_count, 7);

@@ -1014,6 +1014,7 @@ pub fn read_volume_index_bounded(
         HighUsn: i64::MAX,
     };
     let mut output = vec![0_u8; 1024 * 1024];
+    let mut record_buffer = vec![0_u8; 64 * 1024];
     let mut entries = BTreeMap::new();
     let maximum_entries = maximum_entries_for_volume_budget(volume_limit_bytes);
     let mut estimated_file_bytes = 0_usize;
@@ -1092,7 +1093,8 @@ pub fn read_volume_index_bounded(
                     };
                     let (logical_bytes, allocated_bytes) =
                         if attributes & FILE_ATTRIBUTE_DIRECTORY.0 == 0 {
-                            read_file_sizes(handle.0, reference).unwrap_or_default()
+                            read_file_sizes_with_buffer(handle.0, reference, &mut record_buffer)
+                                .unwrap_or_default()
                         } else {
                             (0, 0)
                         };
@@ -1222,13 +1224,22 @@ pub fn read_volume_index_with_helper(
     result
 }
 
+#[allow(dead_code)]
+fn read_file_sizes(handle: HANDLE, reference: u64) -> Option<(u64, u64)> {
+    let mut output = vec![0_u8; 64 * 1024];
+    read_file_sizes_with_buffer(handle, reference, &mut output)
+}
+
 #[expect(
     unsafe_code,
     reason = "reading an NTFS file record requires DeviceIoControl with raw buffers"
 )]
-fn read_file_sizes(handle: HANDLE, reference: u64) -> Option<(u64, u64)> {
+fn read_file_sizes_with_buffer(
+    handle: HANDLE,
+    reference: u64,
+    output: &mut [u8],
+) -> Option<(u64, u64)> {
     let input = reference as i64;
-    let mut output = vec![0_u8; 64 * 1024];
     let mut returned = 0_u32;
     // SAFETY: buffers are valid and the operation is synchronous.
     unsafe {
@@ -1247,7 +1258,7 @@ fn read_file_sizes(handle: HANDLE, reference: u64) -> Option<(u64, u64)> {
     if returned < 16 {
         return None;
     }
-    let record_len = read_u32(&output, 8)? as usize;
+    let record_len = read_u32(output, 8)? as usize;
     let record = output.get(12..12 + record_len)?;
     parse_unnamed_data_sizes(record)
 }

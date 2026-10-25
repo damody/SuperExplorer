@@ -342,6 +342,14 @@ pub(crate) fn snapshot_from_indexed_entries(
         directory_count: 1,
         status: SnapshotStatusV1::Complete,
     };
+    let skip_per_entry_stat = method == SnapshotMethodV1::Mft && entries.len() > 256;
+    if skip_per_entry_stat {
+        let root_metadata = fs::symlink_metadata(&canonical_root)
+            .map_err(|_| "indexed snapshot root is unavailable".to_owned())?;
+        if is_reparse_point(&root_metadata) {
+            return Err("indexed snapshot contains a reparse point".to_owned());
+        }
+    }
     for entry in entries {
         let indexed_path = if entry.path.starts_with(&canonical_root) {
             entry.path
@@ -353,15 +361,17 @@ pub(crate) fn snapshot_from_indexed_entries(
         if !indexed_path.starts_with(&canonical_root) || indexed_path == canonical_root {
             return Err("indexed snapshot path escaped the root".to_owned());
         }
-        let metadata = fs::symlink_metadata(&indexed_path)
-            .map_err(|_| "indexed snapshot contains a stale path".to_owned())?;
-        if is_reparse_point(&metadata) {
-            return Err("indexed snapshot contains a reparse point".to_owned());
-        }
-        if metadata.is_dir() != entry.is_directory
-            || (!entry.is_directory && metadata.len() != entry.bytes)
-        {
-            return Err("indexed snapshot metadata mismatch".to_owned());
+        if !skip_per_entry_stat {
+            let metadata = fs::symlink_metadata(&indexed_path)
+                .map_err(|_| "indexed snapshot contains a stale path".to_owned())?;
+            if is_reparse_point(&metadata) {
+                return Err("indexed snapshot contains a reparse point".to_owned());
+            }
+            if metadata.is_dir() != entry.is_directory
+                || (!entry.is_directory && metadata.len() != entry.bytes)
+            {
+                return Err("indexed snapshot metadata mismatch".to_owned());
+            }
         }
         let parent_path = indexed_path
             .parent()
@@ -952,9 +962,9 @@ impl FolderSizeServiceV1 {
             SnapshotMethodV1::Mft,
             entries,
         )?;
-        let expected = crate::mft_size_map::MftAggregateIndexV1::build(&index, 8)?
-            .get(root_reference)
-            .ok_or_else(|| "MFT helper aggregate root is missing".to_owned())?;
+        let expected =
+            index
+                .aggregate_subtree_bounded(root_reference, DEFAULT_MAX_NODES_V1, || cancelled())?;
         if snapshot.aggregate.recursive_bytes != expected.logical_bytes
             || snapshot.aggregate.file_count != expected.file_count
             || snapshot.aggregate.directory_count != expected.directory_count
@@ -996,9 +1006,19 @@ impl FolderSizeServiceV1 {
         self.lru.retain(|key| self.snapshots.contains_key(key));
         #[cfg(windows)]
         {
-            self.mft_indexes.clear();
-            self.mft_aggregates.clear();
-            self.mft_checkpoints.clear();
+            if let Ok(active_volume) = service_volume_letter(&root) {
+                let active_volume = active_volume.to_string();
+                self.mft_indexes
+                    .retain(|volume, _| volume == &active_volume);
+                self.mft_aggregates
+                    .retain(|volume, _| volume == &active_volume);
+                self.mft_checkpoints
+                    .retain(|volume, _| volume == &active_volume);
+            } else {
+                self.mft_indexes.clear();
+                self.mft_aggregates.clear();
+                self.mft_checkpoints.clear();
+            }
         }
     }
     fn cached_snapshot_backend_is_current(&self, root: &Path, snapshot: &FolderSnapshotV1) -> bool {
