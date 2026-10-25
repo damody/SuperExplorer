@@ -56,11 +56,16 @@ impl RawIconCache {
         if let Some(path) = key.location.path() {
             // Existing files are versioned by metadata; shared attribute-only requests
             // intentionally name no real file. A directory's custom artwork can live in desktop.ini.
-            for candidate in [path.to_path_buf(), path.join("desktop.ini")] {
-                if let Ok(metadata) = fs::metadata(candidate) {
-                    source.extend_from_slice(&metadata.file_size().to_le_bytes());
-                    source.extend_from_slice(&metadata.last_write_time().to_le_bytes());
-                    source.extend_from_slice(&metadata.file_attributes().to_le_bytes());
+            if let Ok(metadata) = fs::metadata(path) {
+                source.extend_from_slice(&metadata.file_size().to_le_bytes());
+                source.extend_from_slice(&metadata.last_write_time().to_le_bytes());
+                source.extend_from_slice(&metadata.file_attributes().to_le_bytes());
+                if metadata.is_dir()
+                    && let Ok(ini_metadata) = fs::metadata(path.join("desktop.ini"))
+                {
+                    source.extend_from_slice(&ini_metadata.file_size().to_le_bytes());
+                    source.extend_from_slice(&ini_metadata.last_write_time().to_le_bytes());
+                    source.extend_from_slice(&ini_metadata.file_attributes().to_le_bytes());
                 }
             }
             let extension = path

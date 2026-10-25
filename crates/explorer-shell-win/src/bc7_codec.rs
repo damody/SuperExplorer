@@ -213,30 +213,37 @@ fn encode_rgba_inner(
             .checked_add(layout.payload_bytes)
             .ok_or_else(|| invalid("combined BC7 staging overflow"))?,
     );
-    let mut padded = vec![0_u8; padded_bytes];
-    let source_stride = stride as usize;
-    let row_bytes = minimum_stride as usize;
-    for row in 0..height as usize {
-        let source = &rgba[row * source_stride..row * source_stride + row_bytes];
-        padded[row * padded_stride..row * padded_stride + row_bytes].copy_from_slice(source);
-        if layout.padded_width > width {
-            let edge = source[row_bytes - 4..row_bytes].to_vec();
-            for column in width as usize..layout.padded_width as usize {
-                padded[row * padded_stride + column * 4..row * padded_stride + column * 4 + 4]
-                    .copy_from_slice(&edge);
-            }
-        }
-    }
-    if layout.padded_height > height {
-        let last = (height as usize - 1) * padded_stride;
-        for row in height as usize..layout.padded_height as usize {
-            let source = padded[last..last + padded_stride].to_vec();
-            padded[row * padded_stride..(row + 1) * padded_stride].copy_from_slice(&source);
-        }
-    }
-
     let padded_stride_u32 = u32::try_from(padded_stride)
         .map_err(|_| invalid("padded RGBA stride exceeds the encoder contract"))?;
+    let padded: std::borrow::Cow<'_, [u8]> = if width == layout.padded_width
+        && height == layout.padded_height
+        && stride == padded_stride_u32
+    {
+        std::borrow::Cow::Borrowed(rgba)
+    } else {
+        let mut padded = vec![0_u8; padded_bytes];
+        let source_stride = stride as usize;
+        let row_bytes = minimum_stride as usize;
+        for row in 0..height as usize {
+            let source = &rgba[row * source_stride..row * source_stride + row_bytes];
+            padded[row * padded_stride..row * padded_stride + row_bytes].copy_from_slice(source);
+            if layout.padded_width > width {
+                let mut edge = [0_u8; 4];
+                edge.copy_from_slice(&source[row_bytes - 4..row_bytes]);
+                for column in width as usize..layout.padded_width as usize {
+                    padded[row * padded_stride + column * 4..row * padded_stride + column * 4 + 4]
+                        .copy_from_slice(&edge);
+                }
+            }
+        }
+        if layout.padded_height > height {
+            let last = (height as usize - 1) * padded_stride;
+            for row in height as usize..layout.padded_height as usize {
+                padded.copy_within(last..last + padded_stride, row * padded_stride);
+            }
+        }
+        std::borrow::Cow::Owned(padded)
+    };
     let surface = intel_tex_2::RgbaSurface {
         data: &padded,
         width: layout.padded_width,

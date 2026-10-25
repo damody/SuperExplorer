@@ -897,17 +897,23 @@ mod tests {
             let mut received_results = false;
             loop {
                 match receiver.recv_timeout(Duration::from_secs(30)) {
-                    Ok(ExplorerEvent::SearchBatch { entries, source, .. }) => {
+                    Ok(ExplorerEvent::SearchBatch {
+                        entries, source, ..
+                    }) => {
                         assert_eq!(source, SearchBackend::FileSystemFallback);
                         assert!(!entries.is_empty());
                         assert!(entries.iter().all(|entry| explorer_search::matches_entry(
-                            &parse(&query).unwrap(), entry
+                            &parse(&query).unwrap(),
+                            entry
                         )));
                         received_results = true;
                         context.cancellation.cancel();
                     }
                     Ok(ExplorerEvent::SearchFinished { outcome, .. }) => {
-                        assert!(received_results, "search ended without results: {outcome:?}");
+                        assert!(
+                            received_results,
+                            "search ended without results: {outcome:?}"
+                        );
                         assert!(matches!(
                             outcome,
                             SearchTerminal::Cancelled | SearchTerminal::Finished

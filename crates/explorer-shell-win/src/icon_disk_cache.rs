@@ -46,6 +46,9 @@ static THUMBNAIL_MISSES: AtomicU64 = AtomicU64::new(0);
 static THUMBNAIL_REJECTIONS: AtomicU64 = AtomicU64::new(0);
 static ICON_BC7_ENABLED: AtomicBool = AtomicBool::new(false);
 static THUMBNAIL_BC7_ENABLED: AtomicBool = AtomicBool::new(false);
+static DISK_CACHE_ROOT_USAGE: std::sync::LazyLock<
+    std::sync::Mutex<std::collections::HashMap<PathBuf, (usize, u64)>>,
+> = std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::HashMap::new()));
 #[cfg(test)]
 pub(crate) static BC7_GATE_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
@@ -129,6 +132,9 @@ impl ShellIconDiskCache {
         let Some(root) = &self.root else {
             return Ok(());
         };
+        if let Ok(mut usage) = DISK_CACHE_ROOT_USAGE.lock() {
+            usage.remove(root);
+        }
         match fs::remove_dir_all(root) {
             Ok(()) => Ok(()),
             Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
@@ -174,6 +180,11 @@ impl ShellIconDiskCache {
                 self.counters().2.fetch_add(1, Ordering::Relaxed);
                 tracing::debug!(?error, "Shell icon disk cache entry was rejected");
                 let _ = fs::remove_file(path);
+                if let Some(root) = &self.root
+                    && let Ok(mut usage) = DISK_CACHE_ROOT_USAGE.lock()
+                {
+                    usage.remove(root);
+                }
                 DiskCacheLoad::Rejected
             }
         }
@@ -437,19 +448,35 @@ impl ShellIconDiskCache {
                     "BC7 publication was cancelled or superseded",
                 ));
             }
+            let written_bytes = (HEADER_LEN as u64).saturating_add(payload_len);
             match fs::rename(&temporary, &path) {
-                Ok(()) => Ok(()),
-                Err(_error) if path.is_file() => Ok(()),
+                Ok(()) => Ok((true, written_bytes)),
+                Err(_error) if path.is_file() => Ok((false, 0_u64)),
                 Err(error) => Err(error),
             }
         })();
         if result.is_err() || temporary.exists() {
             let _ = fs::remove_file(temporary);
         }
-        if result.is_ok() {
-            self.cleanup(&path);
+        if let Ok((published_new, written_bytes)) = result {
+            let needs_cleanup = if let Ok(mut usage) = DISK_CACHE_ROOT_USAGE.lock() {
+                if let Some((count, total)) = usage.get_mut(root) {
+                    if published_new {
+                        *count = count.saturating_add(1);
+                        *total = total.saturating_add(written_bytes);
+                    }
+                    *count > self.max_entries || *total > self.max_total_bytes
+                } else {
+                    true
+                }
+            } else {
+                true
+            };
+            if needs_cleanup {
+                self.cleanup(&path);
+            }
         }
-        result
+        result.map(|_| ())
     }
 
     fn cleanup(&self, keep: &Path) {
@@ -479,22 +506,27 @@ impl ShellIconDiskCache {
             })
             .collect::<Vec<_>>();
         let mut total = candidates.iter().map(|(_, size, _)| *size).sum::<u64>();
-        if candidates.len() <= self.max_entries && total <= self.max_total_bytes {
-            return;
-        }
-        candidates.sort_by_key(|(_, _, modified)| *modified);
         let mut count = candidates.len();
-        for (path, size, _) in candidates {
-            if count <= self.max_entries && total <= self.max_total_bytes {
-                break;
+        if count > self.max_entries || total > self.max_total_bytes {
+            candidates.sort_by_key(|(_, _, modified)| *modified);
+            for (path, size, _) in candidates {
+                if count <= self.max_entries && total <= self.max_total_bytes {
+                    break;
+                }
+                if path == keep {
+                    continue;
+                }
+                if fs::remove_file(path).is_ok() {
+                    count = count.saturating_sub(1);
+                    total = total.saturating_sub(size);
+                }
             }
-            if path == keep {
-                continue;
+        }
+        if let Ok(mut usage) = DISK_CACHE_ROOT_USAGE.lock() {
+            if usage.len() >= 256 && !usage.contains_key(root) {
+                usage.clear();
             }
-            if fs::remove_file(path).is_ok() {
-                count = count.saturating_sub(1);
-                total = total.saturating_sub(size);
-            }
+            usage.insert(root.clone(), (count, total));
         }
     }
 }

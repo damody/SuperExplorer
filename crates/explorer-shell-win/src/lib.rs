@@ -24,8 +24,8 @@ pub use clipboard::{
     read_native_file_clipboard_with_token,
 };
 mod context_menu;
-mod drag_drop;
 mod directory_indexer;
+mod drag_drop;
 mod everything;
 pub use everything::{IndexedFolderEntryV1, query_folder_index};
 mod bc7_codec;

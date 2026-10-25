@@ -338,8 +338,10 @@ fn load_filesystem_icon_with_overlays(
     if key.size_bucket <= 256 {
         IMAGE_LIST_PIXELS.with(|cache| {
             let mut cache = cache.borrow_mut();
-            if cache.len() >= 256 / crate::sta::ICON_WORKER_COUNT {
-                cache.clear();
+            if cache.len() >= 128
+                && let Some(old_key) = cache.keys().next().cloned()
+            {
+                cache.remove(&old_key);
             }
             cache.insert(pixels_key, payload.clone());
         });

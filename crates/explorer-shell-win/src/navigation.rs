@@ -755,12 +755,24 @@ mod tests {
                 true
             })
             .expect("This PC enumerates");
-            for entry in rows.iter().filter(|entry| entry.display_name.ends_with(":)")) {
-                assert!(entry.metadata.drive.is_some(), "missing capacity metadata for {}", entry.display_name);
+            for entry in rows
+                .iter()
+                .filter(|entry| entry.display_name.ends_with(":)"))
+            {
+                assert!(
+                    entry.metadata.drive.is_some(),
+                    "missing capacity metadata for {}",
+                    entry.display_name
+                );
             }
-            assert!(rows.iter().any(|entry| entry.metadata.drive.as_ref().is_some_and(|drive| {
-                drive.total_bytes.is_some_and(|total| total > 0) && drive.available_bytes.is_some()
-            })), "This PC must publish at least the system drive capacity: {location:?}");
+            assert!(
+                rows.iter()
+                    .any(|entry| entry.metadata.drive.as_ref().is_some_and(|drive| {
+                        drive.total_bytes.is_some_and(|total| total > 0)
+                            && drive.available_bytes.is_some()
+                    })),
+                "This PC must publish at least the system drive capacity: {location:?}"
+            );
         }
     }
 
@@ -1406,12 +1418,12 @@ pub(crate) fn child_entry(
     let mut metadata = entry_metadata(&location, is_container, attributes);
     // Namespace navigation retains PIDL identity, but drive capacity belongs to the
     // filesystem root. Populate it independently of the descriptor used for opening.
-    if resolved.is_this_pc && resolved.preserve_namespace
+    if resolved.is_this_pc
+        && resolved.preserve_namespace
         && let Ok(path) = name_from_pidl(absolute.as_ptr(), SIGDN_FILESYSPATH)
         && let Some(drive) = drive_metadata(Path::new(&path))
     {
-        metadata.type_display = shell_type_name(Path::new(&path), true)
-            .or(metadata.type_display);
+        metadata.type_display = shell_type_name(Path::new(&path), true).or(metadata.type_display);
         metadata.drive = Some(drive);
     }
     Ok(FileEntry {
@@ -1644,8 +1656,32 @@ fn namespace_capabilities(shell_attributes: u32, is_container: bool) -> Namespac
     NamespaceCapabilities::from_public_bits(bits)
 }
 
+static SHELL_TYPE_NAME_CACHE: std::sync::LazyLock<
+    std::sync::Mutex<std::collections::HashMap<(bool, std::ffi::OsString), String>>,
+> = std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::HashMap::new()));
+
+static FILETIME_MINUTE_CACHE: std::sync::LazyLock<
+    std::sync::Mutex<std::collections::HashMap<u64, String>>,
+> = std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::HashMap::new()));
+
 fn shell_type_name(path: &Path, is_directory: bool) -> Option<String> {
-    let path = HSTRING::from(path.as_os_str().to_string_lossy().as_ref());
+    let cache_key = path.parent().is_some().then(|| {
+        let extension = if is_directory {
+            std::ffi::OsString::new()
+        } else {
+            path.extension()
+                .map(OsStr::to_ascii_lowercase)
+                .unwrap_or_default()
+        };
+        (is_directory, extension)
+    });
+    if let Some(ref key) = cache_key
+        && let Ok(cache) = SHELL_TYPE_NAME_CACHE.lock()
+        && let Some(cached) = cache.get(key)
+    {
+        return Some(cached.clone());
+    }
+    let path = HSTRING::from(path.as_os_str());
     let mut info = SHFILEINFOW::default();
     // SAFETY: path is a live NUL-terminated HSTRING and info is correctly sized writable storage.
     let info_size = u32::try_from(size_of::<SHFILEINFOW>()).ok()?;
@@ -1672,7 +1708,18 @@ fn shell_type_name(path: &Path, is_directory: bool) -> Option<String> {
         .iter()
         .position(|value| *value == 0)
         .unwrap_or(info.szTypeName.len());
-    (length != 0).then(|| String::from_utf16_lossy(&info.szTypeName[..length]))
+    let resolved = (length != 0).then(|| String::from_utf16_lossy(&info.szTypeName[..length]))?;
+    if let Some(key) = cache_key
+        && let Ok(mut cache) = SHELL_TYPE_NAME_CACHE.lock()
+    {
+        if cache.len() >= 4_096
+            && let Some(old_key) = cache.keys().next().cloned()
+        {
+            cache.remove(&old_key);
+        }
+        cache.insert(key, resolved.clone());
+    }
+    Some(resolved)
 }
 
 fn format_windows_time(value: std::time::SystemTime) -> Option<String> {
@@ -1688,6 +1735,12 @@ fn format_windows_time(value: std::time::SystemTime) -> Option<String> {
 }
 
 fn format_filetime_ticks(ticks: u64) -> Option<String> {
+    let minute_bucket = ticks / 600_000_000;
+    if let Ok(cache) = FILETIME_MINUTE_CACHE.lock()
+        && let Some(cached) = cache.get(&minute_bucket)
+    {
+        return Some(cached.clone());
+    }
     let file_time = FILETIME {
         dwLowDateTime: u32::try_from(ticks & u64::from(u32::MAX)).ok()?,
         dwHighDateTime: u32::try_from(ticks >> 32).ok()?,
@@ -1727,14 +1780,23 @@ fn format_filetime_ticks(ticks: u64) -> Option<String> {
     }
     let date = String::from_utf16_lossy(&date[..usize::try_from(date_len - 1).ok()?]);
     let time = String::from_utf16_lossy(&time[..usize::try_from(time_len - 1).ok()?]);
-    Some(format!("{date} {time}"))
+    let formatted = format!("{date} {time}");
+    if let Ok(mut cache) = FILETIME_MINUTE_CACHE.lock() {
+        if cache.len() >= 4_096
+            && let Some(old_key) = cache.keys().next().copied()
+        {
+            cache.remove(&old_key);
+        }
+        cache.insert(minute_bucket, formatted.clone());
+    }
+    Some(formatted)
 }
 
 pub(crate) fn filesystem_identity(
     path: &Path,
     is_directory: bool,
 ) -> Result<Vec<u8>, ExplorerError> {
-    let path = HSTRING::from(path.as_os_str().to_string_lossy().as_ref());
+    let path = HSTRING::from(path.as_os_str());
     let flags = if is_directory {
         FILE_FLAG_BACKUP_SEMANTICS
     } else {
@@ -1778,8 +1840,10 @@ pub(crate) fn filesystem_identity(
 }
 
 pub(crate) fn fallback_filesystem_identity(path: &Path) -> Vec<u8> {
-    let mut bytes = vec![b'P'];
-    bytes.extend_from_slice(path.as_os_str().to_string_lossy().to_lowercase().as_bytes());
+    let lower = path.as_os_str().to_string_lossy().to_lowercase();
+    let mut bytes = Vec::with_capacity(1 + lower.len());
+    bytes.push(b'P');
+    bytes.extend_from_slice(lower.as_bytes());
     bytes
 }
 

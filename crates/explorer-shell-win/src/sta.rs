@@ -2360,6 +2360,114 @@ fn search_worker_loop(
     let _ = done.send(());
 }
 
+struct ThumbnailJob {
+    context: explorer_model::RequestContext,
+    key: explorer_model::ThumbnailRequestKey,
+    location: LocationDescriptor,
+    cache_only: bool,
+    terminals: ReliableTerminalPublisher,
+    worker_guard: IsolatedWorkerGuard,
+}
+
+static THUMBNAIL_WORKER_POOL: std::sync::OnceLock<Result<SyncSender<ThumbnailJob>, String>> =
+    std::sync::OnceLock::new();
+
+fn thumbnail_worker_pool() -> Result<&'static SyncSender<ThumbnailJob>, ExplorerError> {
+    THUMBNAIL_WORKER_POOL
+        .get_or_init(|| {
+            let (sender, receiver) = mpsc::sync_channel::<ThumbnailJob>(THUMBNAIL_WORKER_CAPACITY);
+            let receiver = Arc::new(Mutex::new(receiver));
+            for index in 0..THUMBNAIL_WORKER_CAPACITY {
+                let receiver = Arc::clone(&receiver);
+                thread::Builder::new()
+                    .name(format!("explorer-thumbnail-worker-{index}"))
+                    .spawn(move || {
+                        let apartment = ApartmentGuard::initialize();
+                        loop {
+                            let _ = pump_pending_messages();
+                            let received = {
+                                let Ok(receiver) = receiver.lock() else {
+                                    break;
+                                };
+                                receiver.recv_timeout(Duration::from_millis(50))
+                            };
+                            let job = match received {
+                                Ok(job) => job,
+                                Err(RecvTimeoutError::Timeout) => continue,
+                                Err(RecvTimeoutError::Disconnected) => break,
+                            };
+                            let ThumbnailJob {
+                                context,
+                                key,
+                                location,
+                                cache_only,
+                                terminals,
+                                worker_guard: _worker_guard,
+                            } = job;
+                            let request = explorer_model::ThumbnailRequest::new(
+                                context.clone(),
+                                key.clone(),
+                                explorer_model::ThumbnailPriority::ActiveVisible,
+                            );
+                            let outcome =
+                                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                                    match &apartment {
+                                        Ok(_apartment) => crate::thumbnail::load_shell_thumbnail(
+                                            &request,
+                                            &location,
+                                            cache_only,
+                                            explorer_common::RoadmapLimits::default()
+                                                .thumbnail_memory_bytes,
+                                        ),
+                                        Err(error) => explorer_model::ThumbnailTerminal::Failed(
+                                            error.to_string(),
+                                        ),
+                                    }
+                                }))
+                                .unwrap_or_else(|payload| {
+                                    let message = panic_payload_message(payload.as_ref());
+                                    record_process_error_message(
+                                        ErrorSeverity::Critical,
+                                        "shell",
+                                        "thumbnail_worker_panic",
+                                        &message,
+                                        Some(file!()),
+                                    );
+                                    explorer_model::ThumbnailTerminal::Failed(message)
+                                });
+                            let _ = request.claim_terminal(&outcome);
+                            if context.cancellation.is_cancelled() {
+                                STALE_CANCELLED_COMPLETIONS.fetch_add(1, Ordering::Relaxed);
+                                tracing::debug!(
+                                    request_id = ?context.request_id,
+                                    tab_id = ?context.tab_id,
+                                    generation = context.generation.value(),
+                                    "isolated thumbnail completion was cancelled before delivery"
+                                );
+                            }
+                            terminals.publish(ExplorerEvent::ThumbnailFinished {
+                                context,
+                                key,
+                                outcome,
+                            });
+                        }
+                    })
+                    .map_err(|error| error.to_string())?;
+            }
+            Ok(sender)
+        })
+        .as_ref()
+        .map_err(|detail| {
+            ExplorerError::new(
+                ExplorerErrorKind::Availability,
+                "start thumbnail worker",
+                true,
+                "Thumbnail loading could not be started.",
+                detail.clone(),
+            )
+        })
+}
+
 fn start_thumbnail_worker(
     context: explorer_model::RequestContext,
     key: explorer_model::ThumbnailRequestKey,
@@ -2387,57 +2495,16 @@ fn start_thumbnail_worker(
             "thumbnail domain capacity is saturated",
         ));
     };
-    let worker_name = format!("thumbnail-{:?}", context.request_id);
-    thread::Builder::new()
-        .name(worker_name)
-        .spawn(move || {
-            let _worker_guard = worker_guard;
-            let request = explorer_model::ThumbnailRequest::new(
-                context.clone(),
-                key.clone(),
-                explorer_model::ThumbnailPriority::ActiveVisible,
-            );
-            let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                ApartmentGuard::initialize().map_or_else(
-                    |error| explorer_model::ThumbnailTerminal::Failed(error.to_string()),
-                    |_apartment| {
-                        crate::thumbnail::load_shell_thumbnail(
-                            &request,
-                            &location,
-                            cache_only,
-                            explorer_common::RoadmapLimits::default().thumbnail_memory_bytes,
-                        )
-                    },
-                )
-            }))
-            .unwrap_or_else(|payload| {
-                let message = panic_payload_message(payload.as_ref());
-                record_process_error_message(
-                    ErrorSeverity::Critical,
-                    "shell",
-                    "thumbnail_worker_panic",
-                    &message,
-                    Some(file!()),
-                );
-                explorer_model::ThumbnailTerminal::Failed(message)
-            });
-            let _ = request.claim_terminal(&outcome);
-            if context.cancellation.is_cancelled() {
-                STALE_CANCELLED_COMPLETIONS.fetch_add(1, Ordering::Relaxed);
-                tracing::debug!(
-                    request_id = ?context.request_id,
-                    tab_id = ?context.tab_id,
-                    generation = context.generation.value(),
-                    "isolated thumbnail completion was cancelled before delivery"
-                );
-            }
-            terminals.publish(ExplorerEvent::ThumbnailFinished {
-                context,
-                key,
-                outcome,
-            });
+    let sender = thumbnail_worker_pool()?;
+    sender
+        .try_send(ThumbnailJob {
+            context,
+            key,
+            location,
+            cache_only,
+            terminals,
+            worker_guard,
         })
-        .map(|_| ())
         .map_err(|error| {
             ExplorerError::new(
                 ExplorerErrorKind::Availability,

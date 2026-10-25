@@ -129,14 +129,17 @@ pub(crate) fn parse_notifications(bytes: &[u8]) -> Result<Vec<WatchAction>, Watc
     Ok(actions)
 }
 
-pub(crate) fn watch_actions_require_listing_refresh(
-    actions: &[WatchAction],
+pub(crate) fn watch_actions_require_listing_refresh<'a>(
+    actions: &'a [WatchAction],
     is_hidden_or_system: impl Fn(&Path) -> bool,
 ) -> bool {
+    let mut checked_hidden = std::collections::HashSet::<&'a Path>::new();
+    let mut is_visible =
+        |name: &'a Path| checked_hidden.insert(name.as_ref()) && !is_hidden_or_system(name);
     actions.iter().any(|action| match action {
         WatchAction::Modified(_) => false,
-        WatchAction::Added(name) | WatchAction::Removed(name) => !is_hidden_or_system(name),
-        WatchAction::Renamed { old, new } => !is_hidden_or_system(old) || !is_hidden_or_system(new),
+        WatchAction::Added(name) | WatchAction::Removed(name) => is_visible(name),
+        WatchAction::Renamed { old, new } => is_visible(old) || is_visible(new),
     })
 }
 
