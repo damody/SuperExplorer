@@ -1561,6 +1561,7 @@ pub struct ExplorerRoot {
     bookmark_file_launcher: Option<BookmarkFileLauncher>,
     live_window_publisher: Option<LiveWindowPublisher>,
     handoff_to_file_explorer: Option<HandoffToFileExplorer>,
+    intercepted_tab_source: Option<InterceptedTabSource>,
     closed_window_id: u64,
     restore_closed_window: Option<ClosedWindowRestore>,
     list_closed_windows: Option<ClosedWindowList>,
@@ -1660,6 +1661,13 @@ pub type LiveWindowPublisher =
 pub type HandoffToFileExplorer = Arc<
     dyn Fn(Vec<(explorer_model::LocationDescriptor, String)>, usize) -> Result<(), String>
         + Send
+        + Sync,
+>;
+pub type InterceptedTabSource = Arc<
+    dyn Fn() -> Vec<(
+            explorer_model::LocationDescriptor,
+            Option<explorer_model::LocationDescriptor>,
+        )> + Send
         + Sync,
 >;
 pub type ClosedWindowRestore = Arc<dyn Fn(u64, Option<u16>) -> bool + Send + Sync>;
@@ -2396,6 +2404,7 @@ impl ExplorerRoot {
             bookmark_file_launcher: None,
             live_window_publisher: None,
             handoff_to_file_explorer: None,
+            intercepted_tab_source: None,
             closed_window_id: 0,
             restore_closed_window: None,
             list_closed_windows: None,
@@ -4830,6 +4839,7 @@ impl ExplorerRoot {
             bookmark_file_launcher: None,
             live_window_publisher: None,
             handoff_to_file_explorer: None,
+            intercepted_tab_source: None,
             closed_window_id: 0,
             restore_closed_window: None,
             list_closed_windows: None,
@@ -4959,6 +4969,7 @@ impl ExplorerRoot {
             bookmark_file_launcher: None,
             live_window_publisher: None,
             handoff_to_file_explorer: None,
+            intercepted_tab_source: None,
             closed_window_id: 0,
             restore_closed_window: None,
             list_closed_windows: None,
@@ -5116,6 +5127,33 @@ impl ExplorerRoot {
 
     pub fn attach_handoff_to_file_explorer(&mut self, handoff: HandoffToFileExplorer) {
         self.handoff_to_file_explorer = Some(handoff);
+    }
+
+    pub fn attach_intercepted_tab_source(&mut self, source: InterceptedTabSource) {
+        self.intercepted_tab_source = Some(source);
+    }
+
+    fn pump_intercepted_tabs(&mut self) -> bool {
+        let Some(source) = self.intercepted_tab_source.clone() else {
+            return false;
+        };
+        let requests = source();
+        if requests.is_empty() {
+            return false;
+        }
+        let mut opened = false;
+        for (location, select_item) in requests {
+            if let Some(command) = self.state.open_intercepted_tab(location, select_item) {
+                self.submit_command(command);
+                opened = true;
+            }
+        }
+        if opened {
+            self.submit_navigation_icon_loads();
+            self.publish_live_window();
+            self.notify_durable_state();
+        }
+        opened
     }
 
     pub fn attach_closed_window_bridge(
@@ -5314,6 +5352,7 @@ impl ExplorerRoot {
                     // extension views whenever an earlier pump is busy.
                     let extension_changed =
                         extension_ui_pump_due(this.extension_ui_pump.as_mut(), Instant::now());
+                    let intercepted_tabs_changed = this.pump_intercepted_tabs();
                     let sftp_login_changed = this.pump_sftp_address_login();
                     let ftp_login_changed = this.pump_ftp_address_login();
                     let gdrive_login_changed = this.pump_gdrive_address_login();
@@ -5328,6 +5367,7 @@ impl ExplorerRoot {
                     let paste_notice_changed = this.state.expire_paste_notice(Instant::now());
                     let apk_notice_changed = this.state.apk_notice_needs_repaint(Instant::now());
                     if extension_changed
+                        || intercepted_tabs_changed
                         || sftp_login_changed
                         || ftp_login_changed
                         || gdrive_login_changed

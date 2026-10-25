@@ -9656,6 +9656,23 @@ impl AppViewState {
         self.pending_new_tab_command.take()
     }
 
+    /// Opens an intercepted external folder request in a new active tab and optionally
+    /// queues target selection once the directory listing arrives.
+    pub fn open_intercepted_tab(
+        &mut self,
+        location: LocationDescriptor,
+        select_item: Option<LocationDescriptor>,
+    ) -> Option<ExplorerCommand> {
+        let _ = self.new_tab();
+        let _ = self.take_pending_new_tab_command();
+        let command = self.begin_active_navigation(location, false);
+        if let Some(target) = select_item {
+            self.queue_leave_selection(target);
+        }
+        self.focus(FocusSurface::FileView);
+        command
+    }
+
     pub(crate) fn activate_tab(&mut self, id: TabId) -> bool {
         self.clear_file_view_typeahead();
         self.cancel_inline_rename();
@@ -25835,5 +25852,37 @@ mod tests {
             Some(super::LockRecoveryPhase::Unavailable)
         );
         assert!(state.retry_locked_delete().is_none());
+    }
+
+    #[test]
+    fn open_intercepted_tab_creates_new_tab_and_queues_selected_item() {
+        let mut state = AppViewState::with_initial_location(explorer_model::HistoryEntry::new(
+            explorer_model::LocationDescriptor::file_system(r"C:\fixture\A"),
+            "A",
+        ));
+        assert_eq!(state.tabs().tabs().len(), 1);
+        let folder = explorer_model::LocationDescriptor::file_system(r"D:\SuperExplorer");
+        let item = explorer_model::LocationDescriptor::file_system(r"D:\SuperExplorer\Cargo.toml");
+        let command = state
+            .open_intercepted_tab(folder.clone(), Some(item.clone()))
+            .expect("navigation command for intercepted tab");
+        assert_eq!(state.tabs().tabs().len(), 2);
+        let active_id = state.tabs().active_tab_id();
+        assert_eq!(state.focused_surface(), FocusSurface::FileView);
+        let pending = state
+            .pending_leave_selection
+            .as_ref()
+            .expect("pending leave selection");
+        assert_eq!(pending.tab_id, active_id);
+        assert_eq!(pending.child, item);
+        let explorer_model::ExplorerCommand::Navigate {
+            context,
+            location: nav_location,
+        } = command
+        else {
+            panic!("expected Navigate command");
+        };
+        assert_eq!(context.tab_id, active_id);
+        assert_eq!(nav_location, folder);
     }
 }
