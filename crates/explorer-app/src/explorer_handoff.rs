@@ -51,6 +51,7 @@ const HANDOFF_TIMEOUT: Duration = Duration::from_secs(45);
 static LIVE_WINDOW: Mutex<Option<HandoffWindowFile>> = Mutex::new(None);
 static MAIN_HWND: AtomicU64 = AtomicU64::new(0);
 static STOPPED: AtomicBool = AtomicBool::new(false);
+static HANDOFF_IN_PROGRESS: AtomicBool = AtomicBool::new(false);
 static STARTED: OnceLock<Mutex<bool>> = OnceLock::new();
 static DUMP_THREAD: AtomicU32 = AtomicU32::new(0);
 
@@ -59,6 +60,14 @@ struct HandoffWindowFile {
     hwnd: u64,
     tabs: Vec<ImportedTabPayload>,
     active: usize,
+}
+
+pub fn main_hwnd() -> u64 {
+    MAIN_HWND.load(Ordering::Acquire)
+}
+
+pub fn is_handoff_in_progress() -> bool {
+    HANDOFF_IN_PROGRESS.load(Ordering::Acquire)
 }
 
 pub fn publish_live_window(tabs: Vec<(LocationDescriptor, String)>, active: usize) {
@@ -116,6 +125,8 @@ pub fn handoff_all_windows(
     tabs: Vec<(LocationDescriptor, String)>,
     active: usize,
 ) -> Result<(), String> {
+    HANDOFF_IN_PROGRESS.store(true, Ordering::Release);
+    crate::explorer_intercept::stop_explorer_intercept();
     publish_live_window(tabs, active);
     let owner = named_mutex(OWNER_MUTEX)?;
     let wait = unsafe { WaitForSingleObject(owner, 0) };
@@ -124,6 +135,9 @@ pub fn handoff_all_windows(
         return Err("another SuperExplorer window is already converting back".to_owned());
     }
     let result = run_handoff();
+    if result.is_err() {
+        HANDOFF_IN_PROGRESS.store(false, Ordering::Release);
+    }
     let _ = unsafe { ReleaseMutex(owner) };
     let _ = unsafe { CloseHandle(owner) };
     result
@@ -209,6 +223,8 @@ fn handoff_server_loop() {
             break;
         }
         if wait == WAIT_OBJECT_0 {
+            HANDOFF_IN_PROGRESS.store(true, Ordering::Release);
+            crate::explorer_intercept::stop_explorer_intercept();
             write_live_window_file(&handoff_dir());
             let mut quit_seen = false;
             while !STOPPED.load(Ordering::Acquire)

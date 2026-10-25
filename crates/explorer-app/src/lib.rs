@@ -21,6 +21,7 @@ pub mod branding;
 mod brokered_service;
 pub mod explorer_handoff;
 pub mod explorer_import;
+pub mod explorer_intercept;
 mod folder_size_service;
 pub mod launch_coordination;
 pub mod locale;

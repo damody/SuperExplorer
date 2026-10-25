@@ -6147,6 +6147,7 @@ fn create_explorer_root(
     root.attach_handoff_to_file_explorer(Arc::new(|tabs, active| {
         crate::explorer_handoff::handoff_all_windows(tabs, active)
     }));
+    root.attach_intercepted_tab_source(Arc::new(crate::explorer_intercept::drain_intercepted_tabs));
     if let Some(runtime) = visual_column_runtime {
         if visual_column_extension_loaded {
             root.attach_visual_column_runtime(runtime);

@@ -264,10 +264,17 @@ unsafe extern "system" fn keyboard_hook(code: i32, wparam: WPARAM, lparam: LPARA
 }
 
 fn launch_win_e_window() {
+    let _ = unsafe { AllowSetForegroundWindow(ASFW_ANY) };
+    if crate::explorer_handoff::main_hwnd() != 0 {
+        crate::explorer_intercept::enqueue_in_process_tab(
+            explorer_model::LocationDescriptor::ParsingName("shell:MyComputerFolder".to_owned()),
+            None,
+        );
+        return;
+    }
     let Ok(exe) = env::current_exe() else {
         return;
     };
-    let _ = unsafe { AllowSetForegroundWindow(ASFW_ANY) };
     let child = Command::new(exe)
         .env(WIN_E_ENV, "1")
         .env_remove(crate::explorer_import::INITIAL_TABS_ENV)
