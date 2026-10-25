@@ -12,8 +12,8 @@ use std::{
 
 use gpui::{
     App, Bounds, Context, FocusHandle, Focusable, IntoElement, KeyDownEvent, MouseButton,
-    MouseDownEvent, MouseMoveEvent, Pixels, Render, Role, ScrollHandle, SharedString, Subscription,
-    Window, WindowBounds, WindowHandle, WindowOptions, div, point, prelude::*, px, size,
+    MouseDownEvent, MouseMoveEvent, Pixels, Render, Role, ScrollHandle, SharedString, Window,
+    WindowBounds, WindowHandle, WindowOptions, div, point, prelude::*, px, size,
 };
 
 use crate::{
@@ -465,6 +465,8 @@ fn keyboard_scroll_target(current: f32, viewport: f32, maximum: f32, key: &str) 
     }
     let current = current.clamp(0.0, maximum.max(0.0));
     let target = match key {
+        "up" | "arrowup" => current - 48.0,
+        "down" | "arrowdown" => current + 48.0,
         "pageup" => current - viewport,
         "pagedown" => current + viewport,
         "home" => 0.0,
@@ -521,9 +523,8 @@ pub struct FolderOptionsWindow {
     language_menu_scroll: ScrollHandle,
     language_menu_drag: Option<f32>,
     cache_inspector_scroll: ScrollHandle,
-    cache_inspector_decoded: HashMap<usize, Arc<gpui::RenderImage>>,
+    cache_inspector_decoded: HashMap<usize, Option<Arc<gpui::RenderImage>>>,
     cache_inspector_decoded_source: Option<crate::cache_inspector::CacheInspectorSource>,
-    _keystroke_subscription: Subscription,
 }
 
 impl Drop for FolderOptionsWindow {
@@ -542,48 +543,6 @@ impl FolderOptionsWindow {
     ) -> Self {
         let focus_handle = cx.focus_handle();
         focus_handle.focus(window, cx);
-        let options_window = window.window_handle();
-        let keystroke_subscription = cx.observe_keystrokes(move |this, event, window, cx| {
-            if window.window_handle() != options_window {
-                return;
-            }
-            let page = this.snapshot.draft.page;
-            if event.keystroke.key == "escape" {
-                if this.snapshot.cache_inspector.is_some() {
-                    this.apply_owner_action(ExplorerAction::CloseCacheInspector, window, cx);
-                    this.cache_inspector_decoded.clear();
-                    cx.notify();
-                    window.refresh();
-                } else {
-                    this.close_with_action(
-                        ExplorerAction::CloseFolderOptions,
-                        ActionSource::Keyboard,
-                        window,
-                        cx,
-                    );
-                }
-            } else if event.keystroke.key == "tab" {
-                if event.keystroke.modifiers.shift {
-                    window.focus_prev(cx);
-                } else {
-                    window.focus_next(cx);
-                }
-            } else if event.keystroke.key == "enter"
-                && !event.keystroke.modifiers.control
-                && !event.keystroke.modifiers.alt
-                && !event.keystroke.modifiers.platform
-            {
-                this.close_with_action(
-                    ExplorerAction::ConfirmFolderOptions,
-                    ActionSource::Keyboard,
-                    window,
-                    cx,
-                );
-            } else if this.keyboard_scroll(page, event.keystroke.key.as_str()) {
-                cx.notify();
-                window.refresh();
-            }
-        });
         let cache_budget_input_baseline = snapshot.draft.settings.cache_budgets;
         let cache_budget_inputs = explorer_model::CACHE_BUDGET_DESCRIPTORS_V1
             .into_iter()
@@ -616,6 +575,7 @@ impl FolderOptionsWindow {
                         let owner = this.owner;
                         if let Ok(usage) =
                             owner.update(cx, |root, _, _| root.cache_usage_snapshot(disk))
+                            && this.snapshot.cache_usage != usage
                         {
                             this.snapshot.cache_usage = usage;
                             cx.notify();
@@ -648,7 +608,6 @@ impl FolderOptionsWindow {
             cache_inspector_decoded: HashMap::new(),
             cache_inspector_decoded_source: None,
             language_menu_drag: None,
-            _keystroke_subscription: keystroke_subscription,
         }
     }
 
@@ -770,7 +729,11 @@ impl FolderOptionsWindow {
     }
 
     fn keyboard_scroll(&self, page: FolderOptionsPage, key: &str) -> bool {
-        let handle = self.scroll_for_page(page);
+        let handle = if self.snapshot.cache_inspector.is_some() {
+            &self.cache_inspector_scroll
+        } else {
+            self.scroll_for_page(page)
+        };
         let viewport = f32::from(handle.bounds().size.height).max(0.0);
         let maximum = f32::from(handle.max_offset().y).max(0.0);
         let current = (-f32::from(handle.offset().y)).clamp(0.0, maximum);
@@ -1018,6 +981,8 @@ impl Render for FolderOptionsWindow {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         if !window.is_window_active() {
             self.stop_drag();
+        } else if window.focused(cx).is_none() {
+            self.focus_handle.focus(window, cx);
         }
         let draft = self.snapshot.draft.clone();
         let extensions = self.snapshot.extensions.clone();
@@ -1223,6 +1188,10 @@ impl Render for FolderOptionsWindow {
                 }),
             )
             .capture_key_down(cx.listener(move |this, event: &KeyDownEvent, window, cx| {
+                let budget_input_focused = this
+                    .cache_budget_inputs
+                    .iter()
+                    .any(|input| input.read(cx).focus_handle(cx).is_focused(window));
                 if event.keystroke.key == "escape" {
                     cx.stop_propagation();
                     if this.snapshot.cache_inspector.is_some() {
@@ -1249,6 +1218,7 @@ impl Render for FolderOptionsWindow {
                     && !event.keystroke.modifiers.control
                     && !event.keystroke.modifiers.alt
                     && !event.keystroke.modifiers.platform
+                    && !budget_input_focused
                 {
                     cx.stop_propagation();
                     this.close_with_action(
@@ -1257,7 +1227,10 @@ impl Render for FolderOptionsWindow {
                         window,
                         cx,
                     );
-                } else if this.keyboard_scroll(page, event.keystroke.key.as_str()) {
+                } else if (!budget_input_focused
+                    || !matches!(event.keystroke.key.as_str(), "home" | "end"))
+                    && this.keyboard_scroll(page, event.keystroke.key.as_str())
+                {
                     cx.stop_propagation();
                     cx.notify();
                     window.refresh();

@@ -90,15 +90,17 @@ impl BookmarkActionWindow {
         tokens: UiTokens,
         owner: WindowHandle<ExplorerRoot>,
         snapshot: BookmarkActionWindowSnapshotV1,
-        _: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
+        let focus_handle = cx.focus_handle();
+        focus_handle.focus(window, cx);
         Self {
             tokens,
             owner,
             snapshot,
             selected: BookmarkActionCommand::Open,
-            focus_handle: cx.focus_handle(),
+            focus_handle,
         }
     }
 
@@ -110,8 +112,26 @@ impl BookmarkActionWindow {
     ) {
         self.snapshot = snapshot;
         self.selected = BookmarkActionCommand::Open;
+        self.focus_handle.focus(window, cx);
         cx.notify();
         window.refresh();
+    }
+
+    fn step_selection(&mut self, reverse: bool) {
+        let commands = applicable_commands(&self.snapshot.bookmark.target);
+        if commands.is_empty() {
+            return;
+        }
+        let current = commands
+            .iter()
+            .position(|command| *command == self.selected)
+            .unwrap_or(0);
+        let next = if reverse {
+            (current + commands.len() - 1) % commands.len()
+        } else {
+            (current + 1) % commands.len()
+        };
+        self.selected = commands[next];
     }
 
     fn confirm(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -174,14 +194,15 @@ impl Render for BookmarkActionWindow {
                     .role(gpui::Role::Button)
                     .aria_label(label.clone())
                     .cursor_pointer()
-                    .px(px(12.0))
-                    .py(px(9.0))
+                    .px(px(12.0)) // token-lint: allow
+                    .py(px(9.0)) // token-lint: allow
                     .rounded(px(5.0))
                     .bg(if active {
                         colors.control_pressed.to_gpui()
                     } else {
                         colors.control_fill.to_gpui()
                     })
+                    .hover(|style| style.bg(colors.control_hover.to_gpui()))
                     .child(format!("{} {}", if active { "●" } else { "○" }, label))
                     .on_mouse_down(
                         MouseButton::Left,
@@ -209,13 +230,31 @@ impl Render for BookmarkActionWindow {
                         cx.stop_propagation();
                         this.confirm(window, cx);
                     }
+                    "up" | "arrowup" | "left" | "arrowleft" => {
+                        cx.stop_propagation();
+                        this.step_selection(true);
+                        cx.notify();
+                        window.refresh();
+                    }
+                    "down" | "arrowdown" | "right" | "arrowright" => {
+                        cx.stop_propagation();
+                        this.step_selection(false);
+                        cx.notify();
+                        window.refresh();
+                    }
+                    "tab" => {
+                        cx.stop_propagation();
+                        this.step_selection(event.keystroke.modifiers.shift);
+                        cx.notify();
+                        window.refresh();
+                    }
                     _ => {}
                 }
             }))
-            .p(px(20.0))
+            .p(px(20.0)) // token-lint: allow
             .flex()
             .flex_col()
-            .gap(px(12.0))
+            .gap(px(12.0)) // token-lint: allow
             .bg(colors.surface.to_gpui())
             .child(title)
             .child(format!("{}", self.snapshot.bookmark.name))
@@ -224,7 +263,7 @@ impl Render for BookmarkActionWindow {
                 div()
                     .flex()
                     .justify_end()
-                    .gap(px(8.0))
+                    .gap(px(8.0)) // token-lint: allow
                     .child(
                         div()
                             .id("bookmark-action-cancel")
@@ -233,8 +272,8 @@ impl Render for BookmarkActionWindow {
                             .rounded(px(6.0))
                             .border_1()
                             .border_color(colors.divider.to_gpui())
-                            .px(px(12.0))
-                            .py(px(7.0))
+                            .px(px(12.0)) // token-lint: allow
+                            .py(px(7.0)) // token-lint: allow
                             .child(catalog.t("menu-cancel"))
                             .on_click(|_, window, _| window.remove_window()),
                     )
@@ -246,8 +285,8 @@ impl Render for BookmarkActionWindow {
                             .rounded(px(6.0))
                             .border_1()
                             .border_color(colors.accent.to_gpui())
-                            .px(px(12.0))
-                            .py(px(7.0))
+                            .px(px(12.0)) // token-lint: allow
+                            .py(px(7.0)) // token-lint: allow
                             .text_color(colors.text_primary.to_gpui())
                             .child(catalog.t("menu-confirm"))
                             .on_click(cx.listener(|this, _, window, cx| this.confirm(window, cx))),

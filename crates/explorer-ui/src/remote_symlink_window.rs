@@ -42,8 +42,8 @@ pub fn remote_symlink_window_options_on_display(
     let width = display_id
         .and_then(|id| cx.find_display(id))
         .or_else(|| cx.primary_display())
-        .map_or(760.0, |display| {
-            (f32::from(display.bounds().size.width) * 0.8).max(640.0)
+        .map_or(520.0, |display| {
+            520.0_f32.min((f32::from(display.bounds().size.width) - 48.0).max(360.0))
         });
     WindowOptions {
         window_bounds: Some(WindowBounds::Windowed(Bounds::centered(
@@ -57,7 +57,7 @@ pub fn remote_symlink_window_options_on_display(
         }),
         kind: gpui::WindowKind::Normal,
         is_resizable: false,
-        window_min_size: Some(size(px(640.0), px(350.0))),
+        window_min_size: Some(size(px(360.0), px(350.0))),
         ..Default::default()
     }
 }
@@ -98,6 +98,8 @@ impl RemoteSymlinkWindow {
             cx.new(|cx| EditableTextState::new(StringStorage::from(snapshot.name.clone()), cx));
         let target_input =
             cx.new(|cx| EditableTextState::new(StringStorage::from(snapshot.target.clone()), cx));
+        cx.observe(&name_input, |_, _, cx| cx.notify()).detach();
+        cx.observe(&target_input, |_, _, cx| cx.notify()).detach();
         name_input.update(cx, EditableTextState::select_document);
         let name_for_focus = name_input.clone();
         window.defer(cx, move |window, cx| {
@@ -130,10 +132,10 @@ impl RemoteSymlinkWindow {
         cx: &mut Context<Self>,
     ) {
         self.snapshot = snapshot.clone();
-        self.name_input =
-            cx.new(|cx| EditableTextState::new(StringStorage::from(snapshot.name.clone()), cx));
-        self.target_input =
-            cx.new(|cx| EditableTextState::new(StringStorage::from(snapshot.target), cx));
+        self.name_input
+            .update(cx, |state, cx| state.emplace(&snapshot.name, cx));
+        self.target_input
+            .update(cx, |state, cx| state.emplace(&snapshot.target, cx));
         self.name_input
             .update(cx, EditableTextState::select_document);
         self.busy = false;
@@ -209,6 +211,12 @@ impl Render for RemoteSymlinkWindow {
         let title = catalog.t("dialog-new-shortcut");
         window.set_window_title(&title);
         let colors = self.tokens.theme.colors;
+        let name_focused = self.name_input.read(cx).focus_handle(cx).is_focused(window);
+        let target_focused = self
+            .target_input
+            .read(cx)
+            .focus_handle(cx)
+            .is_focused(window);
         let submit = cx.listener(|this, _, _, cx| this.submit(cx));
         let cancel = cx.listener(|this, _, window, cx| {
             this.cancel(cx);
@@ -219,11 +227,36 @@ impl Render for RemoteSymlinkWindow {
             .role(Role::Dialog)
             .aria_label(catalog.t("a11y-new-remote-shortcut"))
             .track_focus(&self.focus_handle)
+            .capture_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, window, cx| {
+                match event.keystroke.key.as_str() {
+                    "escape" => {
+                        cx.stop_propagation();
+                        this.cancel(cx);
+                        window.remove_window();
+                    }
+                    "enter" => {
+                        cx.stop_propagation();
+                        this.submit(cx);
+                    }
+                    "tab" => {
+                        cx.stop_propagation();
+                        let name_handle = this.name_input.read(cx).focus_handle(cx);
+                        let target_handle = this.target_input.read(cx).focus_handle(cx);
+                        if name_handle.is_focused(window) {
+                            target_handle.focus(window, cx);
+                        } else {
+                            name_handle.focus(window, cx);
+                        }
+                        cx.notify();
+                    }
+                    _ => {}
+                }
+            }))
             .size_full()
-            .p(px(26.0))
+            .p(px(26.0)) // token-lint: allow
             .flex()
             .flex_col()
-            .gap(px(12.0))
+            .gap(px(12.0)) // token-lint: allow
             .bg(colors.surface.to_gpui())
             .child(div().text_size(px(22.0)).child(title))
             .child(catalog.t("dialog-shortcut-name"))
@@ -235,7 +268,7 @@ impl Render for RemoteSymlinkWindow {
                         .multiline(false)
                         .caret_blink_interval_500ms()
                         .w_full()
-                        .px(px(9.0)),
+                        .px(px(9.0)), // token-lint: allow
                     38.0,
                     1.0,
                     self.tokens.typography.address.size.value(),
@@ -243,7 +276,11 @@ impl Render for RemoteSymlinkWindow {
                 )
                 .bg(colors.control_fill.to_gpui())
                 .border_1()
-                .border_color(colors.focus.to_gpui()),
+                .border_color(if name_focused {
+                    colors.focus.to_gpui()
+                } else {
+                    colors.divider.to_gpui()
+                }),
             )
             .child(catalog.t("dialog-shortcut-target"))
             .child(
@@ -254,7 +291,7 @@ impl Render for RemoteSymlinkWindow {
                         .multiline(false)
                         .caret_blink_interval_500ms()
                         .w_full()
-                        .px(px(9.0)),
+                        .px(px(9.0)), // token-lint: allow
                     38.0,
                     1.0,
                     self.tokens.typography.address.size.value(),
@@ -262,7 +299,11 @@ impl Render for RemoteSymlinkWindow {
                 )
                 .bg(colors.control_fill.to_gpui())
                 .border_1()
-                .border_color(colors.focus.to_gpui()),
+                .border_color(if target_focused {
+                    colors.focus.to_gpui()
+                } else {
+                    colors.divider.to_gpui()
+                }),
             )
             .when_some(self.error.clone(), |view, error| {
                 view.child(
@@ -278,15 +319,15 @@ impl Render for RemoteSymlinkWindow {
                 div()
                     .flex()
                     .justify_end()
-                    .gap(px(10.0))
+                    .gap(px(10.0)) // token-lint: allow
                     .child(
                         div()
                             .id("remote-symlink-cancel")
                             .role(Role::Button)
                             .aria_label(catalog.t("a11y-cancel-new-shortcut"))
                             .cursor_pointer()
-                            .px(px(18.0))
-                            .py(px(8.0))
+                            .px(px(18.0)) // token-lint: allow
+                            .py(px(8.0)) // token-lint: allow
                             .child(catalog.t("menu-cancel"))
                             .on_click(cancel),
                     )
@@ -295,8 +336,8 @@ impl Render for RemoteSymlinkWindow {
                             .id("remote-symlink-create")
                             .role(Role::Button)
                             .aria_label(catalog.t("a11y-create-remote-shortcut"))
-                            .px(px(18.0))
-                            .py(px(8.0))
+                            .px(px(18.0)) // token-lint: allow
+                            .py(px(8.0)) // token-lint: allow
                             .bg(colors.accent.to_gpui())
                             .text_color(colors.text_primary.to_gpui())
                             .when(!self.busy, |button| {

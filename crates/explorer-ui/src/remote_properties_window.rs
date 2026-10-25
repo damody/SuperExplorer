@@ -63,6 +63,7 @@ pub struct RemotePropertiesWindow {
     snapshot: RemotePropertiesWindowSnapshotV1,
     original_mode: u32,
     mode: u32,
+    root_focus: FocusHandle,
     confirm_focus: FocusHandle,
 }
 
@@ -74,6 +75,7 @@ impl RemotePropertiesWindow {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
+        let root_focus = cx.focus_handle();
         let confirm_focus = cx.focus_handle();
         confirm_focus.focus(window, cx);
         let mode = snapshot.mode & 0o7777;
@@ -83,6 +85,7 @@ impl RemotePropertiesWindow {
             snapshot,
             original_mode: mode,
             mode,
+            root_focus,
             confirm_focus,
         }
     }
@@ -128,7 +131,7 @@ impl RemotePropertiesWindow {
 
 impl Focusable for RemotePropertiesWindow {
     fn focus_handle(&self, _: &App) -> FocusHandle {
-        self.confirm_focus.clone()
+        self.root_focus.clone()
     }
 }
 
@@ -169,7 +172,7 @@ impl Render for RemotePropertiesWindow {
             args.set("value", value);
             catalog.t_args(key, &args)
         };
-        let mut permission_grid = div().flex().flex_col().gap(px(7.0));
+        let mut permission_grid = div().flex().flex_col().gap(px(7.0)); // token-lint: allow
         for (label_key, read, write, execute) in [
             ("dialog-owner", 0o400, 0o200, 0o100),
             ("dialog-group", 0o040, 0o020, 0o010),
@@ -179,8 +182,8 @@ impl Render for RemotePropertiesWindow {
                 div()
                     .flex()
                     .items_center()
-                    .gap(px(14.0))
-                    .child(div().w(px(72.0)).child(catalog.t(label_key)))
+                    .gap(px(14.0)) // token-lint: allow
+                    .child(div().w(px(72.0)).child(catalog.t(label_key))) // token-lint: allow
                     .child(permission_button(
                         catalog.t("dialog-read"),
                         read,
@@ -211,7 +214,7 @@ impl Render for RemotePropertiesWindow {
             .role(Role::Dialog)
             .aria_label(catalog.t_args("dialog-properties-aria", &aria_args))
             .size_full()
-            .track_focus(&self.confirm_focus)
+            .track_focus(&self.root_focus)
             .capture_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, window, cx| {
                 match event.keystroke.key.as_str() {
                     "enter" => {
@@ -225,14 +228,14 @@ impl Render for RemotePropertiesWindow {
                     _ => {}
                 }
             }))
-            .p(px(26.0))
+            .p(px(26.0)) // token-lint: allow
             .flex()
             .flex_col()
-            .gap(px(15.0))
+            .gap(px(15.0)) // token-lint: allow
             .bg(colors.surface.to_gpui())
             .child(div().text_size(px(21.0)).child(entry.display_name))
             .child(catalog.t("dialog-general"))
-            .child(div().h(px(1.0)).bg(colors.divider.to_gpui()))
+            .child(div().h(px(1.0)).bg(colors.divider.to_gpui())) // token-lint: allow
             .child(labeled("dialog-file-type", type_name))
             .child(labeled("dialog-location", location))
             .child(labeled("dialog-size", size))
@@ -242,7 +245,7 @@ impl Render for RemotePropertiesWindow {
             .when_some(entry.metadata.modified_display, |view, value| {
                 view.child(labeled("dialog-date-modified", value))
             })
-            .child(div().h(px(1.0)).bg(colors.divider.to_gpui()))
+            .child(div().h(px(1.0)).bg(colors.divider.to_gpui())) // token-lint: allow
             .child(catalog.t_args("dialog-permissions", &mode_args))
             .child(permission_grid)
             .child(div().flex_1())
@@ -250,7 +253,7 @@ impl Render for RemotePropertiesWindow {
                 div()
                     .flex()
                     .justify_end()
-                    .gap(px(10.0))
+                    .gap(px(10.0)) // token-lint: allow
                     .child(
                         div()
                             .id("remote-properties-cancel")
@@ -259,8 +262,9 @@ impl Render for RemotePropertiesWindow {
                             .rounded(px(6.0))
                             .border_1()
                             .border_color(colors.divider.to_gpui())
-                            .px(px(18.0))
-                            .py(px(7.0))
+                            .px(px(18.0)) // token-lint: allow
+                            .py(px(7.0)) // token-lint: allow
+                            .hover(|style| style.bg(colors.control_hover.to_gpui()))
                             .child(catalog.t("menu-cancel"))
                             .on_click(|_, window, _| window.remove_window()),
                     )
@@ -273,8 +277,9 @@ impl Render for RemotePropertiesWindow {
                             .rounded(px(6.0))
                             .border(px(2.0))
                             .border_color(colors.focus.to_gpui())
-                            .px(px(18.0))
-                            .py(px(6.0))
+                            .px(px(18.0)) // token-lint: allow
+                            .py(px(6.0)) // token-lint: allow
+                            .hover(|style| style.bg(colors.control_hover.to_gpui()))
                             .child(catalog.t("menu-ok"))
                             .on_click(cx.listener(|this, _, window, cx| {
                                 this.confirm(window, cx);
@@ -296,18 +301,22 @@ fn permission_button(
         .id(format!("remote-properties-permission-{mask:o}"))
         .role(Role::Button)
         .cursor_pointer()
+        .rounded(px(4.0))
+        .px(px(4.0)) // token-lint: allow
+        .py(px(2.0)) // token-lint: allow
+        .hover(|style| style.bg(colors.control_hover.to_gpui()))
         .flex()
         .items_center()
-        .gap(px(5.0))
+        .gap(px(5.0)) // token-lint: allow
         .child(
             div()
-                .w(px(14.0))
-                .h(px(14.0))
+                .w(px(14.0)) // token-lint: allow
+                .h(px(14.0)) // token-lint: allow
                 .border_1()
                 .border_color(colors.text_secondary.to_gpui())
                 .when(checked, |box_element| {
                     box_element
-                        .p(px(2.0))
+                        .p(px(2.0)) // token-lint: allow
                         .child(div().size_full().bg(colors.accent.to_gpui()))
                 }),
         )

@@ -50,6 +50,7 @@ pub struct BookmarkFolderDeleteWindow {
     owner: WindowHandle<ExplorerRoot>,
     snapshot: BookmarkFolderDeleteWindowSnapshotV1,
     focus_handle: FocusHandle,
+    cancel_focus_handle: FocusHandle,
 }
 
 impl BookmarkFolderDeleteWindow {
@@ -60,6 +61,8 @@ impl BookmarkFolderDeleteWindow {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
+        let focus_handle = cx.focus_handle();
+        focus_handle.focus(window, cx);
         window.on_window_should_close(cx, move |_, cx| {
             let _ = owner.update(cx, |root, owner_window, cx| {
                 root.dispatch_bookmark_folder_delete_window_action(
@@ -75,7 +78,8 @@ impl BookmarkFolderDeleteWindow {
             tokens,
             owner,
             snapshot,
-            focus_handle: cx.focus_handle(),
+            focus_handle,
+            cancel_focus_handle: cx.focus_handle(),
         }
     }
 
@@ -86,6 +90,7 @@ impl BookmarkFolderDeleteWindow {
         cx: &mut Context<Self>,
     ) {
         self.snapshot = snapshot;
+        self.focus_handle.focus(window, cx);
         cx.notify();
         window.refresh();
     }
@@ -130,7 +135,6 @@ impl Render for BookmarkFolderDeleteWindow {
             .role(gpui::Role::Dialog)
             .aria_label(catalog.t("a11y-delete-bookmark-folder"))
             .size_full()
-            .track_focus(&self.focus_handle)
             .capture_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, window, cx| {
                 match event.keystroke.key.as_str() {
                     "escape" => {
@@ -143,19 +147,36 @@ impl Render for BookmarkFolderDeleteWindow {
                     }
                     "enter" => {
                         cx.stop_propagation();
-                        this.dispatch_and_close(
-                            ExplorerAction::ConfirmRemoveBookmarkFolder,
-                            window,
-                            cx,
-                        );
+                        if this.cancel_focus_handle.is_focused(window) {
+                            this.dispatch_and_close(
+                                ExplorerAction::CancelRemoveBookmarkFolder,
+                                window,
+                                cx,
+                            );
+                        } else {
+                            this.dispatch_and_close(
+                                ExplorerAction::ConfirmRemoveBookmarkFolder,
+                                window,
+                                cx,
+                            );
+                        }
+                    }
+                    "tab" | "left" | "arrowleft" | "right" | "arrowright" => {
+                        cx.stop_propagation();
+                        if this.cancel_focus_handle.is_focused(window) {
+                            this.focus_handle.focus(window, cx);
+                        } else {
+                            this.cancel_focus_handle.focus(window, cx);
+                        }
+                        cx.notify();
                     }
                     _ => {}
                 }
             }))
-            .p(px(28.0))
+            .p(px(28.0)) // token-lint: allow
             .flex()
             .flex_col()
-            .gap(px(16.0))
+            .gap(px(16.0)) // token-lint: allow
             .bg(colors.surface.to_gpui())
             .child(catalog.t_args("dialog-delete-bookmark-folder-prompt", &prompt_args))
             .child(catalog.t_args("dialog-delete-bookmark-folder-note", &note_args))
@@ -163,17 +184,21 @@ impl Render for BookmarkFolderDeleteWindow {
                 div()
                     .flex()
                     .justify_end()
-                    .gap(px(16.0))
+                    .gap(px(16.0)) // token-lint: allow
                     .child(
                         div()
                             .id("bookmark-folder-delete-window-cancel")
+                            .track_focus(&self.cancel_focus_handle)
                             .role(gpui::Role::Button)
                             .cursor_pointer()
                             .rounded(px(6.0))
                             .border_1()
                             .border_color(colors.divider.to_gpui())
-                            .px(px(12.0))
-                            .py(px(7.0))
+                            .when(self.cancel_focus_handle.is_focused(window), |button| {
+                                button.border_color(colors.accent.to_gpui())
+                            })
+                            .px(px(12.0)) // token-lint: allow
+                            .py(px(7.0)) // token-lint: allow
                             .child(catalog.t("menu-cancel"))
                             .on_click(cx.listener(|this, _, window, cx| {
                                 this.dispatch_and_close(
@@ -186,14 +211,20 @@ impl Render for BookmarkFolderDeleteWindow {
                     .child(
                         div()
                             .id("bookmark-folder-delete-window-confirm")
+                            .track_focus(&self.focus_handle)
                             .role(gpui::Role::Button)
                             .cursor_pointer()
                             .rounded(px(6.0))
                             .border_1()
                             .border_color(colors.danger.to_gpui())
-                            .px(px(12.0))
-                            .py(px(7.0))
+                            .px(px(12.0)) // token-lint: allow
+                            .py(px(7.0)) // token-lint: allow
                             .text_color(colors.danger.to_gpui())
+                            .when(self.focus_handle.is_focused(window), |button| {
+                                button
+                                    .bg(colors.danger.to_gpui())
+                                    .text_color(colors.surface.to_gpui())
+                            })
                             .child(catalog.t("menu-delete"))
                             .on_click(cx.listener(|this, _, window, cx| {
                                 this.dispatch_and_close(

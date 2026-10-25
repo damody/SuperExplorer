@@ -43,7 +43,13 @@ pub fn bookmark_editor_window_options(
     let bounds = anchor.map_or_else(
         || Bounds::centered(None, window_size, cx),
         |(requested_x, requested_y)| {
-            let Some(display) = cx.primary_display() else {
+            let anchor_point = point(px(requested_x as f32), px(requested_y as f32));
+            let Some(display) = cx
+                .displays()
+                .into_iter()
+                .find(|display| display.bounds().contains(&anchor_point))
+                .or_else(|| cx.primary_display())
+            else {
                 return Bounds::centered(None, window_size, cx);
             };
             let work = display.bounds();
@@ -194,15 +200,23 @@ impl Focusable for BookmarkEditorWindow {
 impl Render for BookmarkEditorWindow {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let active = window.is_window_active();
-        if active {
+        if self.snapshot.state.bookmark_editor().is_none() {
+            window.defer(cx, |window, _cx| window.remove_window());
+        } else if active {
             self.was_active = true;
         } else if should_cancel_on_activation_loss(self.was_active, active) {
-            self.dispatch(
-                ExplorerAction::CancelBookmarkEditor,
-                ActionSource::Programmatic,
-                window,
-                cx,
-            );
+            self.was_active = false;
+            let entity = cx.entity().downgrade();
+            window.defer(cx, move |window, cx| {
+                let _ = entity.update(cx, |this, cx| {
+                    this.dispatch(
+                        ExplorerAction::CancelBookmarkEditor,
+                        ActionSource::Programmatic,
+                        window,
+                        cx,
+                    );
+                });
+            });
         }
         let on_action: ActionCallback =
             Rc::new(cx.listener(|this, action: &ExplorerAction, window, cx| {
@@ -243,6 +257,16 @@ impl Render for BookmarkEditorWindow {
                         );
                     }
                     "enter" => {
+                        if this.snapshot.multiline_payload
+                            && this
+                                .payload_input
+                                .read(cx)
+                                .focus_handle(cx)
+                                .is_focused(window)
+                            && !event.keystroke.modifiers.control
+                        {
+                            return;
+                        }
                         cx.stop_propagation();
                         this.dispatch(
                             ExplorerAction::SaveBookmarkEditor,
@@ -250,6 +274,36 @@ impl Render for BookmarkEditorWindow {
                             window,
                             cx,
                         );
+                    }
+                    "tab" => {
+                        if this.snapshot.multiline_payload
+                            && this
+                                .payload_input
+                                .read(cx)
+                                .focus_handle(cx)
+                                .is_focused(window)
+                            && !event.keystroke.modifiers.shift
+                            && !event.keystroke.modifiers.control
+                        {
+                            return;
+                        }
+                        cx.stop_propagation();
+                        let handles = [
+                            this.name_input.read(cx).focus_handle(cx),
+                            this.payload_input.read(cx).focus_handle(cx),
+                            this.tags_input.read(cx).focus_handle(cx),
+                        ];
+                        let current = handles
+                            .iter()
+                            .position(|handle| handle.is_focused(window))
+                            .unwrap_or(0);
+                        let next = if event.keystroke.modifiers.shift {
+                            (current + handles.len() - 1) % handles.len()
+                        } else {
+                            (current + 1) % handles.len()
+                        };
+                        handles[next].focus(window, cx);
+                        cx.notify();
                     }
                     _ => {}
                 }

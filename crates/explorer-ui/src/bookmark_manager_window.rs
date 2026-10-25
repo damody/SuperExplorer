@@ -602,6 +602,8 @@ impl BookmarkManagerWindow {
         if open_history {
             ui.navigate(BookmarkManagerLocation::History);
         }
+        let focus_handle = cx.focus_handle();
+        focus_handle.focus(window, cx);
         Self {
             tokens,
             owner,
@@ -610,7 +612,7 @@ impl BookmarkManagerWindow {
             detail_input,
             detail_location_input,
             ui,
-            focus_handle: cx.focus_handle(),
+            focus_handle,
             was_active: false,
         }
     }
@@ -737,28 +739,22 @@ impl Render for BookmarkManagerWindow {
                         .iter()
                         .find(|bookmark| bookmark.id == *id)
                 {
-                    this.detail_input = cx.new(|cx| {
-                        EditableTextState::new(StringStorage::from(bookmark.name.clone()), cx)
-                    });
-                    this.detail_location_input = cx.new(|cx| {
-                        EditableTextState::new(
-                            StringStorage::from(bookmark.target.editable_payload()),
-                            cx,
-                        )
-                    });
+                    let name = bookmark.name.clone();
+                    let payload = bookmark.target.editable_payload();
+                    this.detail_input
+                        .update(cx, |state, cx| state.emplace(&name, cx));
+                    this.detail_location_input
+                        .update(cx, |state, cx| state.emplace(&payload, cx));
                 }
                 if let BookmarkManagerUiAction::SelectRunLog(index) = action
                     && let Some(record) = this.snapshot.state.run_log().get(*index)
                 {
-                    this.detail_input = cx.new(|cx| {
-                        EditableTextState::new(StringStorage::from(record.display_name.clone()), cx)
-                    });
-                    this.detail_location_input = cx.new(|cx| {
-                        EditableTextState::new(
-                            StringStorage::from(record.location.editable_text()),
-                            cx,
-                        )
-                    });
+                    let display_name = record.display_name.clone();
+                    let location = record.location.editable_text();
+                    this.detail_input
+                        .update(cx, |state, cx| state.emplace(&display_name, cx));
+                    this.detail_location_input
+                        .update(cx, |state, cx| state.emplace(&location, cx));
                 }
                 if matches!(
                     action,
@@ -818,12 +814,57 @@ impl Render for BookmarkManagerWindow {
             .capture_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, window, cx| {
                 let key = event.keystroke.key.as_str();
                 let modifiers = &event.keystroke.modifiers;
+                let search_focused = this
+                    .search_input
+                    .read(cx)
+                    .focus_handle(cx)
+                    .is_focused(window);
+                let detail_focused = this
+                    .detail_input
+                    .read(cx)
+                    .focus_handle(cx)
+                    .is_focused(window)
+                    || this
+                        .detail_location_input
+                        .read(cx)
+                        .focus_handle(cx)
+                        .is_focused(window);
+                let input_focused = search_focused || detail_focused;
                 if key == "escape" {
                     cx.stop_propagation();
-                    window.remove_window();
-                } else if key == "enter" {
+                    if input_focused {
+                        this.focus_handle.focus(window, cx);
+                        cx.notify();
+                    } else {
+                        window.remove_window();
+                    }
+                } else if key == "tab" {
                     cx.stop_propagation();
-                    if matches!(this.ui.location, BookmarkManagerLocation::RunLog) {
+                    let handles = [
+                        this.focus_handle.clone(),
+                        this.search_input.read(cx).focus_handle(cx),
+                        this.detail_input.read(cx).focus_handle(cx),
+                        this.detail_location_input.read(cx).focus_handle(cx),
+                    ];
+                    let current = handles
+                        .iter()
+                        .position(|handle| handle.is_focused(window))
+                        .unwrap_or(0);
+                    let next = if modifiers.shift {
+                        (current + handles.len() - 1) % handles.len()
+                    } else {
+                        (current + 1) % handles.len()
+                    };
+                    handles[next].focus(window, cx);
+                    cx.notify();
+                } else if key == "enter" {
+                    if search_focused {
+                        return;
+                    }
+                    cx.stop_propagation();
+                    if detail_focused {
+                        this.commit_detail_name(window, cx);
+                    } else if matches!(this.ui.location, BookmarkManagerLocation::RunLog) {
                         if let Some(index) = this.ui.selected_run_log {
                             this.dispatch(
                                 ExplorerAction::LaunchRunRecord { index },
@@ -835,7 +876,14 @@ impl Render for BookmarkManagerWindow {
                     } else {
                         this.commit_detail_name(window, cx);
                     }
-                } else if modifiers.control && key == "z" {
+                } else if modifiers.control && key == "w" {
+                    cx.stop_propagation();
+                    crate::interaction_log::record_ui_interaction(
+                        "key_shortcut",
+                        "chord=ctrl+w focus=bookmark_manager outcome=close_window",
+                    );
+                    window.remove_window();
+                } else if !input_focused && modifiers.control && key == "z" {
                     cx.stop_propagation();
                     crate::interaction_log::record_ui_interaction(
                         "key_shortcut",
@@ -847,7 +895,7 @@ impl Render for BookmarkManagerWindow {
                         window,
                         cx,
                     );
-                } else if modifiers.control && key == "y" {
+                } else if !input_focused && modifiers.control && key == "y" {
                     cx.stop_propagation();
                     crate::interaction_log::record_ui_interaction(
                         "key_shortcut",
@@ -859,14 +907,7 @@ impl Render for BookmarkManagerWindow {
                         window,
                         cx,
                     );
-                } else if modifiers.control && key == "w" {
-                    cx.stop_propagation();
-                    crate::interaction_log::record_ui_interaction(
-                        "key_shortcut",
-                        "chord=ctrl+w focus=bookmark_manager outcome=close_window",
-                    );
-                    window.remove_window();
-                } else if modifiers.control && key == "a" {
+                } else if !input_focused && modifiers.control && key == "a" {
                     cx.stop_propagation();
                     this.ui.apply(BookmarkManagerUiAction::SelectAll);
                     this.ui.selected_ids = this
@@ -879,24 +920,24 @@ impl Render for BookmarkManagerWindow {
                         .collect();
                     cx.notify();
                     window.refresh();
-                } else if modifiers.control && key == "x" {
+                } else if !input_focused && modifiers.control && key == "x" {
                     cx.stop_propagation();
                     crate::interaction_log::record_ui_interaction(
                         "key_shortcut",
                         "chord=ctrl+x focus=bookmark_manager outcome=CutSelection",
                     );
                     this.apply_clipboard_action(BookmarkManagerUiAction::CutSelection, window, cx);
-                } else if modifiers.control && key == "c" {
+                } else if !input_focused && modifiers.control && key == "c" {
                     cx.stop_propagation();
                     this.apply_clipboard_action(BookmarkManagerUiAction::CopySelection, window, cx);
-                } else if modifiers.control && key == "v" {
+                } else if !input_focused && modifiers.control && key == "v" {
                     cx.stop_propagation();
                     this.apply_clipboard_action(
                         BookmarkManagerUiAction::PasteSelection,
                         window,
                         cx,
                     );
-                } else if key == "delete" {
+                } else if !input_focused && key == "delete" {
                     cx.stop_propagation();
                     if let Some(id) = this.ui.selected_bookmark {
                         this.dispatch(

@@ -3,8 +3,8 @@
 use std::{collections::HashSet, rc::Rc, time::Duration};
 
 use gpui::{
-    App, Bounds, Context, Pixels, Render, Window, WindowBounds, WindowHandle, WindowOptions,
-    prelude::*,
+    App, Bounds, Context, FocusHandle, Focusable, Pixels, Render, ScrollHandle, Window,
+    WindowBounds, WindowHandle, WindowOptions, point, prelude::*, px,
 };
 
 use crate::{
@@ -30,13 +30,34 @@ pub struct TransferWindowSnapshotV1 {
     pub cancelling_ids: HashSet<explorer_common::RequestId>,
 }
 
+impl PartialEq for TransferWindowSnapshotV1 {
+    fn eq(&self, other: &Self) -> bool {
+        self.tokens == other.tokens
+            && self.cancelling_ids == other.cancelling_ids
+            && self.records.len() == other.records.len()
+            && self
+                .records
+                .iter()
+                .zip(&other.records)
+                .all(|(left, right)| {
+                    left.id == right.id
+                        && left.request == right.request
+                        && left.phase == right.phase
+                        && left.progress == right.progress
+                        && left.terminal == right.terminal
+                        && left.bytes_per_second().map(f64::to_bits)
+                            == right.bytes_per_second().map(f64::to_bits)
+                })
+    }
+}
+
 pub fn transfer_window_bounds(owner: Bounds<Pixels>) -> Bounds<Pixels> {
-    let width = gpui::px(TRANSFER_WINDOW_WIDTH);
-    let height = gpui::px(TRANSFER_WINDOW_HEIGHT).min(owner.size.height);
+    let width = px(TRANSFER_WINDOW_WIDTH);
+    let height = px(TRANSFER_WINDOW_HEIGHT).min(owner.size.height);
     Bounds::new(
-        gpui::point(
+        point(
             (owner.right() - width).max(owner.left()),
-            (owner.top() + gpui::px(112.0)).min((owner.bottom() - height).max(owner.top())),
+            (owner.top() + px(112.0)).min((owner.bottom() - height).max(owner.top())),
         ),
         gpui::size(width, height),
     )
@@ -59,6 +80,9 @@ pub fn transfer_window_options(bounds: Bounds<Pixels>) -> WindowOptions {
 
 pub struct TransferCenterWindow {
     owner: WindowHandle<ExplorerRoot>,
+    focus_handle: FocusHandle,
+    scroll_handle: ScrollHandle,
+    snapshot: Option<TransferWindowSnapshotV1>,
 }
 
 impl TransferCenterWindow {
@@ -68,6 +92,11 @@ impl TransferCenterWindow {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
+        let focus_handle = cx.focus_handle();
+        focus_handle.focus(window, cx);
+        let initial_snapshot = owner
+            .update(cx, |root, _, _| root.transfer_window_snapshot())
+            .ok();
         let activation_deactivate = Rc::clone(&on_deactivate);
         cx.observe_window_activation(window, move |_, window, cx| {
             if window.is_window_active() {
@@ -92,9 +121,16 @@ impl TransferCenterWindow {
                     .timer(Duration::from_millis(100))
                     .await;
                 if this
-                    .update(cx, |_, cx| {
+                    .update(cx, |this, cx| {
                         poll_deactivate(cx);
-                        cx.notify();
+                        let next_snapshot = this
+                            .owner
+                            .update(cx, |root, _, _| root.transfer_window_snapshot())
+                            .ok();
+                        if next_snapshot != this.snapshot {
+                            this.snapshot = next_snapshot;
+                            cx.notify();
+                        }
                     })
                     .is_err()
                 {
@@ -103,16 +139,55 @@ impl TransferCenterWindow {
             }
         })
         .detach();
-        Self { owner }
+        Self {
+            owner,
+            focus_handle,
+            scroll_handle: ScrollHandle::new(),
+            snapshot: initial_snapshot,
+        }
+    }
+
+    fn keyboard_scroll(&self, key: &str) -> bool {
+        let viewport = f32::from(self.scroll_handle.bounds().size.height).max(0.0);
+        let maximum = f32::from(self.scroll_handle.max_offset().y).max(0.0);
+        if !viewport.is_finite() || !maximum.is_finite() || viewport <= 0.0 {
+            return false;
+        }
+        let current = (-f32::from(self.scroll_handle.offset().y)).clamp(0.0, maximum);
+        let target = match key {
+            "up" | "arrowup" => current - 48.0,
+            "down" | "arrowdown" => current + 48.0,
+            "pageup" => current - viewport,
+            "pagedown" => current + viewport,
+            "home" => 0.0,
+            "end" => maximum,
+            _ => return false,
+        }
+        .clamp(0.0, maximum);
+        let offset = self.scroll_handle.offset();
+        self.scroll_handle.set_offset(point(offset.x, px(-target)));
+        true
+    }
+}
+
+impl Focusable for TransferCenterWindow {
+    fn focus_handle(&self, _: &App) -> FocusHandle {
+        self.focus_handle.clone()
     }
 }
 
 impl Render for TransferCenterWindow {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let snapshot = self
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if window.is_window_active() && window.focused(cx).is_none() {
+            self.focus_handle.focus(window, cx);
+        }
+        if let Ok(next_snapshot) = self
             .owner
             .update(cx, |root, _, _| root.transfer_window_snapshot())
-            .ok();
+        {
+            self.snapshot = Some(next_snapshot);
+        }
+        let snapshot = self.snapshot.clone();
         let owner = self.owner;
         let on_action: ActionCallback = Rc::new(move |action, _, cx| {
             let action = action.clone();
@@ -142,11 +217,15 @@ impl Render for TransferCenterWindow {
                 .into_any_element()
             },
         );
-        let owner = self.owner;
         gpui::div()
+            .id("transfer-center-window")
             .size_full()
-            .on_key_down(move |event, _, cx| {
-                if event.keystroke.key == "escape" {
+            .track_focus(&self.focus_handle)
+            .capture_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, window, cx| {
+                let key = event.keystroke.key.as_str();
+                if key == "escape" {
+                    cx.stop_propagation();
+                    let owner = this.owner;
                     let _ = owner.update(cx, |root, owner_window, cx| {
                         root.dispatch_transfer_window_action(
                             crate::actions::ExplorerAction::CloseTransferPanel,
@@ -155,9 +234,20 @@ impl Render for TransferCenterWindow {
                             cx,
                         );
                     });
+                } else if this.keyboard_scroll(key) {
+                    cx.stop_propagation();
+                    cx.notify();
+                    window.refresh();
                 }
-            })
-            .child(content)
+            }))
+            .child(
+                gpui::div()
+                    .id("transfer-center-list")
+                    .size_full()
+                    .overflow_y_scroll()
+                    .track_scroll(&self.scroll_handle)
+                    .child(content),
+            )
     }
 }
 
@@ -168,8 +258,8 @@ mod tests {
     #[test]
     fn transfer_window_anchors_to_owner_top_right_without_exceeding_owner() {
         let owner = Bounds::new(
-            gpui::point(gpui::px(100.0), gpui::px(50.0)),
-            gpui::size(gpui::px(1200.0), gpui::px(800.0)),
+            point(px(100.0), px(50.0)),
+            gpui::size(px(1200.0), px(800.0)),
         );
         let bounds = transfer_window_bounds(owner);
         assert_eq!(bounds.right(), owner.right());
