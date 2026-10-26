@@ -264,7 +264,7 @@ pub(crate) fn install_to(
     }
     progress("Preparing files", 8);
     let staging = tempfile::tempdir().context("payload staging")?;
-    extract_overlay(staging.path())?;
+    extract_overlay(staging.path()).context("extract installer payload")?;
     progress("Closing SuperExplorer", 18);
     let quiesce = staging.path().join("superexplorer-quiesce.exe");
     if quiesce.is_file() {
@@ -277,18 +277,19 @@ pub(crate) fn install_to(
     }
     if !skip_service {
         progress("Stopping SuperExplorer MFT Service", 32);
-        stop_service()?;
+        stop_service().context("stop SuperExplorer MFT Service")?;
     }
     progress("Copying program files", 55);
-    fs::create_dir_all(install_dir.join("plugins"))?;
-    copy_tree(staging.path(), &install_dir)?;
+    fs::create_dir_all(install_dir.join("plugins"))
+        .with_context(|| format!("create {}", install_dir.display()))?;
+    copy_tree(staging.path(), &install_dir).context("copy program files")?;
     let uninstaller = install_dir.join("Uninstall.exe");
     fs::copy(env::current_exe()?, &uninstaller)
         .with_context(|| format!("write {}", uninstaller.display()))?;
     if !skip_service {
         progress("Configuring Windows service", 78);
-        configure_service(&install_dir)?;
-        write_uninstall_registry(&install_dir)?;
+        configure_service(&install_dir).context("configure SuperExplorer MFT Service")?;
+        write_uninstall_registry(&install_dir).context("register uninstaller")?;
         progress("Creating shortcuts", 90);
         create_shortcut(
             &install_dir.join("SuperExplorer.exe"),
@@ -626,23 +627,52 @@ fn create_shortcut(target: &Path, link: &Path) -> Result<()> {
         Win32::UI::Shell::{IShellLinkW, ShellLink},
         core::{Interface, PCWSTR},
     };
-    unsafe {
-        let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
-        let link_obj: IShellLinkW = CoCreateInstance(&ShellLink, None, CLSCTX_INPROC_SERVER)?;
-        link_obj.SetPath(PCWSTR(wide(target).as_ptr()))?;
-        let persist: IPersistFile = link_obj.cast()?;
-        persist.Save(PCWSTR(wide(link).as_ptr()), true)?;
-        CoUninitialize();
+    if let Some(parent) = link.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("create shortcut folder {}", parent.display()))?;
     }
-    Ok(())
+    let target_wide = wide(target);
+    let link_wide = wide(link);
+    // SAFETY: COM is initialized for this call only and every pointer outlives its call.
+    let initialized = unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED) }.is_ok();
+    let result = (|| unsafe {
+        let link_obj: IShellLinkW = CoCreateInstance(&ShellLink, None, CLSCTX_INPROC_SERVER)?;
+        link_obj.SetPath(PCWSTR(target_wide.as_ptr()))?;
+        let persist: IPersistFile = link_obj.cast()?;
+        persist.Save(PCWSTR(link_wide.as_ptr()), true)
+    })();
+    if initialized {
+        // SAFETY: balances the successful CoInitializeEx above on this thread.
+        unsafe { CoUninitialize() };
+    }
+    result.with_context(|| format!("create shortcut {}", link.display()))
+}
+
+/// Resolves the user's real shell folder. `%USERPROFILE%\Desktop` does not exist when the Desktop
+/// is redirected (OneDrive backup, another drive), which failed setup with 0x80070003.
+fn known_folder(id: &windows::core::GUID, label: &str) -> Result<PathBuf> {
+    use windows::Win32::{
+        System::Com::CoTaskMemFree,
+        UI::Shell::{KF_FLAG_CREATE, SHGetKnownFolderPath},
+    };
+    // SAFETY: the GUID is a valid known-folder id; the returned buffer is freed below.
+    let raw = unsafe { SHGetKnownFolderPath(id, KF_FLAG_CREATE, None) }
+        .with_context(|| format!("locate the {label} folder"))?;
+    // SAFETY: SHGetKnownFolderPath returned a NUL-terminated CoTaskMem string.
+    let path = unsafe { raw.to_string() };
+    // SAFETY: frees the string allocated by SHGetKnownFolderPath exactly once.
+    unsafe { CoTaskMemFree(Some(raw.0.cast())) };
+    Ok(PathBuf::from(path.with_context(|| {
+        format!("decode the {label} folder path")
+    })?))
 }
 
 fn desktop_dir() -> Result<PathBuf> {
-    Ok(PathBuf::from(env::var("USERPROFILE")?).join("Desktop"))
+    known_folder(&windows::Win32::UI::Shell::FOLDERID_Desktop, "Desktop")
 }
 
 fn start_menu_dir() -> Result<PathBuf> {
-    Ok(PathBuf::from(env::var("APPDATA")?).join(r"Microsoft\Windows\Start Menu\Programs"))
+    known_folder(&windows::Win32::UI::Shell::FOLDERID_Programs, "Start menu")
 }
 
 fn write_uninstall_registry(install_dir: &Path) -> Result<()> {
@@ -787,6 +817,13 @@ fn delete_reg_key_under(root: windows::Win32::System::Registry::HKEY, key: &str)
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn shortcut_folders_come_from_the_shell_not_userprofile() {
+        for folder in [desktop_dir().unwrap(), start_menu_dir().unwrap()] {
+            assert!(folder.is_dir(), "{} must exist", folder.display());
+        }
+    }
 
     #[test]
     fn registry_values_are_written_and_removed_without_reg_exe() {
