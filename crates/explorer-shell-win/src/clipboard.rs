@@ -1518,7 +1518,12 @@ mod tests {
         assert_eq!(mode, ClipboardMode::Copy);
         assert_eq!(items.len(), 1);
         assert_eq!(
-            items[0].location.path().expect("path").canonicalize().expect("canonical"),
+            items[0]
+                .location
+                .path()
+                .expect("path")
+                .canonicalize()
+                .expect("canonical"),
             folder.canonicalize().expect("canonical folder")
         );
     }

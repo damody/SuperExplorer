@@ -302,11 +302,26 @@ fn canonical_location_descriptor(
         return requested.clone();
     }
     if matches!(requested, LocationDescriptor::ShellNamespace(_)) {
-        return requested.clone();
+        // Shares reached through the Network folder are plain UNC directories; keeping their PIDL
+        // would lose the address text, filesystem columns, and sorting for the whole subtree.
+        return filesystem_path
+            .filter(|path| is_unc_share_path(path))
+            .map_or_else(|| requested.clone(), LocationDescriptor::file_system);
     }
     filesystem_path
         .filter(|path| !path.is_empty())
         .map_or_else(|| requested.clone(), LocationDescriptor::file_system)
+}
+
+/// `\\server\share[\...]`, excluding `\\?\` and `\\.\` device paths and bare `\\server`.
+fn is_unc_share_path(path: &str) -> bool {
+    let Some(rest) = path.strip_prefix(r"\\") else {
+        return false;
+    };
+    let mut components = rest.split('\\');
+    let server = components.next().unwrap_or_default();
+    let share = components.next().unwrap_or_default();
+    !server.is_empty() && server != "?" && server != "." && !share.is_empty()
 }
 
 fn is_bare_drive_designator(path: &str) -> bool {
@@ -585,7 +600,7 @@ mod tests {
     use super::{
         DIRECTORY_BATCH_BYTE_CAP, DIRECTORY_BATCH_ITEM_CAP, DirectoryBatchAccumulator,
         canonical_location_descriptor, drive_metadata, entry_metadata, enumerate_child_containers,
-        enumerate_directory, estimate_entry_bytes, is_bare_drive_designator,
+        enumerate_directory, estimate_entry_bytes, is_bare_drive_designator, is_unc_share_path,
         normalize_shell_parent_chain, resolve_location,
     };
     use explorer_model::{
@@ -879,6 +894,23 @@ mod tests {
             namespace,
             "opaque namespace identity must not collapse into a coincidental filesystem path"
         );
+        assert_eq!(
+            canonical_location_descriptor(
+                &namespace,
+                Some(r"\\122.116.110.30\Data\fix_av_video".to_owned())
+            ),
+            LocationDescriptor::file_system(r"\\122.116.110.30\Data\fix_av_video"),
+            "Network-folder shares must become UNC filesystem locations"
+        );
+        for not_share in [
+            r"\\122.116.110.30",
+            r"\\?\C:\Windows",
+            r"\\.\PhysicalDrive0",
+            r"\\",
+        ] {
+            assert!(!is_unc_share_path(not_share), "{not_share}");
+        }
+        assert!(is_unc_share_path(r"\\server\share"));
     }
 
     #[test]
@@ -1381,7 +1413,12 @@ pub(crate) fn child_entry(
     }
     .map_err(|error| windows_error("read Shell item attributes", &error))?;
     let location = if resolved.preserve_namespace {
-        LocationDescriptor::ShellNamespace(absolute.bytes()?)
+        match name_from_pidl(absolute.as_ptr(), SIGDN_FILESYSPATH) {
+            Ok(path) if is_unc_share_path(&path) => {
+                LocationDescriptor::FileSystem(PathBuf::from(path))
+            }
+            _ => LocationDescriptor::ShellNamespace(absolute.bytes()?),
+        }
     } else {
         match name_from_pidl(absolute.as_ptr(), SIGDN_FILESYSPATH) {
             Ok(path) => LocationDescriptor::FileSystem(PathBuf::from(path)),
