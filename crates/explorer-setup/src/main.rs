@@ -340,8 +340,8 @@ pub(crate) fn uninstall(args: &[String]) -> Result<()> {
         let start_menu = start_menu_dir()?.join(PRODUCT_NAME);
         let _ = fs::remove_file(start_menu.join(format!("{PRODUCT_NAME}.lnk")));
         let _ = fs::remove_dir(&start_menu);
-        delete_reg_key(PRODUCT_UNINSTALL_KEY)?;
-        delete_reg_key(PRODUCT_REG_KEY)?;
+        delete_reg_key(PRODUCT_UNINSTALL_KEY);
+        delete_reg_key(PRODUCT_REG_KEY);
     }
     remove_installed_files(&install_dir)?;
     println!("uninstalled SuperExplorer from {}", install_dir.display());
@@ -674,41 +674,145 @@ fn write_uninstall_registry(install_dir: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Writes HKLM directly. Spawning `reg.exe` failed on machines where Windows is not on C: or
+/// where policy/antivirus blocks reg.exe, and only surfaced as an opaque "reg.exe add".
 fn set_reg_sz(key: &str, name: &str, value: &str) -> Result<()> {
-    let status = Command::new(r"C:\Windows\System32\reg.exe")
-        .args([
-            "add",
-            &format!(r"HKLM\{key}"),
-            "/v",
-            name,
-            "/t",
-            "REG_SZ",
-            "/d",
-            value,
-            "/f",
-        ])
-        .stdout(Stdio::null())
-        .stderr(Stdio::piped())
-        .status()
-        .context("reg.exe add")?;
-    if !status.success() {
-        bail!("unable to write HKLM\\{key}\\{name}");
+    set_reg_sz_under(
+        windows::Win32::System::Registry::HKEY_LOCAL_MACHINE,
+        "HKLM",
+        key,
+        name,
+        value,
+    )
+}
+
+fn set_reg_sz_under(
+    root: windows::Win32::System::Registry::HKEY,
+    root_name: &str,
+    key: &str,
+    name: &str,
+    value: &str,
+) -> Result<()> {
+    use windows::{
+        Win32::{
+            Foundation::ERROR_SUCCESS,
+            System::Registry::{
+                HKEY, KEY_SET_VALUE, KEY_WOW64_64KEY, REG_OPTION_NON_VOLATILE, REG_SZ, RegCloseKey,
+                RegCreateKeyExW, RegSetValueExW,
+            },
+        },
+        core::PCWSTR,
+    };
+    let key_wide = wide(Path::new(key));
+    let name_wide = wide(Path::new(name));
+    let value_wide: Vec<u16> = value.encode_utf16().chain(Some(0)).collect();
+    let mut handle = HKEY::default();
+    // SAFETY: both strings are NUL-terminated and outlive the call; `handle` is writable.
+    let status = unsafe {
+        RegCreateKeyExW(
+            root,
+            PCWSTR(key_wide.as_ptr()),
+            Some(0),
+            None,
+            REG_OPTION_NON_VOLATILE,
+            KEY_SET_VALUE | KEY_WOW64_64KEY,
+            None,
+            &raw mut handle,
+            None,
+        )
+    };
+    if status != ERROR_SUCCESS {
+        return Err(windows::core::Error::from(status.to_hresult()))
+            .with_context(|| format!(r"create registry key {root_name}\{key}"));
+    }
+    // SAFETY: the byte view covers exactly the live UTF-16 buffer including its terminator.
+    let bytes = unsafe {
+        std::slice::from_raw_parts(value_wide.as_ptr().cast::<u8>(), value_wide.len() * 2)
+    };
+    // SAFETY: `handle` was opened with KEY_SET_VALUE above and is closed below.
+    let status = unsafe {
+        RegSetValueExW(
+            handle,
+            PCWSTR(name_wide.as_ptr()),
+            Some(0),
+            REG_SZ,
+            Some(bytes),
+        )
+    };
+    // SAFETY: closes the key opened above exactly once.
+    let _ = unsafe { RegCloseKey(handle) };
+    if status != ERROR_SUCCESS {
+        return Err(windows::core::Error::from(status.to_hresult()))
+            .with_context(|| format!(r"write registry value {root_name}\{key}\{name}"));
     }
     Ok(())
 }
 
-fn delete_reg_key(key: &str) -> Result<()> {
-    let _ = Command::new(r"C:\Windows\System32\reg.exe")
-        .args(["delete", &format!(r"HKLM\{key}"), "/f"])
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status();
-    Ok(())
+fn delete_reg_key(key: &str) {
+    delete_reg_key_under(windows::Win32::System::Registry::HKEY_LOCAL_MACHINE, key);
+}
+
+fn delete_reg_key_under(root: windows::Win32::System::Registry::HKEY, key: &str) {
+    use windows::{
+        Win32::System::Registry::{
+            HKEY, KEY_ALL_ACCESS, KEY_WOW64_64KEY, RegCloseKey, RegDeleteKeyExW, RegDeleteTreeW,
+            RegOpenKeyExW,
+        },
+        core::PCWSTR,
+    };
+    let key_wide = wide(Path::new(key));
+    let mut handle = HKEY::default();
+    // SAFETY: the key name is NUL-terminated and `handle` is writable.
+    let opened = unsafe {
+        RegOpenKeyExW(
+            root,
+            PCWSTR(key_wide.as_ptr()),
+            Some(0),
+            KEY_ALL_ACCESS | KEY_WOW64_64KEY,
+            &raw mut handle,
+        )
+    };
+    if opened.is_err() {
+        // Absent keys are already uninstalled; uninstall stays best-effort like before.
+        return;
+    }
+    // SAFETY: removes every subkey/value under the opened key, then the key itself.
+    unsafe {
+        let _ = RegDeleteTreeW(handle, PCWSTR::null());
+        let _ = RegCloseKey(handle);
+        let _ = RegDeleteKeyExW(root, PCWSTR(key_wide.as_ptr()), KEY_WOW64_64KEY.0, None);
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn registry_values_are_written_and_removed_without_reg_exe() {
+        use windows::Win32::System::Registry::HKEY_CURRENT_USER;
+        let key = format!(r"Software\SuperExplorerSetupTest-{}", std::process::id());
+        set_reg_sz_under(
+            HKEY_CURRENT_USER,
+            "HKCU",
+            &key,
+            "InstallDir",
+            r"D:\Apps\超級",
+        )
+        .expect("write registry value");
+        let query = || {
+            Command::new("reg.exe")
+                .args(["query", &format!(r"HKCU\{key}"), "/v", "InstallDir"])
+                .output()
+                .expect("query registry")
+        };
+        let found = query();
+        assert!(found.status.success(), "value must exist after writing");
+        assert!(String::from_utf8_lossy(&found.stdout).contains(r"D:\Apps\"));
+        delete_reg_key_under(HKEY_CURRENT_USER, &key);
+        assert!(!query().status.success(), "key must be removed");
+        delete_reg_key_under(HKEY_CURRENT_USER, &key);
+    }
 
     #[test]
     fn missing_installed_app_returns_error_and_leaves_launch_log() {

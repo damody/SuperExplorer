@@ -910,7 +910,7 @@ fn start_install(hwnd: HWND) {
         let ok = result.is_ok();
         let error = result
             .err()
-            .map(|error| error.to_string())
+            .map(|error| format!("{error:#}"))
             .unwrap_or_default();
         let wide_error = wide(&error);
         unsafe {
