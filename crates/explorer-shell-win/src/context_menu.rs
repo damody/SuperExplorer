@@ -782,12 +782,31 @@ pub(crate) fn show(request: &ContextMenuRequest) -> Result<ContextMenuOutcome, E
                     &error.to_string(),
                 )
             })?;
+            next_custom_id = next_custom_id.saturating_add(1);
+        }
+        if item_menu && request.close_lock_owners {
+            unsafe {
+                AppendMenuW(
+                    popup.get(),
+                    MF_STRING,
+                    next_custom_id as usize,
+                    w!("關閉所有鎖定的程序"),
+                )
+            }
+            .map_err(|error| {
+                menu_error(
+                    "append close lock owners command",
+                    "無法建立關閉鎖定程序命令",
+                    &error.to_string(),
+                )
+            })?;
         }
     }
     let apk_first_id = first_custom_id
         .saturating_add(u32::from(request.paste_available))
         .saturating_add(u32::from(item_menu))
-        .saturating_add(u32::from(item_menu && request.open_file_location));
+        .saturating_add(u32::from(item_menu && request.open_file_location))
+        .saturating_add(u32::from(item_menu && request.close_lock_owners));
     if let Some(menu_data) = &apk_devices {
         let submenu = unsafe { CreatePopupMenu() }.map_err(|error| {
             menu_error("create APK submenu", "無法建立安裝選單", &error.to_string())
@@ -1217,6 +1236,9 @@ fn app_owned_host_command(label: &str, item_menu: bool) -> Option<ContextMenuHos
     }
     if item_menu && label == "加入書籤" {
         return Some(ContextMenuHostCommand::AddBookmark);
+    }
+    if item_menu && label == "關閉所有鎖定的程序" {
+        return Some(ContextMenuHostCommand::CloseLockOwners);
     }
     None
 }
@@ -3016,6 +3038,11 @@ mod tests {
             Some(ContextMenuHostCommand::AddBookmark)
         );
         assert_eq!(app_owned_host_command("加入書籤", false), None);
+        assert_eq!(
+            app_owned_host_command("關閉所有鎖定的程序", true),
+            Some(ContextMenuHostCommand::CloseLockOwners)
+        );
+        assert_eq!(app_owned_host_command("關閉所有鎖定的程序", false), None);
         assert_eq!(app_owned_host_command("內容", true), None);
     }
 
@@ -4292,6 +4319,7 @@ mod tests {
             immersive_native_context_menus: true,
             paste_available: false,
             open_file_location: false,
+            close_lock_owners: false,
             requested_verb: None,
             deadline_ms: 2_000,
         };

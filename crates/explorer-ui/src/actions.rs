@@ -317,6 +317,7 @@ pub enum ExplorerAction {
         target: PermanentDeleteDialogTarget,
     },
     CloseLockOwnersAndRetry,
+    CloseSelectedLockOwners,
     RetryLockedDelete,
     CancelLockedDeleteRecovery,
     MoveLockedDeleteDialogFocus {
@@ -935,6 +936,7 @@ impl ExplorerAction {
             Self::MovePermanentDeleteDialogFocus { .. } => "MovePermanentDeleteDialogFocus",
             Self::SetPermanentDeleteDialogFocus { .. } => "SetPermanentDeleteDialogFocus",
             Self::CloseLockOwnersAndRetry => "CloseLockOwnersAndRetry",
+            Self::CloseSelectedLockOwners => "CloseSelectedLockOwners",
             Self::RetryLockedDelete => "RetryLockedDelete",
             Self::CancelLockedDeleteRecovery => "CancelLockedDeleteRecovery",
             Self::MoveLockedDeleteDialogFocus { .. } => "MoveLockedDeleteDialogFocus",
@@ -1851,6 +1853,7 @@ fn action_available(state: &AppViewState, action: &ExplorerAction) -> bool {
         ExplorerAction::CloseLockOwnersAndRetry => state
             .lock_recovery()
             .is_some_and(crate::state::LockRecoveryUiState::can_close),
+        ExplorerAction::CloseSelectedLockOwners => state.has_selected_local_files(),
         ExplorerAction::RetryLockedDelete => state
             .lock_recovery()
             .is_some_and(crate::state::LockRecoveryUiState::can_retry),
@@ -2387,6 +2390,7 @@ fn apply_action(state: &mut AppViewState, action: ExplorerAction) -> FocusSurfac
         | ExplorerAction::RecycleDeleteSelected
         | ExplorerAction::CreateShortcutSelected
         | ExplorerAction::CloseLockOwnersAndRetry
+        | ExplorerAction::CloseSelectedLockOwners
         | ExplorerAction::RetryLockedDelete
         | ExplorerAction::CopySelected
         | ExplorerAction::CutSelected

@@ -114,6 +114,9 @@ status-lock-finding = 正在尋找使用所選項目的應用程式…
 status-lock-retry-limit = 已達重試上限。項目未被刪除。
 status-lock-owners-found = { $count } 個應用程式正在使用所選項目。
 status-lock-unidentified = Windows 無法識別正在使用此項目的應用程式。
+status-lock-closing-owners = 正在要求 { $count } 個應用程式關閉…
+status-lock-owners-closed = 已關閉正在使用所選項目的應用程式。
+status-lock-no-closable-owners = 沒有可安全關閉、正在使用所選項目的應用程式。
 
 status-generic-item = 項目
 

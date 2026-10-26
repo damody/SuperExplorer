@@ -1085,6 +1085,11 @@ pub struct AppViewState {
     permanent_delete_confirmation_focus: PermanentDeleteDialogTarget,
     lock_recovery: Option<LockRecoveryUiState>,
     pending_lock_recovery_command: Option<ExplorerCommand>,
+    /// Items the lock-owner column currently reports as locked; drives the context-menu entry.
+    context_lock_owner_items: HashSet<ShellItemId>,
+    /// Context-menu "close all locking processes" request awaiting discovery or close.
+    context_lock_close: Option<(RequestContext, Vec<LocationDescriptor>)>,
+    lock_owner_column_refresh: bool,
     clipboard: explorer_model::ClipboardState,
     drag_session: explorer_model::DragSession,
     pending_click_selection: Option<PendingClickSelection>,
@@ -1709,6 +1714,9 @@ impl AppViewState {
             permanent_delete_confirmation_focus: PermanentDeleteDialogTarget::Delete,
             lock_recovery: None,
             pending_lock_recovery_command: None,
+            context_lock_owner_items: HashSet::new(),
+            context_lock_close: None,
+            lock_owner_column_refresh: false,
             clipboard: explorer_model::ClipboardState::default(),
             drag_session: explorer_model::DragSession::new(drag_threshold.0, drag_threshold.1),
             pending_click_selection: None,
@@ -7015,6 +7023,22 @@ impl AppViewState {
             }
             return WindowEventOutcome::Applied;
         }
+        if let ExplorerEvent::LockOwnersDiscovered { context, outcome } = &event
+            && self
+                .context_lock_close
+                .as_ref()
+                .is_some_and(|(pending, _)| pending == context)
+        {
+            return self.apply_context_lock_owners_discovered(outcome);
+        }
+        if let ExplorerEvent::LockOwnersClosed { context, outcome } = &event
+            && self
+                .context_lock_close
+                .as_ref()
+                .is_some_and(|(pending, _)| pending == context)
+        {
+            return self.apply_context_lock_owners_closed(outcome);
+        }
         if let ExplorerEvent::LockOwnersDiscovered { context, outcome } = &event {
             let catalog = self.catalog();
             let discovery_timeout = catalog.t("status-lock-discovery-timeout");
@@ -7456,6 +7480,117 @@ impl AppViewState {
             context,
             request: LockOwnerCloseRequest { resources, owners },
         })
+    }
+
+    pub(crate) fn set_context_lock_owner_items(&mut self, items: HashSet<ShellItemId>) {
+        self.context_lock_owner_items = items;
+    }
+
+    pub(crate) fn has_selected_local_files(&self) -> bool {
+        self.selected_items()
+            .iter()
+            .any(|item| item.location.path().is_some())
+    }
+
+    pub(crate) fn take_lock_owner_column_refresh(&mut self) -> bool {
+        std::mem::take(&mut self.lock_owner_column_refresh)
+    }
+
+    /// Discovers the current owners of the selected local items; the close request follows once
+    /// discovery returns fresh process identities.
+    pub(crate) fn begin_close_selected_lock_owners(&mut self) -> Option<ExplorerCommand> {
+        let limits = explorer_common::RoadmapLimits::default();
+        let resources = self
+            .selected_items()
+            .into_iter()
+            .filter(|item| item.location.path().is_some())
+            .take(limits.lock_recovery_max_resources)
+            .map(|item| item.location)
+            .collect::<Vec<_>>();
+        if resources.is_empty() {
+            return None;
+        }
+        if let Some((previous, _)) = self.context_lock_close.take() {
+            previous.cancellation.cancel();
+        }
+        let tab = self.tabs.active_tab();
+        let context = RequestContext::new(tab.id, tab.generation);
+        self.context_lock_close = Some((context.clone(), resources.clone()));
+        self.set_paste_notice(self.catalog().t("status-lock-finding"), false);
+        Some(ExplorerCommand::DiscoverLockOwners {
+            context,
+            request: LockOwnerDiscoveryRequest { resources },
+        })
+    }
+
+    fn apply_context_lock_owners_discovered(
+        &mut self,
+        outcome: &LockOwnerDiscoveryTerminal,
+    ) -> WindowEventOutcome {
+        let catalog = self.catalog();
+        let Some((_, resources)) = self.context_lock_close.take() else {
+            return WindowEventOutcome::IgnoredStale;
+        };
+        match outcome {
+            LockOwnerDiscoveryTerminal::Ready(owners) => {
+                let owners = owners
+                    .iter()
+                    .filter(|owner| owner.can_close())
+                    .map(|owner| owner.identity)
+                    .collect::<Vec<_>>();
+                if owners.is_empty() {
+                    self.set_paste_notice(catalog.t("status-lock-no-closable-owners"), true);
+                    return WindowEventOutcome::Applied;
+                }
+                let tab = self.tabs.active_tab();
+                let context = RequestContext::new(tab.id, tab.generation);
+                let mut args = explorer_i18n::FluentArgs::new();
+                args.set("count", owners.len() as i64);
+                self.set_paste_notice(catalog.t_args("status-lock-closing-owners", &args), false);
+                self.context_lock_close = Some((context.clone(), resources.clone()));
+                self.pending_lock_recovery_command = Some(ExplorerCommand::CloseLockOwners {
+                    context,
+                    request: LockOwnerCloseRequest { resources, owners },
+                });
+            }
+            LockOwnerDiscoveryTerminal::Empty => {
+                self.set_paste_notice(catalog.t("status-lock-unidentified"), true);
+                self.lock_owner_column_refresh = true;
+            }
+            LockOwnerDiscoveryTerminal::Unavailable(error)
+            | LockOwnerDiscoveryTerminal::Failed(error) => {
+                self.set_paste_notice(error.user_message.clone(), true);
+            }
+            LockOwnerDiscoveryTerminal::DeadlineElapsed => {
+                self.set_paste_notice(catalog.t("status-lock-discovery-timeout"), true);
+            }
+            LockOwnerDiscoveryTerminal::Cancelled => {}
+        }
+        WindowEventOutcome::Applied
+    }
+
+    fn apply_context_lock_owners_closed(
+        &mut self,
+        outcome: &LockOwnerCloseTerminal,
+    ) -> WindowEventOutcome {
+        let catalog = self.catalog();
+        self.context_lock_close = None;
+        match outcome {
+            LockOwnerCloseTerminal::Closed(_) => {
+                self.set_paste_notice(catalog.t("status-lock-owners-closed"), false);
+            }
+            LockOwnerCloseTerminal::Partial(_) => {
+                self.set_paste_notice(catalog.t("status-lock-partial-close"), true);
+            }
+            LockOwnerCloseTerminal::Failed(error) => {
+                self.set_paste_notice(error.user_message.clone(), true);
+            }
+            LockOwnerCloseTerminal::Cancelled => {
+                self.set_paste_notice(catalog.t("status-lock-close-cancelled"), true);
+            }
+        }
+        self.lock_owner_column_refresh = true;
+        WindowEventOutcome::Applied
     }
 
     fn handle_locked_delete_terminal(
@@ -8286,6 +8421,11 @@ impl AppViewState {
             self.pending_context_extended_verbs = false;
             return None;
         }
+        let close_lock_owners = matches!(
+            &target,
+            explorer_model::ShellContextMenuTarget::Items { items, .. }
+                if items.iter().any(|item| self.context_lock_owner_items.contains(&item.id))
+        );
         let request = explorer_model::ContextMenuRequest {
             target,
             owner_window,
@@ -8304,6 +8444,7 @@ impl AppViewState {
             immersive_native_context_menus: tab.view.settings.immersive_native_context_menus,
             paste_available: self.paste_available(),
             open_file_location: self.can_open_focused_file_location(),
+            close_lock_owners,
             requested_verb: None,
             deadline_ms: 2_000,
         };
@@ -8423,6 +8564,7 @@ impl AppViewState {
             immersive_native_context_menus,
             paste_available: self.paste_available(),
             open_file_location: false,
+            close_lock_owners: false,
             requested_verb: None,
             deadline_ms: 2_000,
         };
@@ -8495,6 +8637,7 @@ impl AppViewState {
             immersive_native_context_menus: false,
             paste_available: false,
             open_file_location: false,
+            close_lock_owners: false,
             requested_verb: Some("undo".to_owned()),
             deadline_ms: 2_000,
         };
@@ -8538,6 +8681,7 @@ impl AppViewState {
             immersive_native_context_menus: false,
             paste_available: false,
             open_file_location: false,
+            close_lock_owners: false,
             requested_verb: Some("properties".to_owned()),
             deadline_ms: 2_000,
         };
@@ -8585,6 +8729,7 @@ impl AppViewState {
                 immersive_native_context_menus: false,
                 paste_available: false,
                 open_file_location: false,
+                close_lock_owners: false,
                 requested_verb: Some("empty".to_owned()),
                 deadline_ms: 10_000,
             },
@@ -8615,6 +8760,7 @@ impl AppViewState {
             immersive_native_context_menus: false,
             paste_available: false,
             open_file_location: false,
+            close_lock_owners: false,
             requested_verb: Some(canonical_verb.to_owned()),
             deadline_ms: 2_000,
         };
@@ -25621,6 +25767,83 @@ mod tests {
             restartable: true,
             eligibility: explorer_model::LockOwnerEligibility::Eligible,
         }
+    }
+
+    #[test]
+    fn context_menu_close_lock_owners_discovers_then_closes_selected_owners() {
+        let mut state = state_with_rows();
+        let file_id = explorer_model::ShellItemId::from_provider_bytes([2]).expect("file id");
+        let row = (0..2)
+            .find(|row| state.presentation_item_id(*row).as_ref() == Some(&file_id))
+            .expect("file row");
+        assert!(state.select_row(row));
+
+        let menu = state.begin_context_menu_request(
+            Some(file_id.clone()),
+            42,
+            100,
+            200,
+            10.0,
+            20.0,
+            true,
+            false,
+        );
+        assert!(
+            matches!(menu, Some(explorer_model::ExplorerCommand::ShowContextMenu { request, .. }) if !request.close_lock_owners)
+        );
+        state.set_context_lock_owner_items(HashSet::from([file_id.clone()]));
+        state.pending_context_menu = None;
+        let menu =
+            state.begin_context_menu_request(Some(file_id), 42, 100, 200, 10.0, 20.0, true, false);
+        assert!(
+            matches!(menu, Some(explorer_model::ExplorerCommand::ShowContextMenu { request, .. }) if request.close_lock_owners)
+        );
+
+        let discovery = state
+            .begin_close_selected_lock_owners()
+            .expect("discovery command");
+        let explorer_model::ExplorerCommand::DiscoverLockOwners { context, request } = discovery
+        else {
+            panic!("discovery command");
+        };
+        assert_eq!(
+            request.resources,
+            vec![explorer_model::LocationDescriptor::file_system(
+                r"C:\fixture\file.txt"
+            )]
+        );
+        let mut protected = eligible_lock_owner();
+        protected.identity.process_id = 4;
+        protected.eligibility = explorer_model::LockOwnerEligibility::System;
+        let owner = eligible_lock_owner();
+        assert_eq!(
+            state.apply_service_event(explorer_model::ExplorerEvent::LockOwnersDiscovered {
+                context,
+                outcome: explorer_model::LockOwnerDiscoveryTerminal::Ready(vec![
+                    owner.clone(),
+                    protected
+                ]),
+            }),
+            explorer_model::WindowEventOutcome::Applied
+        );
+        assert!(state.lock_recovery().is_none());
+        let close = state
+            .take_pending_lock_recovery_command()
+            .expect("close command");
+        let explorer_model::ExplorerCommand::CloseLockOwners { context, request } = close else {
+            panic!("close command");
+        };
+        assert_eq!(request.owners, vec![owner.identity]);
+        assert!(!state.take_lock_owner_column_refresh());
+        assert_eq!(
+            state.apply_service_event(explorer_model::ExplorerEvent::LockOwnersClosed {
+                context,
+                outcome: explorer_model::LockOwnerCloseTerminal::Closed(Vec::new()),
+            }),
+            explorer_model::WindowEventOutcome::Applied
+        );
+        assert!(state.take_lock_owner_column_refresh());
+        assert!(state.take_pending_lock_recovery_command().is_none());
     }
 
     #[test]

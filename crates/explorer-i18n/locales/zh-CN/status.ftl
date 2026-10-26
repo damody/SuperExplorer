@@ -201,6 +201,9 @@ status-lock-partial-close = 部分应用程序未能关闭。未强制终止任�
 status-lock-retry-limit = 已达到重试上限。未删除该项目。
 status-lock-retrying = 正在重试删除操作…
 status-lock-unidentified = Windows 无法识别正在使用此项目的应用程序。
+status-lock-closing-owners = 正在请求 { $count } 个应用程序关闭…
+status-lock-owners-closed = 已关闭正在使用所选项目的应用程序。
+status-lock-no-closable-owners = 没有可安全关闭、正在使用所选项目的应用程序。
 transfer-cancel-operation = 取消文件操作
 transfer-open-location = 打开传输位置
 

@@ -107,6 +107,8 @@ pub struct ContextMenuRequest {
     /// Application-owned clipboard state captured when the popup request is created.
     pub paste_available: bool,
     pub open_file_location: bool,
+    /// The lock-owner column reported at least one owner for a selected item.
+    pub close_lock_owners: bool,
     /// When present, invoke this canonical Shell verb without showing the popup menu.
     pub requested_verb: Option<String>,
     pub deadline_ms: u32,
@@ -203,6 +205,7 @@ pub enum ContextMenuHostCommand {
     PinToStart,
     ToggleQuickAccess,
     AddBookmark,
+    CloseLockOwners,
     Properties,
 }
 
@@ -223,6 +226,7 @@ impl ContextMenuHostCommand {
             Self::PinToStart => "pintostartscreen",
             Self::ToggleQuickAccess => "togglequickaccess",
             Self::AddBookmark => "addbookmark",
+            Self::CloseLockOwners => "closelockowners",
             Self::Properties => "properties",
         }
     }
@@ -243,6 +247,7 @@ impl ContextMenuHostCommand {
             "pintostartscreen" => Some(Self::PinToStart),
             "togglequickaccess" => Some(Self::ToggleQuickAccess),
             "addbookmark" => Some(Self::AddBookmark),
+            "closelockowners" => Some(Self::CloseLockOwners),
             "properties" => Some(Self::Properties),
             _ => None,
         }
@@ -298,6 +303,7 @@ mod tests {
             ContextMenuHostCommand::PinToStart,
             ContextMenuHostCommand::ToggleQuickAccess,
             ContextMenuHostCommand::AddBookmark,
+            ContextMenuHostCommand::CloseLockOwners,
             ContextMenuHostCommand::Properties,
         ] {
             assert_eq!(

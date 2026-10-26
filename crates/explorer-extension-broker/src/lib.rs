@@ -516,6 +516,7 @@ impl BrokerClient {
             invocation_profile: u8::from(request.invocation_profile.extended_verbs()),
             paste_available: request.paste_available,
             open_file_location: request.open_file_location,
+            close_lock_owners: request.close_lock_owners,
             immersive_native_context_menus: request.immersive_native_context_menus,
             dark_theme: matches!(
                 request.color_scheme,
@@ -1400,6 +1401,7 @@ mod tests {
             explorer_model::ContextMenuHostCommand::PinToStart,
             explorer_model::ContextMenuHostCommand::ToggleQuickAccess,
             explorer_model::ContextMenuHostCommand::AddBookmark,
+            explorer_model::ContextMenuHostCommand::CloseLockOwners,
             explorer_model::ContextMenuHostCommand::Properties,
         ] {
             assert_eq!(

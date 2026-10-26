@@ -480,6 +480,9 @@ fn action_for_host_context_command(
         explorer_model::ContextMenuHostCommand::AddBookmark => {
             ExplorerAction::AddSelectedToBookmarks
         }
+        explorer_model::ContextMenuHostCommand::CloseLockOwners => {
+            ExplorerAction::CloseSelectedLockOwners
+        }
         explorer_model::ContextMenuHostCommand::Properties => {
             ExplorerAction::ShowPropertiesSelected
         }
@@ -3980,6 +3983,42 @@ impl ExplorerRoot {
         changed
     }
 
+    /// Invalidates extension column caches for the active folder, then reloads it.
+    fn begin_user_refresh(&mut self) -> Option<explorer_model::ExplorerCommand> {
+        if let Some(directory) = self
+            .state
+            .active_location_for_extension_command()
+            .and_then(|location| location.path().map(std::path::Path::to_path_buf))
+        {
+            if let Some(runtime) = self.visual_column_runtime.as_ref() {
+                runtime.invalidate_directory_cache(&directory);
+            }
+            for runtime in &self.code_lines_runtimes {
+                runtime.invalidate_directory_cache(&directory);
+            }
+        }
+        self.invalidate_background_columns_for_user_refresh();
+        self.state.begin_refresh_navigation()
+    }
+
+    /// Items with at least one owner in the lock-owner column offer the close-all menu entry.
+    fn publish_context_lock_owner_items(&mut self) {
+        let lock_owner_id = code_lines_column::lock_owner_column_descriptor().id;
+        let items = self
+            .code_lines_visuals
+            .iter()
+            .filter(|visuals| visuals.config.descriptor.id == lock_owner_id)
+            .flat_map(|visuals| {
+                visuals
+                    .values
+                    .iter()
+                    .filter(|(_, value)| value.code > 0)
+                    .map(|(id, _)| id.clone())
+            })
+            .collect();
+        self.state.set_context_lock_owner_items(items);
+    }
+
     fn submit_code_lines_requests(&mut self, realized_entries: &[explorer_model::FileEntry]) {
         if self.code_lines_runtimes.is_empty() {
             return;
@@ -5738,6 +5777,11 @@ impl ExplorerRoot {
                                 this.submit_command(command);
                             }
                             if let Some(command) = this.state.take_pending_lock_recovery_command() {
+                                this.submit_command(command);
+                            }
+                            if this.state.take_lock_owner_column_refresh()
+                                && let Some(command) = this.begin_user_refresh()
+                            {
                                 this.submit_command(command);
                             }
                             if let Some(command) = this.state.take_pending_context_menu_command() {
@@ -9350,6 +9394,7 @@ impl ExplorerRoot {
                     chrome::context_menu_coordinates(gpui::point(px(x), px(y)), window);
                 self.pointer_capture.take();
                 self.prepare_menu_input(owner_window);
+                self.publish_context_lock_owner_items();
                 if let Some(command) = self.state.begin_context_menu_request(
                     item_id,
                     owner_window,
@@ -9588,20 +9633,7 @@ impl ExplorerRoot {
             ExplorerAction::Up => self.state.begin_up_navigation(),
             ExplorerAction::Refresh => {
                 self.icon_retries.clear();
-                if let Some(directory) = self
-                    .state
-                    .active_location_for_extension_command()
-                    .and_then(|location| location.path().map(std::path::Path::to_path_buf))
-                {
-                    if let Some(runtime) = self.visual_column_runtime.as_ref() {
-                        runtime.invalidate_directory_cache(&directory);
-                    }
-                    for runtime in &self.code_lines_runtimes {
-                        runtime.invalidate_directory_cache(&directory);
-                    }
-                }
-                self.invalidate_background_columns_for_user_refresh();
-                self.state.begin_refresh_navigation()
+                self.begin_user_refresh()
             }
             ExplorerAction::SubmitAddress(value) => self.begin_address_navigation(value),
             ExplorerAction::ActivateBreadcrumbSegment { location }
@@ -10007,6 +10039,11 @@ impl ExplorerRoot {
         {
             self.submit_command(command);
         }
+        if action == ExplorerAction::CloseSelectedLockOwners
+            && let Some(command) = self.state.begin_close_selected_lock_owners()
+        {
+            self.submit_command(command);
+        }
         if let ExplorerAction::CancelOperation { request_id } = action {
             self.cancel_file_operation(request_id);
         }
@@ -10222,6 +10259,9 @@ impl ExplorerRoot {
         | ExplorerAction::ShowNavigationContextMenu { owner_window, .. } = &action
         {
             self.prepare_menu_input(*owner_window);
+        }
+        if matches!(action, ExplorerAction::ShowContextMenu { .. }) {
+            self.publish_context_lock_owner_items();
         }
         if let ExplorerAction::ShowContextMenu {
             item_id,
