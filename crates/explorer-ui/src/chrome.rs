@@ -19484,9 +19484,14 @@ impl RenderOnce for WindowChrome {
             .child(
                 div()
                     .id("window-chrome-tab-row")
-                    .h(px(
-                        layout.title_tab_height.value() + tab_metrics.extra_height
-                    ))
+                    // Single-row extra height is the horizontal scrollbar track below this row;
+                    // claiming it here pushed the scrollbar under the navigation bar.
+                    .h(px(layout.title_tab_height.value()
+                        + if tab_metrics.multi_row {
+                            tab_metrics.extra_height
+                        } else {
+                            0.0
+                        }))
                     .w_full()
                     .flex_none()
                     .flex()
