@@ -74,6 +74,16 @@ fn main() {
         Err(error) => {
             let text = format!("{error:#}");
             eprintln!("{text}");
+            // Elevated/silent runs lose stderr; keep the reason where support can find it.
+            let log = env::temp_dir().join("SuperExplorer-Setup.log");
+            if let Ok(mut file) = fs::OpenOptions::new().create(true).append(true).open(&log) {
+                let _ = writeln!(
+                    file,
+                    "{:?} args={:?} error={text}",
+                    std::time::SystemTime::now(),
+                    env::args().skip(1).collect::<Vec<_>>()
+                );
+            }
             if !is_silent() {
                 message_box("SuperExplorer Setup", &text);
             }
