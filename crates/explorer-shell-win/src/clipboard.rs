@@ -409,7 +409,18 @@ impl ClipboardRuntime {
         self.owned = None;
         self.generation = self.generation.saturating_add(1);
         // SAFETY: format availability does not open or retain the clipboard.
-        if unsafe { IsClipboardFormatAvailable(u32::from(CF_HDROP.0)) }.is_err() {
+        let has_hdrop = unsafe { IsClipboardFormatAvailable(u32::from(CF_HDROP.0)) }.is_ok();
+        if !has_hdrop && virtual_files_available() {
+            // Remote/streamed files (RustDesk, RDP, Outlook) have no local paths yet. Their
+            // descriptor is not read here: rendering it can round-trip to the remote source.
+            self.state = ClipboardState::External {
+                effects: TransferEffects::COPY,
+                item_count: None,
+                generation: self.generation,
+            };
+            return Some(self.state());
+        }
+        if !has_hdrop {
             // SAFETY: the count distinguishes a genuinely empty clipboard from unsupported data.
             self.state = if unsafe { CountClipboardFormats() } == 0 {
                 ClipboardState::None {
@@ -699,6 +710,52 @@ fn orphaned_ole_clipboard() -> bool {
     .count();
     // SAFETY: counting formats neither opens nor retains the clipboard.
     stubs > 0 && usize::try_from(unsafe { CountClipboardFormats() }).is_ok_and(|n| n == stubs)
+}
+
+fn virtual_file_format() -> u32 {
+    // SAFETY: the predefined name is a live NUL-terminated string.
+    unsafe { RegisterClipboardFormatW(windows::Win32::UI::Shell::CFSTR_FILEDESCRIPTORW) }
+}
+
+/// Files offered as `FileGroupDescriptorW` + `FileContents` instead of local paths.
+fn virtual_files_available() -> bool {
+    let format = virtual_file_format();
+    // SAFETY: availability does not open or retain the clipboard.
+    format != 0 && unsafe { IsClipboardFormatAvailable(format) }.is_ok()
+}
+
+/// True when the clipboard can only be pasted through the Shell's virtual-file drop path.
+pub(crate) fn clipboard_holds_only_virtual_files() -> bool {
+    // SAFETY: availability does not open or retain the clipboard.
+    unsafe { IsClipboardFormatAvailable(u32::from(CF_HDROP.0)) }.is_err()
+        && virtual_files_available()
+}
+
+/// Pastes virtual files by handing the live clipboard object to the destination folder's Shell
+/// drop target, like File Explorer. Runs on a dedicated worker STA because the Shell streams the
+/// file contents (possibly from another machine) inside `Drop`.
+pub(crate) fn paste_virtual_files(
+    destination: &explorer_model::LocationDescriptor,
+) -> Result<OperationTerminal, ExplorerError> {
+    let data = get_clipboard_with_retry("get OLE clipboard", Duration::from_secs(2))?;
+    let format = FORMATETC {
+        cfFormat: u16::try_from(virtual_file_format()).unwrap_or_default(),
+        ptd: std::ptr::null_mut(),
+        dwAspect: DVASPECT_CONTENT.0,
+        lindex: -1,
+        tymed: TYMED_HGLOBAL.0.unsigned_abs(),
+    };
+    // SAFETY: QueryGetData reads the initialized FORMATETC and retains no pointer.
+    if unsafe { data.QueryGetData(&raw const format) }.is_err() {
+        return Err(clipboard_error(
+            ExplorerErrorKind::Availability,
+            "inspect virtual clipboard files",
+            "剪貼簿不包含可貼上的檔案。",
+            "FileGroupDescriptorW is no longer available",
+        ));
+    }
+    crate::file_operation::drop_data_object_as_copy(&data, destination)?;
+    Ok(OperationTerminal::Finished)
 }
 
 fn external_clipboard_state(generation: u64) -> Result<ClipboardState, ExplorerError> {
@@ -1596,6 +1653,68 @@ mod tests {
             }
             .is_err()
         );
+        drop(runtime);
+        unsafe { OleUninitialize() };
+    }
+
+    #[test]
+    fn virtual_files_without_hdrop_are_pasteable_through_the_shell() {
+        let _guard = CLIPBOARD_TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        unsafe { OleInitialize(None) }.expect("initialize OLE");
+        let fixture = explorer_test_support::OwnedTempFixture::new().expect("fixture");
+        let source = fixture
+            .create_file("remote.txt", b"streamed through FileContents")
+            .expect("source");
+        let archive = fixture.root().join("remote.zip");
+        let zipped = Command::new("powershell.exe")
+            .args([
+                "-NoProfile",
+                "-Command",
+                &format!(
+                    "Compress-Archive -LiteralPath '{}' -DestinationPath '{}'",
+                    source.display(),
+                    archive.display()
+                ),
+            ])
+            .status()
+            .expect("compress fixture");
+        assert!(zipped.success());
+        // Items inside Compressed Folders are offered like RustDesk/RDP files: descriptors and
+        // streamed contents, but no local CF_HDROP path.
+        let data = create_shell_data_object(&[ItemDescriptor {
+            id: ShellItemId::from_provider_bytes([0x64]).expect("identity"),
+            location: LocationDescriptor::ParsingName(
+                archive
+                    .join("remote.txt")
+                    .to_string_lossy()
+                    .trim_start_matches(r"\\?\")
+                    .to_owned(),
+            ),
+        }])
+        .expect("virtual data object");
+        let mut runtime = ClipboardRuntime::new();
+        set_clipboard_with_retry(&data).expect("set OLE clipboard");
+        assert!(super::clipboard_holds_only_virtual_files());
+        assert!(matches!(
+            runtime.poll_change(),
+            Some(ClipboardState::External {
+                item_count: None,
+                ..
+            })
+        ));
+        let destination = fixture.create_dir("paste-here").expect("destination");
+        let outcome =
+            super::paste_virtual_files(&LocationDescriptor::file_system(destination.clone()))
+                .expect("virtual paste");
+        assert_eq!(outcome, OperationTerminal::Finished);
+        assert_eq!(
+            std::fs::read(destination.join("remote.txt")).expect("pasted file"),
+            b"streamed through FileContents"
+        );
+        clear_clipboard_with_retry().expect("clear OLE clipboard");
+        drop(data);
         drop(runtime);
         unsafe { OleUninitialize() };
     }

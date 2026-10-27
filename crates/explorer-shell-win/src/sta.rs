@@ -1698,6 +1698,17 @@ fn process_command(
             false,
         ),
         ExplorerCommand::DataTransfer { request, .. } => match request {
+            DataTransferRequest::Paste { destination, .. }
+                if crate::clipboard::clipboard_holds_only_virtual_files() =>
+            {
+                let destination = destination.clone();
+                spawn_file_operation_worker(
+                    context.clone(),
+                    file_operations.clone(),
+                    false,
+                    move || crate::clipboard::paste_virtual_files(&destination),
+                )
+            }
             DataTransferRequest::Paste {
                 destination,
                 conflict,
@@ -2157,6 +2168,19 @@ fn start_file_operation_worker(
     completions: Sender<FileOperationCompletion>,
     clipboard_paste: bool,
 ) -> Result<(), ExplorerError> {
+    let job_context = context.clone();
+    spawn_file_operation_worker(context, completions, clipboard_paste, move || {
+        crate::file_operation::execute(&job_context, &request, &events)
+    })
+}
+
+/// Runs `job` on a capacity-limited worker STA and reports exactly one completion.
+fn spawn_file_operation_worker(
+    context: explorer_model::RequestContext,
+    completions: Sender<FileOperationCompletion>,
+    clipboard_paste: bool,
+    job: impl FnOnce() -> Result<OperationTerminal, ExplorerError> + Send + 'static,
+) -> Result<(), ExplorerError> {
     let Some(worker_guard) = reserve_worker(
         &ACTIVE_FILE_OPERATION_WORKERS,
         FILE_OPERATION_WORKER_CAPACITY,
@@ -2200,9 +2224,7 @@ fn start_file_operation_worker(
                             error.to_string(),
                         )
                     })
-                    .and_then(|_apartment| {
-                        crate::file_operation::execute(&context, &request, &events)
-                    })
+                    .and_then(|_apartment| job())
             }))
             .map_or_else(
                 |payload| {

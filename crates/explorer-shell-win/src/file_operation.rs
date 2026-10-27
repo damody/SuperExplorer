@@ -521,6 +521,15 @@ fn shell_namespace_copy(
     destination: &LocationDescriptor,
 ) -> Result<(), ExplorerError> {
     let data = crate::clipboard::create_shell_data_object(items)?;
+    drop_data_object_as_copy(&data, destination)
+}
+
+/// Hands `data` to the destination folder's own Shell drop target, exactly like File Explorer's
+/// Paste. The Shell then handles formats we do not parse ourselves, such as virtual files.
+pub(crate) fn drop_data_object_as_copy(
+    data: &windows::Win32::System::Com::IDataObject,
+    destination: &LocationDescriptor,
+) -> Result<(), ExplorerError> {
     let destination = crate::navigation::location_absolute_pidl(destination)?;
     let mut child = std::ptr::null_mut::<ITEMIDLIST>();
     // SAFETY: destination is a complete live PIDL; the returned child is borrowed from it.
@@ -537,7 +546,7 @@ fn shell_namespace_copy(
     // SAFETY: the IDataObject, target, effect, and point remain live through the synchronous drop.
     unsafe {
         target
-            .DragEnter(&data, key_state, point, &raw mut effect)
+            .DragEnter(data, key_state, point, &raw mut effect)
             .map_err(|error| native_error("enter Shell namespace drop target", &error))?;
         if effect.0 & DROPEFFECT_COPY.0 == 0 {
             let _ = target.DragLeave();
@@ -549,7 +558,7 @@ fn shell_namespace_copy(
                 "IDropTarget declined DROPEFFECT_COPY",
             ));
         }
-        target.Drop(&data, key_state, point, &raw mut effect)
+        target.Drop(data, key_state, point, &raw mut effect)
     }
     .map_err(|error| native_error("copy through Shell namespace drop target", &error))?;
     Ok(())
