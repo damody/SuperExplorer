@@ -712,16 +712,22 @@ fn orphaned_ole_clipboard() -> bool {
     stubs > 0 && usize::try_from(unsafe { CountClipboardFormats() }).is_ok_and(|n| n == stubs)
 }
 
-fn virtual_file_format() -> u32 {
-    // SAFETY: the predefined name is a live NUL-terminated string.
-    unsafe { RegisterClipboardFormatW(windows::Win32::UI::Shell::CFSTR_FILEDESCRIPTORW) }
-}
+/// Shell transfer formats that carry files without local paths. Remote-desktop tools (RustDesk,
+/// RDP, AnyDesk, TeamViewer, ...), mail clients, archives, and phones offer files this way; the
+/// destination folder's Shell drop target streams them exactly as File Explorer's Paste does.
+const SHELL_TRANSFER_FORMATS: [windows::core::PCWSTR; 3] = [
+    windows::Win32::UI::Shell::CFSTR_FILEDESCRIPTORW,
+    windows::Win32::UI::Shell::CFSTR_FILEDESCRIPTORA,
+    windows::Win32::UI::Shell::CFSTR_SHELLIDLIST,
+];
 
-/// Files offered as `FileGroupDescriptorW` + `FileContents` instead of local paths.
+/// Files offered through Shell transfer formats instead of local `CF_HDROP` paths.
 fn virtual_files_available() -> bool {
-    let format = virtual_file_format();
-    // SAFETY: availability does not open or retain the clipboard.
-    format != 0 && unsafe { IsClipboardFormatAvailable(format) }.is_ok()
+    SHELL_TRANSFER_FORMATS.into_iter().any(|name| {
+        // SAFETY: names are live NUL-terminated strings; availability does not open the clipboard.
+        let format = unsafe { RegisterClipboardFormatW(name) };
+        format != 0 && unsafe { IsClipboardFormatAvailable(format) }.is_ok()
+    })
 }
 
 /// True when the clipboard can only be pasted through the Shell's virtual-file drop path.
@@ -737,23 +743,16 @@ pub(crate) fn clipboard_holds_only_virtual_files() -> bool {
 pub(crate) fn paste_virtual_files(
     destination: &explorer_model::LocationDescriptor,
 ) -> Result<OperationTerminal, ExplorerError> {
-    let data = get_clipboard_with_retry("get OLE clipboard", Duration::from_secs(2))?;
-    let format = FORMATETC {
-        cfFormat: u16::try_from(virtual_file_format()).unwrap_or_default(),
-        ptd: std::ptr::null_mut(),
-        dwAspect: DVASPECT_CONTENT.0,
-        lindex: -1,
-        tymed: TYMED_HGLOBAL.0.unsigned_abs(),
-    };
-    // SAFETY: QueryGetData reads the initialized FORMATETC and retains no pointer.
-    if unsafe { data.QueryGetData(&raw const format) }.is_err() {
+    if !virtual_files_available() {
         return Err(clipboard_error(
             ExplorerErrorKind::Availability,
             "inspect virtual clipboard files",
             "剪貼簿不包含可貼上的檔案。",
-            "FileGroupDescriptorW is no longer available",
+            "no Shell transfer format is available any more",
         ));
     }
+    let data = get_clipboard_with_retry("get OLE clipboard", Duration::from_secs(2))?;
+    // The Shell drop target decides which of the offered formats it can consume.
     crate::file_operation::drop_data_object_as_copy(&data, destination)?;
     Ok(OperationTerminal::Finished)
 }
@@ -1712,6 +1711,95 @@ mod tests {
         assert_eq!(
             std::fs::read(destination.join("remote.txt")).expect("pasted file"),
             b"streamed through FileContents"
+        );
+        clear_clipboard_with_retry().expect("clear OLE clipboard");
+        drop(data);
+        drop(runtime);
+        unsafe { OleUninitialize() };
+    }
+
+    #[test]
+    fn third_party_ansi_descriptor_files_paste_through_the_shell() {
+        use windows::Win32::{
+            System::Com::{
+                DVASPECT_CONTENT, FORMATETC, IDataObject, STGMEDIUM, STGMEDIUM_0, TYMED_HGLOBAL,
+            },
+            System::DataExchange::RegisterClipboardFormatW,
+            System::Memory::{GMEM_MOVEABLE, GlobalAlloc, GlobalLock, GlobalUnlock},
+            UI::Shell::{
+                CFSTR_FILECONTENTS, CFSTR_FILEDESCRIPTORA, FD_FILESIZE, FILEDESCRIPTORA,
+                FILEGROUPDESCRIPTORA, SHCreateDataObject,
+            },
+        };
+        fn put(data: &IDataObject, name: windows::core::PCWSTR, lindex: i32, bytes: &[u8]) {
+            let format = unsafe { RegisterClipboardFormatW(name) };
+            let memory = unsafe { GlobalAlloc(GMEM_MOVEABLE, bytes.len()) }.expect("alloc");
+            let pointer = unsafe { GlobalLock(memory) }.cast::<u8>();
+            unsafe { std::ptr::copy_nonoverlapping(bytes.as_ptr(), pointer, bytes.len()) };
+            let _ = unsafe { GlobalUnlock(memory) };
+            let formatetc = FORMATETC {
+                cfFormat: u16::try_from(format).expect("format id"),
+                ptd: std::ptr::null_mut(),
+                dwAspect: DVASPECT_CONTENT.0,
+                lindex,
+                tymed: TYMED_HGLOBAL.0.unsigned_abs(),
+            };
+            let medium = STGMEDIUM {
+                tymed: TYMED_HGLOBAL.0.unsigned_abs(),
+                u: STGMEDIUM_0 { hGlobal: memory },
+                pUnkForRelease: std::mem::ManuallyDrop::new(None),
+            };
+            unsafe { data.SetData(&raw const formatetc, &raw const medium, true) }
+                .expect("set data");
+        }
+        let _guard = CLIPBOARD_TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        unsafe { OleInitialize(None) }.expect("initialize OLE");
+        let contents = b"bytes from a remote desktop session";
+        // Like AnyDesk/TeamViewer-style providers: a plain IDataObject that carries only the
+        // legacy ANSI descriptor and streamed contents, no local path and no Shell items.
+        let data: IDataObject =
+            unsafe { SHCreateDataObject(None, None, None::<&IDataObject>) }.expect("data object");
+        let mut descriptor = FILEDESCRIPTORA {
+            dwFlags: FD_FILESIZE.0 as u32,
+            nFileSizeLow: u32::try_from(contents.len()).expect("size"),
+            ..Default::default()
+        };
+        for (slot, byte) in descriptor.cFileName.iter_mut().zip(b"remote-ansi.txt") {
+            *slot = i8::try_from(*byte).expect("ASCII file name");
+        }
+        let group = FILEGROUPDESCRIPTORA {
+            cItems: 1,
+            fgd: [descriptor],
+        };
+        let group_bytes = unsafe {
+            std::slice::from_raw_parts(
+                (&raw const group).cast::<u8>(),
+                std::mem::size_of::<FILEGROUPDESCRIPTORA>(),
+            )
+        };
+        put(&data, CFSTR_FILEDESCRIPTORA, -1, group_bytes);
+        put(&data, CFSTR_FILECONTENTS, 0, contents);
+        let mut runtime = ClipboardRuntime::new();
+        set_clipboard_with_retry(&data).expect("set OLE clipboard");
+        assert!(super::clipboard_holds_only_virtual_files());
+        assert!(matches!(
+            runtime.poll_change(),
+            Some(ClipboardState::External {
+                item_count: None,
+                ..
+            })
+        ));
+        let fixture = explorer_test_support::OwnedTempFixture::new().expect("fixture");
+        let destination = fixture.create_dir("remote-paste").expect("destination");
+        let outcome =
+            super::paste_virtual_files(&LocationDescriptor::file_system(destination.clone()))
+                .expect("virtual paste");
+        assert_eq!(outcome, OperationTerminal::Finished);
+        assert_eq!(
+            std::fs::read(destination.join("remote-ansi.txt")).expect("pasted file"),
+            contents
         );
         clear_clipboard_with_retry().expect("clear OLE clipboard");
         drop(data);
