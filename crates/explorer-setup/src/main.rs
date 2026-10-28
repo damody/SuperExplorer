@@ -27,6 +27,10 @@ const PRODUCT_REG_KEY: &str = r"Software\SuperExplorer";
 const PRODUCT_UNINSTALL_KEY: &str =
     r"Software\Microsoft\Windows\CurrentVersion\Uninstall\SuperExplorer";
 const SERVICE_NAME: &str = "SuperExplorerMft";
+// Must match the verb the app registers in explorer_intercept.rs.
+const DIRECTORY_SHELL_KEY: &str = r"Software\Classes\Directory\shell";
+const DIRECTORY_SHELL_VERB: &str = "SuperExplorerOpen";
+const DIRECTORY_SHELL_BACKUP_VALUE: &str = "SuperExplorerBackupDefault";
 
 /// Keep setup's launch attempt and inherited console output even if the UI
 /// exits before its own diagnostics can start. The app handles de-elevation.
@@ -344,6 +348,9 @@ pub(crate) fn uninstall(args: &[String]) -> Result<()> {
             "close running SuperExplorer",
         )?;
     }
+    // A closed or killed app can leave its folder verb behind; once the
+    // executable is deleted, opening any folder would fail.
+    restore_directory_shell_verb();
     if !skip_service {
         stop_service()?;
         delete_service()?;
@@ -786,6 +793,91 @@ fn set_reg_sz_under(
             .with_context(|| format!(r"write registry value {root_name}\{key}\{name}"));
     }
     Ok(())
+}
+
+/// Removes the `HKCU\...\Directory\shell` verb the app registers while running
+/// and restores the default verb it replaced, so folders open in File Explorer.
+fn restore_directory_shell_verb() {
+    use windows::{
+        Win32::System::Registry::{
+            HKEY, HKEY_CURRENT_USER, KEY_READ, KEY_WRITE, REG_SZ, REG_VALUE_TYPE, RegCloseKey,
+            RegDeleteTreeW, RegDeleteValueW, RegOpenKeyExW, RegQueryValueExW, RegSetValueExW,
+        },
+        core::PCWSTR,
+    };
+    let key_wide = wide(DIRECTORY_SHELL_KEY);
+    let mut handle = HKEY::default();
+    // SAFETY: the key name is NUL-terminated and `handle` is writable.
+    let opened = unsafe {
+        RegOpenKeyExW(
+            HKEY_CURRENT_USER,
+            PCWSTR(key_wide.as_ptr()),
+            Some(0),
+            KEY_READ | KEY_WRITE,
+            &raw mut handle,
+        )
+    };
+    if opened.is_err() {
+        return;
+    }
+    let read = |name: &[u16]| -> Option<String> {
+        let mut buffer = [0_u16; 512];
+        let mut bytes = u32::try_from(size_of::<[u16; 512]>()).ok()?;
+        let mut kind = REG_VALUE_TYPE::default();
+        // SAFETY: `name` is NUL-terminated (or empty for the default value) and
+        // `bytes` describes the writable buffer.
+        let status = unsafe {
+            RegQueryValueExW(
+                handle,
+                if name.is_empty() {
+                    PCWSTR::null()
+                } else {
+                    PCWSTR(name.as_ptr())
+                },
+                None,
+                Some(&raw mut kind),
+                Some(buffer.as_mut_ptr().cast()),
+                Some(&raw mut bytes),
+            )
+        };
+        if status.is_err() || kind != REG_SZ {
+            return None;
+        }
+        let len = buffer.iter().position(|&ch| ch == 0).unwrap_or(buffer.len());
+        Some(String::from_utf16_lossy(&buffer[..len]))
+    };
+    let verb_wide = wide(DIRECTORY_SHELL_VERB);
+    let backup_wide = wide(DIRECTORY_SHELL_BACKUP_VALUE);
+    if read(&[]).as_deref() == Some(DIRECTORY_SHELL_VERB) {
+        match read(&backup_wide) {
+            Some(prior) if !prior.is_empty() && prior != DIRECTORY_SHELL_VERB => {
+                let prior_wide = wide(&prior);
+                // SAFETY: the value bytes come from a live NUL-terminated buffer.
+                let _ = unsafe {
+                    RegSetValueExW(
+                        handle,
+                        PCWSTR::null(),
+                        Some(0),
+                        REG_SZ,
+                        Some(std::slice::from_raw_parts(
+                            prior_wide.as_ptr().cast(),
+                            prior_wide.len() * 2,
+                        )),
+                    )
+                };
+            }
+            _ => {
+                // SAFETY: deletes the default value of the opened key.
+                let _ = unsafe { RegDeleteValueW(handle, PCWSTR::null()) };
+            }
+        }
+    }
+    // SAFETY: names are NUL-terminated and the key is closed exactly once.
+    unsafe {
+        let _ = RegDeleteValueW(handle, PCWSTR(backup_wide.as_ptr()));
+        let _ = RegDeleteTreeW(handle, PCWSTR(verb_wide.as_ptr()));
+        let _ = RegCloseKey(handle);
+    }
 }
 
 fn delete_reg_key(key: &str) {

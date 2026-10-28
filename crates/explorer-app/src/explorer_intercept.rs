@@ -21,7 +21,7 @@ use std::{
     env, fs,
     path::{Path, PathBuf},
     sync::{
-        Mutex, OnceLock,
+        Mutex, OnceLock, PoisonError,
         atomic::{AtomicBool, Ordering},
     },
     thread,
@@ -54,6 +54,9 @@ const SUPEREXPLORER_BACKUP_VALUE: &str = "SuperExplorerBackupDefault";
 static IN_PROCESS_QUEUE: OnceLock<Mutex<VecDeque<InterceptedTabRequest>>> = OnceLock::new();
 static STOPPED: AtomicBool = AtomicBool::new(false);
 static STARTED: OnceLock<Mutex<bool>> = OnceLock::new();
+/// Serializes verb registration against shutdown so the owner thread cannot
+/// re-register after [`stop_explorer_intercept`] restored the prior default.
+static REGISTRATION: Mutex<()> = Mutex::new(());
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct InterceptedTabRequest {
@@ -186,9 +189,7 @@ pub fn start_explorer_intercept() {
     *guard = true;
     drop(guard);
     STOPPED.store(false, Ordering::Release);
-    if let Ok(exe) = env::current_exe() {
-        register_directory_shell_verb(&exe);
-    }
+    register_while_running();
     thread::Builder::new()
         .name("superexplorer-explorer-intercept".into())
         .spawn(intercept_owner_loop)
@@ -197,13 +198,52 @@ pub fn start_explorer_intercept() {
 
 /// Stops File Explorer interception and restores the `HKCU\Software\Classes\Directory\shell`
 /// default verb.
+///
+/// Must run from GPUI's quit callback: the Windows platform ends `run` with
+/// `ExitProcess`, so code placed after the GPUI run loop never executes.
+/// Only the process that started interception touches the registry, so a
+/// fixture or failed launch cannot remove another instance's verb.
 pub fn stop_explorer_intercept() {
+    let _registration = REGISTRATION.lock().unwrap_or_else(PoisonError::into_inner);
     STOPPED.store(true, Ordering::Release);
+    let was_started = STARTED
+        .get()
+        .and_then(|guard| guard.lock().ok())
+        .is_some_and(|mut started| std::mem::replace(&mut *started, false));
+    if was_started {
+        unregister_directory_shell_verb();
+    }
+}
+
+/// Handles an `--open-in-tab` launch that no live `SuperExplorer` window can take.
+///
+/// The `Directory\shell` verb outlived its owner (crash, forced termination or
+/// sign-out). File Explorer is restored as the folder handler first, so later
+/// folder opens stop reaching `SuperExplorer` and `explorer.exe` cannot route
+/// this folder back through the stale verb into a launch loop.
+///
+/// # Errors
+///
+/// Returns the error from spawning `explorer.exe`.
+pub fn open_in_file_explorer_after_stale_verb(raw: &str) -> std::io::Result<()> {
     unregister_directory_shell_verb();
-    if let Some(guard) = STARTED.get()
-        && let Ok(mut started) = guard.lock()
-    {
-        *started = false;
+    let explorer = env::var_os("WINDIR").map_or_else(
+        || PathBuf::from("explorer.exe"),
+        |dir| PathBuf::from(dir).join("explorer.exe"),
+    );
+    std::process::Command::new(explorer)
+        .arg(raw.trim().trim_matches('"'))
+        .spawn()
+        .map(drop)
+}
+
+fn register_while_running() {
+    let _registration = REGISTRATION.lock().unwrap_or_else(PoisonError::into_inner);
+    if STOPPED.load(Ordering::Acquire) {
+        return;
+    }
+    if let Ok(exe) = env::current_exe() {
+        register_directory_shell_verb(&exe);
     }
 }
 
@@ -224,9 +264,7 @@ fn intercept_owner_loop() {
             let _ = unsafe { ReleaseMutex(mutex) };
             break;
         }
-        if let Ok(exe) = env::current_exe() {
-            register_directory_shell_verb(&exe);
-        }
+        register_while_running();
         explorer_shell_win::run_live_explorer_interceptor(
             || STOPPED.load(Ordering::Acquire),
             crate::explorer_handoff::is_handoff_in_progress,

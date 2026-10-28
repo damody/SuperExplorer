@@ -142,25 +142,33 @@ fn run(
     let repeated_launch = launch_session
         .as_ref()
         .is_some_and(LaunchSession::is_repeated);
-    if repeated_launch {
-        if let Some(raw_target) = &open_in_tab_target {
+    if launch_session.is_some()
+        && let Some(raw_target) = &open_in_tab_target
+    {
+        if repeated_launch {
             let (location, selected_item) =
                 explorer_intercept::resolve_open_in_tab_request(raw_target);
             if explorer_intercept::forward_tab_to_running_instance(location, selected_item) {
                 diagnostics.record_event("startup_forwarded_intercepted_tab", &[])?;
                 return Ok(());
             }
-        } else if std::env::var_os(explorer_import::WIN_E_ENV).is_some()
-            && explorer_intercept::forward_tab_to_running_instance(
-                explorer_model::LocationDescriptor::ParsingName(
-                    "shell:MyComputerFolder".to_owned(),
-                ),
-                None,
-            )
-        {
-            diagnostics.record_event("startup_forwarded_win_e_tab", &[])?;
-            return Ok(());
         }
+        // Only the Directory\shell verb launches with --open-in-tab. No live
+        // SuperExplorer window can take the folder, so the verb outlived its
+        // owner (closed, crashed, killed, signed out): open the folder in File
+        // Explorer instead of starting SuperExplorer.
+        explorer_intercept::open_in_file_explorer_after_stale_verb(raw_target)?;
+        diagnostics.record_event("startup_stale_verb_redirected", &[])?;
+        return Ok(());
+    } else if repeated_launch
+        && std::env::var_os(explorer_import::WIN_E_ENV).is_some()
+        && explorer_intercept::forward_tab_to_running_instance(
+            explorer_model::LocationDescriptor::ParsingName("shell:MyComputerFolder".to_owned()),
+            None,
+        )
+    {
+        diagnostics.record_event("startup_forwarded_win_e_tab", &[])?;
+        return Ok(());
     }
     let explicit_target = open_in_tab_target.is_some()
         || [

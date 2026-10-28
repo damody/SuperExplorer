@@ -4836,6 +4836,10 @@ impl ApplicationLifecycle {
                     Rc::new(RefCell::new(TransferWindowControllerV1::default()));
 
                 cx.on_app_quit(move |_| {
+                    // GPUI's Windows run loop ends in ExitProcess, so main's
+                    // post-run cleanup never runs. The registry verb is the only
+                    // state that outlives the process; restore File Explorer here.
+                    crate::explorer_intercept::stop_explorer_intercept();
                     if let Err(error) = shutdown_shared(&shutdown_resources) {
                         tracing::error!(%error, "application quit cleanup failed");
                         if let Ok(resources) = shutdown_resources.lock() {
