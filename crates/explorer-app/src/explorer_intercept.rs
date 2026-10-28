@@ -33,7 +33,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 use windows::{
     Win32::{
-        Foundation::{CloseHandle, ERROR_SUCCESS, WAIT_ABANDONED, WAIT_OBJECT_0},
+        Foundation::{CloseHandle, ERROR_SUCCESS, WAIT_ABANDONED, WAIT_OBJECT_0, WIN32_ERROR},
         System::{
             Registry::{
                 HKEY, HKEY_CURRENT_USER, KEY_READ, KEY_WRITE, REG_OPTION_NON_VOLATILE, REG_SZ,
@@ -288,14 +288,18 @@ pub(crate) fn format_open_in_tab_command(exe: &Path) -> String {
 fn register_directory_shell_verb(exe: &Path) {
     let command = format_open_in_tab_command(exe);
     let command_subkey = format!(r"{DIRECTORY_SHELL_SUBKEY}\{SUPEREXPLORER_VERB_NAME}\command");
-    let Some(cmd_key) = create_hkcu_key(&command_subkey) else {
-        return;
+    let cmd_key = match create_hkcu_key(&command_subkey) {
+        Ok(key) => key,
+        Err(status) => return report_registration_failure("create verb command key", status),
     };
-    let _ = set_reg_sz(cmd_key, None, &command);
+    if let Err(status) = set_reg_sz(cmd_key, None, &command) {
+        report_registration_failure("write verb command", status);
+    }
     let _ = unsafe { RegCloseKey(cmd_key) };
 
-    let Some(shell_key) = create_hkcu_key(DIRECTORY_SHELL_SUBKEY) else {
-        return;
+    let shell_key = match create_hkcu_key(DIRECTORY_SHELL_SUBKEY) {
+        Ok(key) => key,
+        Err(status) => return report_registration_failure("open Directory\\shell key", status),
     };
     let current_default = query_reg_sz(shell_key, None).unwrap_or_default();
     if current_default != SUPEREXPLORER_VERB_NAME {
@@ -305,8 +309,21 @@ fn register_directory_shell_verb(exe: &Path) {
             &current_default,
         );
     }
-    let _ = set_reg_sz(shell_key, None, SUPEREXPLORER_VERB_NAME);
+    if let Err(status) = set_reg_sz(shell_key, None, SUPEREXPLORER_VERB_NAME) {
+        report_registration_failure("set default folder verb", status);
+    }
     let _ = unsafe { RegCloseKey(shell_key) };
+}
+
+fn report_registration_failure(step: &str, status: WIN32_ERROR) {
+    let error = windows::core::Error::from(status.to_hresult());
+    explorer_common::record_process_error_message(
+        explorer_common::ErrorSeverity::Warning,
+        "explorer_intercept",
+        "register_directory_shell_verb",
+        &format!("{step} failed: {error}"),
+        Some(file!()),
+    );
 }
 
 fn unregister_directory_shell_verb() {
@@ -330,7 +347,7 @@ fn unregister_directory_shell_verb() {
     }
 }
 
-fn create_hkcu_key(subkey: &str) -> Option<HKEY> {
+fn create_hkcu_key(subkey: &str) -> Result<HKEY, WIN32_ERROR> {
     let wide: Vec<u16> = subkey.encode_utf16().chain([0]).collect();
     let mut key = HKEY::default();
     let status = unsafe {
@@ -346,7 +363,11 @@ fn create_hkcu_key(subkey: &str) -> Option<HKEY> {
             None,
         )
     };
-    (status == ERROR_SUCCESS).then_some(key)
+    if status == ERROR_SUCCESS {
+        Ok(key)
+    } else {
+        Err(status)
+    }
 }
 
 fn open_hkcu_key_rw(subkey: &str) -> Option<HKEY> {
@@ -407,7 +428,7 @@ fn query_reg_sz(key: HKEY, name: Option<&str>) -> Option<String> {
     Some(String::from_utf16_lossy(&wide_slice[..trimmed_len]))
 }
 
-fn set_reg_sz(key: HKEY, name: Option<&str>, value: &str) -> bool {
+fn set_reg_sz(key: HKEY, name: Option<&str>, value: &str) -> Result<(), WIN32_ERROR> {
     let name_wide: Option<Vec<u16>> = name.map(|n| n.encode_utf16().chain([0]).collect());
     let name_ptr = name_wide
         .as_ref()
@@ -417,7 +438,11 @@ fn set_reg_sz(key: HKEY, name: Option<&str>, value: &str) -> bool {
         std::slice::from_raw_parts(value_wide.as_ptr().cast::<u8>(), value_wide.len() * 2)
     };
     let status = unsafe { RegSetValueExW(key, name_ptr, Some(0), REG_SZ, Some(bytes)) };
-    status == ERROR_SUCCESS
+    if status == ERROR_SUCCESS {
+        Ok(())
+    } else {
+        Err(status)
+    }
 }
 
 fn delete_reg_value(key: HKEY, name: Option<&str>) -> bool {
