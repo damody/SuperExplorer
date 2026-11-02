@@ -2003,12 +2003,14 @@ name = "explorer-shell-win"
 version = "0.1.0"
 dependencies = [
  "cc",
+ "chrono",
  "explorer-common",
  "explorer-mft",
  "explorer-model",
  "explorer-remote",
  "explorer-search",
  "explorer-test-support",
+ "image",
  "intel_tex_2",
  "libloading 0.8.9",
  "tempfile",

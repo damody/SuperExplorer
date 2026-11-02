@@ -1699,6 +1699,18 @@ fn process_command(
         ),
         ExplorerCommand::DataTransfer { request, .. } => match request {
             DataTransferRequest::Paste { destination, .. }
+                if crate::clipboard::clipboard_holds_only_image() =>
+            {
+                let destination = destination.clone();
+                let copied_at = runtime.clipboard.changed_at();
+                spawn_file_operation_worker(
+                    context.clone(),
+                    file_operations.clone(),
+                    false,
+                    move || crate::clipboard::paste_clipboard_image(&destination, copied_at),
+                )
+            }
+            DataTransferRequest::Paste { destination, .. }
                 if crate::clipboard::clipboard_holds_only_virtual_files() =>
             {
                 let destination = destination.clone();

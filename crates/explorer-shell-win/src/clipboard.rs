@@ -12,20 +12,20 @@ use explorer_model::{
     FileOperationRequest, ItemDescriptor, OperationItemResult, OperationTerminal, TransferEffects,
 };
 use windows::Win32::{
-    Foundation::S_OK,
+    Foundation::{HGLOBAL, S_OK},
     System::{
         Com::{
             CoTaskMemFree, DATADIR_GET, DVASPECT_CONTENT, FORMATETC, IDataObject, STGMEDIUM,
             TYMED_HGLOBAL,
         },
         DataExchange::{
-            CloseClipboard, CountClipboardFormats, EmptyClipboard, GetClipboardFormatNameW,
-            GetClipboardSequenceNumber, IsClipboardFormatAvailable, OpenClipboard,
-            RegisterClipboardFormatW, SetClipboardData,
+            CloseClipboard, CountClipboardFormats, EmptyClipboard, GetClipboardData,
+            GetClipboardFormatNameW, GetClipboardSequenceNumber, IsClipboardFormatAvailable,
+            OpenClipboard, RegisterClipboardFormatW, SetClipboardData,
         },
         Memory::{GMEM_MOVEABLE, GlobalAlloc, GlobalLock, GlobalSize, GlobalUnlock},
         Ole::{
-            CF_HDROP, DROPEFFECT_COPY, DROPEFFECT_MOVE, OleFlushClipboard, OleGetClipboard,
+            CF_DIB, CF_HDROP, DROPEFFECT_COPY, DROPEFFECT_MOVE, OleFlushClipboard, OleGetClipboard,
             OleInitialize, OleSetClipboard, OleUninitialize, ReleaseStgMedium,
         },
     },
@@ -229,7 +229,7 @@ pub fn publish_native_file_clipboard_with_token(
                 unsafe { SetClipboardData(*format, Some(HANDLE(memory.0.0))) }.map_err(
                     |error| native_clipboard_error("publish file clipboard format", &error),
                 )?;
-                memory.0 = windows::Win32::Foundation::HGLOBAL::default();
+                memory.0 = HGLOBAL::default();
             }
             Ok(())
         })();
@@ -240,7 +240,7 @@ pub fn publish_native_file_clipboard_with_token(
     result
 }
 
-struct ClipboardMemory(windows::Win32::Foundation::HGLOBAL);
+struct ClipboardMemory(HGLOBAL);
 impl ClipboardMemory {
     fn new(bytes: &[u8]) -> Result<Self, ExplorerError> {
         let memory = Self(
@@ -339,6 +339,8 @@ pub(crate) struct ClipboardRuntime {
     state: ClipboardState,
     generation: u64,
     sequence: u32,
+    /// When the current clipboard content was first observed; names pasted clipboard images.
+    changed_at: chrono::DateTime<chrono::Local>,
 }
 
 impl ClipboardRuntime {
@@ -352,7 +354,12 @@ impl ClipboardRuntime {
             state: ClipboardState::None { generation: 0 },
             generation: 0,
             sequence,
+            changed_at: chrono::Local::now(),
         }
+    }
+
+    pub(crate) fn changed_at(&self) -> chrono::DateTime<chrono::Local> {
+        self.changed_at
     }
 
     pub(crate) fn state(&self) -> ClipboardState {
@@ -411,8 +418,18 @@ impl ClipboardRuntime {
             return None;
         }
         self.sequence = current;
+        self.changed_at = chrono::Local::now();
         self.owned = None;
         self.generation = self.generation.saturating_add(1);
+        if clipboard_holds_only_image() {
+            // Screenshots and "Copy image": Paste saves the bitmap as a JPEG, like Explorer.
+            self.state = ClipboardState::External {
+                effects: TransferEffects::COPY,
+                item_count: Some(1),
+                generation: self.generation,
+            };
+            return Some(self.state());
+        }
         // SAFETY: format availability does not open or retain the clipboard.
         let has_hdrop = unsafe { IsClipboardFormatAvailable(u32::from(CF_HDROP.0)) }.is_ok();
         if !has_hdrop && virtual_files_available() {
@@ -785,6 +802,120 @@ fn clipboard_format_names(data: &IDataObject) -> String {
         }
     }
     names.join(", ")
+}
+
+/// True when the clipboard carries a bitmap but no files, as after a screenshot or "Copy image".
+pub(crate) fn clipboard_holds_only_image() -> bool {
+    // SAFETY: availability does not open or retain the clipboard; CF_DIB is synthesized from
+    // CF_BITMAP and CF_DIBV5 when an application offers only those.
+    unsafe { IsClipboardFormatAvailable(u32::from(CF_HDROP.0)) }.is_err()
+        && !virtual_files_available()
+        && unsafe { IsClipboardFormatAvailable(u32::from(CF_DIB.0)) }.is_ok()
+}
+
+/// Saves the clipboard bitmap into `destination` as `<copied_at>.jpg`, the way File Explorer
+/// pastes an image. An existing name gets a ` (2)`, ` (3)`, ... suffix instead of being replaced.
+pub(crate) fn paste_clipboard_image(
+    destination: &explorer_model::LocationDescriptor,
+    copied_at: chrono::DateTime<chrono::Local>,
+) -> Result<OperationTerminal, ExplorerError> {
+    let explorer_model::LocationDescriptor::FileSystem(folder) = destination else {
+        return Err(clipboard_error(
+            ExplorerErrorKind::Availability,
+            "paste clipboard image",
+            "圖片只能貼到本機資料夾。",
+            "clipboard image paste requires a filesystem destination",
+        ));
+    };
+    let dib = read_clipboard_dib()?;
+    let image = decode_dib(&dib)?;
+    let stem = copied_at.format("%Y%m%d_%H%M%S").to_string();
+    let target = (1..)
+        .map(|index| match index {
+            1 => folder.join(format!("{stem}.jpg")),
+            _ => folder.join(format!("{stem} ({index}).jpg")),
+        })
+        .find(|path| !path.exists())
+        .unwrap_or_else(|| folder.join(format!("{stem}.jpg")));
+    let file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&target)
+        .map_err(|error| image_paste_error(&target, &error))?;
+    let mut writer = std::io::BufWriter::new(file);
+    image::codecs::jpeg::JpegEncoder::new_with_quality(&mut writer, 95)
+        .encode_image(&image)
+        .map_err(|error| image_paste_error(&target, &error))?;
+    std::io::Write::flush(&mut writer).map_err(|error| image_paste_error(&target, &error))?;
+    Ok(OperationTerminal::Finished)
+}
+
+fn image_paste_error(target: &std::path::Path, error: &dyn std::fmt::Display) -> ExplorerError {
+    clipboard_error(
+        ExplorerErrorKind::Availability,
+        "paste clipboard image",
+        "無法將剪貼簿圖片存成檔案。",
+        format!("{}: {error}", target.display()),
+    )
+}
+
+fn read_clipboard_dib() -> Result<Vec<u8>, ExplorerError> {
+    let deadline = std::time::Instant::now() + Duration::from_secs(2);
+    // SAFETY: the clipboard is closed below on every path after a successful open.
+    while unsafe { OpenClipboard(None) }.is_err() {
+        if std::time::Instant::now() >= deadline {
+            return Err(clipboard_error(
+                ExplorerErrorKind::Availability,
+                "open image clipboard",
+                "剪貼簿正被其他程式使用，請稍後再試。",
+                "OpenClipboard kept failing while reading CF_DIB",
+            ));
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    let result = (|| {
+        // SAFETY: the clipboard is open; the returned HGLOBAL stays owned by the clipboard.
+        let handle = unsafe { GetClipboardData(u32::from(CF_DIB.0)) }
+            .map_err(|error| native_clipboard_error("read clipboard image", &error))?;
+        let memory = HGLOBAL(handle.0);
+        // SAFETY: CF_DIB is an HGLOBAL; the lock is released before the clipboard closes.
+        let size = unsafe { GlobalSize(memory) };
+        let pointer = unsafe { GlobalLock(memory) }.cast::<u8>();
+        if pointer.is_null() || size == 0 {
+            return Err(clipboard_error(
+                ExplorerErrorKind::Availability,
+                "read clipboard image",
+                "剪貼簿圖片已失效。",
+                "CF_DIB handle could not be locked",
+            ));
+        }
+        // SAFETY: GlobalSize bytes are readable while the handle is locked.
+        let bytes = unsafe { std::slice::from_raw_parts(pointer, size) }.to_vec();
+        let _ = unsafe { GlobalUnlock(memory) };
+        Ok(bytes)
+    })();
+    // SAFETY: balances the successful OpenClipboard above.
+    let _ = unsafe { CloseClipboard() };
+    result
+}
+
+/// Decodes a packed CF_DIB (BITMAPINFOHEADER, optional masks/palette, pixels) into RGB. Alpha is
+/// dropped without compositing: screenshots often carry a meaningless zero alpha channel.
+fn decode_dib(dib: &[u8]) -> Result<image::DynamicImage, ExplorerError> {
+    let invalid = |detail: String| {
+        clipboard_error(
+            ExplorerErrorKind::Availability,
+            "decode clipboard image",
+            "剪貼簿圖片格式無法辨識。",
+            detail,
+        )
+    };
+    let decoder =
+        image::codecs::bmp::BmpDecoder::new_without_file_header(std::io::Cursor::new(dib))
+            .map_err(|error| invalid(error.to_string()))?;
+    let image =
+        image::DynamicImage::from_decoder(decoder).map_err(|error| invalid(error.to_string()))?;
+    Ok(image::DynamicImage::ImageRgb8(image.to_rgb8()))
 }
 
 /// True when the clipboard has no local paths, so Paste must go through the Shell drop path.
@@ -1790,18 +1921,32 @@ mod tests {
         lindex: i32,
         bytes: &[u8],
     ) {
+        use windows::Win32::System::DataExchange::RegisterClipboardFormatW;
+        let format = unsafe { RegisterClipboardFormatW(name) };
+        put_hglobal_format(
+            data,
+            u16::try_from(format).expect("format id"),
+            lindex,
+            bytes,
+        );
+    }
+
+    fn put_hglobal_format(
+        data: &windows::Win32::System::Com::IDataObject,
+        format: u16,
+        lindex: i32,
+        bytes: &[u8],
+    ) {
         use windows::Win32::System::{
             Com::{DVASPECT_CONTENT, FORMATETC, STGMEDIUM, STGMEDIUM_0, TYMED_HGLOBAL},
-            DataExchange::RegisterClipboardFormatW,
             Memory::{GMEM_MOVEABLE, GlobalAlloc, GlobalLock, GlobalUnlock},
         };
-        let format = unsafe { RegisterClipboardFormatW(name) };
         let memory = unsafe { GlobalAlloc(GMEM_MOVEABLE, bytes.len()) }.expect("alloc");
         let pointer = unsafe { GlobalLock(memory) }.cast::<u8>();
         unsafe { std::ptr::copy_nonoverlapping(bytes.as_ptr(), pointer, bytes.len()) };
         let _ = unsafe { GlobalUnlock(memory) };
         let formatetc = FORMATETC {
-            cfFormat: u16::try_from(format).expect("format id"),
+            cfFormat: format,
             ptd: std::ptr::null_mut(),
             dwAspect: DVASPECT_CONTENT.0,
             lindex,
@@ -1820,6 +1965,74 @@ mod tests {
             .chain([0])
             .flat_map(u16::to_le_bytes)
             .collect()
+    }
+
+    #[test]
+    fn clipboard_image_pastes_as_timestamped_jpeg() {
+        use windows::Win32::{
+            System::{Com::IDataObject, Ole::CF_DIB},
+            UI::Shell::SHCreateDataObject,
+        };
+        let _guard = CLIPBOARD_TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        unsafe { OleInitialize(None) }.expect("initialize OLE");
+        // A 2x2 bottom-up 32bpp BI_RGB DIB with zero alpha, as screenshot tools publish it.
+        let mut dib = Vec::new();
+        for value in [40_u32, 2, 2] {
+            dib.extend_from_slice(&value.to_le_bytes());
+        }
+        dib.extend_from_slice(&1_u16.to_le_bytes());
+        dib.extend_from_slice(&32_u16.to_le_bytes());
+        dib.extend_from_slice(&[0; 24]);
+        for bgra in [
+            [0, 0, 255, 0],
+            [0, 255, 0, 0],
+            [255, 0, 0, 0],
+            [255, 255, 255, 0],
+        ] {
+            dib.extend_from_slice(&bgra);
+        }
+        let data: IDataObject =
+            unsafe { SHCreateDataObject(None, None, None::<&IDataObject>) }.expect("data object");
+        put_hglobal_format(&data, CF_DIB.0, -1, &dib);
+        let mut runtime = ClipboardRuntime::new();
+        set_clipboard_with_retry(&data).expect("set OLE clipboard");
+        assert!(super::clipboard_holds_only_image());
+        let state = runtime.poll_change();
+        assert!(
+            matches!(
+                state,
+                Some(ClipboardState::External {
+                    item_count: Some(1),
+                    ..
+                })
+            ),
+            "{state:?}"
+        );
+        let fixture = explorer_test_support::OwnedTempFixture::new().expect("fixture");
+        let destination = fixture.create_dir("image-paste").expect("destination");
+        let copied_at = chrono::TimeZone::with_ymd_and_hms(&chrono::Local, 2026, 11, 2, 21, 11, 15)
+            .single()
+            .expect("local time");
+        for _ in 0..2 {
+            let outcome = super::paste_clipboard_image(
+                &LocationDescriptor::file_system(destination.clone()),
+                copied_at,
+            )
+            .expect("image paste");
+            assert_eq!(outcome, OperationTerminal::Finished);
+        }
+        for name in ["20261102_211115.jpg", "20261102_211115 (2).jpg"] {
+            let bytes = std::fs::read(destination.join(name)).expect(name);
+            let image = image::load_from_memory_with_format(&bytes, image::ImageFormat::Jpeg)
+                .expect("valid JPEG");
+            assert_eq!((image.width(), image.height()), (2, 2));
+        }
+        clear_clipboard_with_retry().expect("clear OLE clipboard");
+        drop(data);
+        drop(runtime);
+        unsafe { OleUninitialize() };
     }
 
     #[test]
