@@ -530,16 +530,7 @@ pub(crate) fn drop_data_object_as_copy(
     data: &windows::Win32::System::Com::IDataObject,
     destination: &LocationDescriptor,
 ) -> Result<(), ExplorerError> {
-    let destination = crate::navigation::location_absolute_pidl(destination)?;
-    let mut child = std::ptr::null_mut::<ITEMIDLIST>();
-    // SAFETY: destination is a complete live PIDL; the returned child is borrowed from it.
-    let parent: windows::Win32::UI::Shell::IShellFolder =
-        unsafe { SHBindToParent(destination.as_ptr(), Some(&raw mut child)) }
-            .map_err(|error| native_error("bind Shell namespace drop parent", &error))?;
-    // SAFETY: parent and relative child remain live through the synchronous drop session.
-    let target: IDropTarget =
-        unsafe { parent.GetUIObjectOf(HWND::default(), &[child.cast_const()], None) }
-            .map_err(|error| native_error("bind Shell namespace drop target", &error))?;
+    let target = shell_drop_target(destination)?;
     let mut effect: DROPEFFECT = DROPEFFECT_COPY;
     let point = POINTL::default();
     let key_state = MK_CONTROL | MK_LBUTTON;
@@ -562,6 +553,42 @@ pub(crate) fn drop_data_object_as_copy(
     }
     .map_err(|error| native_error("copy through Shell namespace drop target", &error))?;
     Ok(())
+}
+
+/// Asks the destination folder's Shell drop target whether it would copy `data`, without
+/// dropping. This is the same test File Explorer uses to enable Paste for formats it does not
+/// recognise itself.
+pub(crate) fn shell_drop_target_accepts_copy(
+    data: &windows::Win32::System::Com::IDataObject,
+    destination: &LocationDescriptor,
+) -> Result<bool, ExplorerError> {
+    let target = shell_drop_target(destination)?;
+    let mut effect: DROPEFFECT = DROPEFFECT_COPY;
+    // SAFETY: the IDataObject, target, and effect remain live through the synchronous probe.
+    unsafe {
+        target
+            .DragEnter(
+                data,
+                MK_CONTROL | MK_LBUTTON,
+                POINTL::default(),
+                &raw mut effect,
+            )
+            .map_err(|error| native_error("enter Shell namespace drop target", &error))?;
+        let _ = target.DragLeave();
+    }
+    Ok(effect.0 & DROPEFFECT_COPY.0 != 0)
+}
+
+fn shell_drop_target(destination: &LocationDescriptor) -> Result<IDropTarget, ExplorerError> {
+    let destination = crate::navigation::location_absolute_pidl(destination)?;
+    let mut child = std::ptr::null_mut::<ITEMIDLIST>();
+    // SAFETY: destination is a complete live PIDL; the returned child is borrowed from it.
+    let parent: windows::Win32::UI::Shell::IShellFolder =
+        unsafe { SHBindToParent(destination.as_ptr(), Some(&raw mut child)) }
+            .map_err(|error| native_error("bind Shell namespace drop parent", &error))?;
+    // SAFETY: parent and relative child remain live while the drop target is created.
+    unsafe { parent.GetUIObjectOf(HWND::default(), &[child.cast_const()], None) }
+        .map_err(|error| native_error("bind Shell namespace drop target", &error))
 }
 
 fn base_operation_flags() -> FILEOPERATION_FLAGS {

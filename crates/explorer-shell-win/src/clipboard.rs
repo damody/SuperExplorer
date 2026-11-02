@@ -12,11 +12,16 @@ use explorer_model::{
     FileOperationRequest, ItemDescriptor, OperationItemResult, OperationTerminal, TransferEffects,
 };
 use windows::Win32::{
+    Foundation::S_OK,
     System::{
-        Com::{DVASPECT_CONTENT, FORMATETC, IDataObject, STGMEDIUM, TYMED_HGLOBAL},
+        Com::{
+            CoTaskMemFree, DATADIR_GET, DVASPECT_CONTENT, FORMATETC, IDataObject, STGMEDIUM,
+            TYMED_HGLOBAL,
+        },
         DataExchange::{
-            CloseClipboard, CountClipboardFormats, EmptyClipboard, GetClipboardSequenceNumber,
-            IsClipboardFormatAvailable, OpenClipboard, RegisterClipboardFormatW, SetClipboardData,
+            CloseClipboard, CountClipboardFormats, EmptyClipboard, GetClipboardFormatNameW,
+            GetClipboardSequenceNumber, IsClipboardFormatAvailable, OpenClipboard,
+            RegisterClipboardFormatW, SetClipboardData,
         },
         Memory::{GMEM_MOVEABLE, GlobalAlloc, GlobalLock, GlobalSize, GlobalUnlock},
         Ole::{
@@ -437,14 +442,30 @@ impl ClipboardRuntime {
                     generation: self.generation,
                 }
             } else {
-                ClipboardState::Unsupported {
-                    error: clipboard_error(
-                        ExplorerErrorKind::Availability,
-                        "inspect clipboard formats",
-                        "剪貼簿不包含可貼上的檔案。",
-                        "clipboard contained formats but no CF_HDROP",
-                    ),
-                    generation: self.generation,
+                match shell_droppable_clipboard() {
+                    // Formats we do not parse (FileName, URLs, app-specific transfer formats):
+                    // a Shell folder's drop target accepts them, so Paste works as in Explorer.
+                    Ok(None) => ClipboardState::External {
+                        effects: TransferEffects::COPY,
+                        item_count: None,
+                        generation: self.generation,
+                    },
+                    Ok(Some(formats)) => ClipboardState::Unsupported {
+                        error: clipboard_error(
+                            ExplorerErrorKind::Availability,
+                            "inspect clipboard formats",
+                            "剪貼簿不包含可貼上的檔案。",
+                            format!(
+                                "clipboard contained formats but no CF_HDROP and the Shell drop \
+                                 target declined them: {formats}"
+                            ),
+                        ),
+                        generation: self.generation,
+                    },
+                    Err(error) => ClipboardState::Unsupported {
+                        error,
+                        generation: self.generation,
+                    },
                 }
             };
             return Some(self.state());
@@ -730,29 +751,71 @@ fn virtual_files_available() -> bool {
     })
 }
 
-/// True when the clipboard can only be pasted through the Shell's virtual-file drop path.
-pub(crate) fn clipboard_holds_only_virtual_files() -> bool {
-    // SAFETY: availability does not open or retain the clipboard.
-    unsafe { IsClipboardFormatAvailable(u32::from(CF_HDROP.0)) }.is_err()
-        && virtual_files_available()
+/// Probes whether a Shell file-system folder would accept the clipboard as a copy. Returns
+/// `None` when it would, or the offered format names (for diagnostics) when it would not.
+fn shell_droppable_clipboard() -> Result<Option<String>, ExplorerError> {
+    let data = get_clipboard_with_retry("inspect OLE clipboard", Duration::from_millis(250))?;
+    let probe = explorer_model::LocationDescriptor::file_system(std::env::temp_dir());
+    if crate::file_operation::shell_drop_target_accepts_copy(&data, &probe)? {
+        return Ok(None);
+    }
+    Ok(Some(clipboard_format_names(&data)))
 }
 
-/// Pastes virtual files by handing the live clipboard object to the destination folder's Shell
-/// drop target, like File Explorer. Runs on a dedicated worker STA because the Shell streams the
-/// file contents (possibly from another machine) inside `Drop`.
+fn clipboard_format_names(data: &IDataObject) -> String {
+    // SAFETY: enumeration only describes formats; no storage medium is rendered.
+    let Ok(formats) = (unsafe { data.EnumFormatEtc(DATADIR_GET.0.unsigned_abs()) }) else {
+        return "<unenumerable>".to_owned();
+    };
+    let mut names = Vec::new();
+    let mut entry = [FORMATETC::default()];
+    // SAFETY: the one-element buffer is live and the enumerator writes at most one entry.
+    while unsafe { formats.Next(&mut entry, None) } == S_OK && names.len() < 32 {
+        let id = entry[0].cfFormat;
+        let mut buffer = [0_u16; 128];
+        // SAFETY: buffer is writable for its full length.
+        let length = unsafe { GetClipboardFormatNameW(u32::from(id), &mut buffer) };
+        names.push(match usize::try_from(length) {
+            Ok(length) if length > 0 => String::from_utf16_lossy(&buffer[..length]),
+            _ => format!("#{id}"),
+        });
+        if !entry[0].ptd.is_null() {
+            // SAFETY: the enumerator transfers ownership of a non-null target device.
+            unsafe { CoTaskMemFree(Some(entry[0].ptd.cast_const().cast())) };
+        }
+    }
+    names.join(", ")
+}
+
+/// True when the clipboard has no local paths, so Paste must go through the Shell drop path.
+pub(crate) fn clipboard_holds_only_virtual_files() -> bool {
+    // SAFETY: availability and counting neither open nor retain the clipboard.
+    unsafe { IsClipboardFormatAvailable(u32::from(CF_HDROP.0)) }.is_err()
+        && unsafe { CountClipboardFormats() } != 0
+}
+
+/// Pastes clipboard data without `CF_HDROP` (virtual files, FileName, app-specific formats) by
+/// handing the live clipboard object to the destination folder's Shell drop target, like File
+/// Explorer. Runs on a dedicated worker STA because the Shell streams the file contents
+/// (possibly from another machine) inside `Drop`.
 pub(crate) fn paste_virtual_files(
     destination: &explorer_model::LocationDescriptor,
 ) -> Result<OperationTerminal, ExplorerError> {
-    if !virtual_files_available() {
+    let data = get_clipboard_with_retry("get OLE clipboard", Duration::from_secs(2))?;
+    // The Shell drop target decides which of the offered formats it can consume.
+    if !virtual_files_available()
+        && !crate::file_operation::shell_drop_target_accepts_copy(&data, destination)?
+    {
         return Err(clipboard_error(
             ExplorerErrorKind::Availability,
             "inspect virtual clipboard files",
             "剪貼簿不包含可貼上的檔案。",
-            "no Shell transfer format is available any more",
+            format!(
+                "the Shell drop target declined the clipboard formats: {}",
+                clipboard_format_names(&data)
+            ),
         ));
     }
-    let data = get_clipboard_with_retry("get OLE clipboard", Duration::from_secs(2))?;
-    // The Shell drop target decides which of the offered formats it can consume.
     crate::file_operation::drop_data_object_as_copy(&data, destination)?;
     Ok(OperationTerminal::Finished)
 }
@@ -1696,6 +1759,8 @@ mod tests {
         let mut runtime = ClipboardRuntime::new();
         set_clipboard_with_retry(&data).expect("set OLE clipboard");
         assert!(super::clipboard_holds_only_virtual_files());
+        // The generic probe used for unrecognised formats agrees with the Shell drop target.
+        assert_eq!(super::shell_droppable_clipboard().expect("probe"), None);
         assert!(matches!(
             runtime.poll_change(),
             Some(ClipboardState::External {
@@ -1718,40 +1783,96 @@ mod tests {
         unsafe { OleUninitialize() };
     }
 
+    /// Stores `bytes` in `data` under the registered clipboard format `name` as an HGLOBAL.
+    fn put_hglobal(
+        data: &windows::Win32::System::Com::IDataObject,
+        name: windows::core::PCWSTR,
+        lindex: i32,
+        bytes: &[u8],
+    ) {
+        use windows::Win32::System::{
+            Com::{DVASPECT_CONTENT, FORMATETC, STGMEDIUM, STGMEDIUM_0, TYMED_HGLOBAL},
+            DataExchange::RegisterClipboardFormatW,
+            Memory::{GMEM_MOVEABLE, GlobalAlloc, GlobalLock, GlobalUnlock},
+        };
+        let format = unsafe { RegisterClipboardFormatW(name) };
+        let memory = unsafe { GlobalAlloc(GMEM_MOVEABLE, bytes.len()) }.expect("alloc");
+        let pointer = unsafe { GlobalLock(memory) }.cast::<u8>();
+        unsafe { std::ptr::copy_nonoverlapping(bytes.as_ptr(), pointer, bytes.len()) };
+        let _ = unsafe { GlobalUnlock(memory) };
+        let formatetc = FORMATETC {
+            cfFormat: u16::try_from(format).expect("format id"),
+            ptd: std::ptr::null_mut(),
+            dwAspect: DVASPECT_CONTENT.0,
+            lindex,
+            tymed: TYMED_HGLOBAL.0.unsigned_abs(),
+        };
+        let medium = STGMEDIUM {
+            tymed: TYMED_HGLOBAL.0.unsigned_abs(),
+            u: STGMEDIUM_0 { hGlobal: memory },
+            pUnkForRelease: std::mem::ManuallyDrop::new(None),
+        };
+        unsafe { data.SetData(&raw const formatetc, &raw const medium, true) }.expect("set data");
+    }
+
+    fn utf16z(text: &str) -> Vec<u8> {
+        text.encode_utf16()
+            .chain([0])
+            .flat_map(u16::to_le_bytes)
+            .collect()
+    }
+
+    #[test]
+    fn text_only_clipboard_stays_unsupported_and_names_its_formats() {
+        use windows::Win32::{System::Com::IDataObject, UI::Shell::SHCreateDataObject};
+        let _guard = CLIPBOARD_TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        unsafe { OleInitialize(None) }.expect("initialize OLE");
+        let data: IDataObject =
+            unsafe { SHCreateDataObject(None, None, None::<&IDataObject>) }.expect("data object");
+        put_hglobal(
+            &data,
+            windows::core::w!("SuperExplorer.Test.PlainText"),
+            -1,
+            &utf16z("not a file"),
+        );
+        let mut runtime = ClipboardRuntime::new();
+        set_clipboard_with_retry(&data).expect("set OLE clipboard");
+        let state = runtime.poll_change();
+        let Some(ClipboardState::Unsupported { error, .. }) = state else {
+            panic!("text-only clipboard must not be pasteable: {state:?}");
+        };
+        assert!(
+            error
+                .technical_detail
+                .contains("SuperExplorer.Test.PlainText"),
+            "{}",
+            error.technical_detail
+        );
+        let fixture = explorer_test_support::OwnedTempFixture::new().expect("fixture");
+        let destination = fixture.create_dir("text-paste").expect("destination");
+        assert!(
+            super::paste_virtual_files(&LocationDescriptor::file_system(destination.clone()))
+                .is_err()
+        );
+        assert_eq!(std::fs::read_dir(&destination).expect("list").count(), 0);
+        clear_clipboard_with_retry().expect("clear OLE clipboard");
+        drop(data);
+        drop(runtime);
+        unsafe { OleUninitialize() };
+    }
+
     #[test]
     fn third_party_ansi_descriptor_files_paste_through_the_shell() {
         use windows::Win32::{
-            System::Com::{
-                DVASPECT_CONTENT, FORMATETC, IDataObject, STGMEDIUM, STGMEDIUM_0, TYMED_HGLOBAL,
-            },
-            System::DataExchange::RegisterClipboardFormatW,
-            System::Memory::{GMEM_MOVEABLE, GlobalAlloc, GlobalLock, GlobalUnlock},
+            System::Com::IDataObject,
             UI::Shell::{
                 CFSTR_FILECONTENTS, CFSTR_FILEDESCRIPTORA, FD_FILESIZE, FILEDESCRIPTORA,
                 FILEGROUPDESCRIPTORA, SHCreateDataObject,
             },
         };
-        fn put(data: &IDataObject, name: windows::core::PCWSTR, lindex: i32, bytes: &[u8]) {
-            let format = unsafe { RegisterClipboardFormatW(name) };
-            let memory = unsafe { GlobalAlloc(GMEM_MOVEABLE, bytes.len()) }.expect("alloc");
-            let pointer = unsafe { GlobalLock(memory) }.cast::<u8>();
-            unsafe { std::ptr::copy_nonoverlapping(bytes.as_ptr(), pointer, bytes.len()) };
-            let _ = unsafe { GlobalUnlock(memory) };
-            let formatetc = FORMATETC {
-                cfFormat: u16::try_from(format).expect("format id"),
-                ptd: std::ptr::null_mut(),
-                dwAspect: DVASPECT_CONTENT.0,
-                lindex,
-                tymed: TYMED_HGLOBAL.0.unsigned_abs(),
-            };
-            let medium = STGMEDIUM {
-                tymed: TYMED_HGLOBAL.0.unsigned_abs(),
-                u: STGMEDIUM_0 { hGlobal: memory },
-                pUnkForRelease: std::mem::ManuallyDrop::new(None),
-            };
-            unsafe { data.SetData(&raw const formatetc, &raw const medium, true) }
-                .expect("set data");
-        }
+        let put = put_hglobal;
         let _guard = CLIPBOARD_TEST_LOCK
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
