@@ -1161,3 +1161,204 @@ fn typed_namespace_rows_are_owned_bounded_and_capability_preserving() {
         );
     }
 }
+
+#[test]
+#[ignore = "requires the locally installed 7-Zip shell extension and 7z.exe"]
+fn brokered_7zip_extract_here_writes_archive_members() {
+    let _process_boundary = isolate_real_process_boundary();
+    let fixture = tempfile::tempdir().expect("7-Zip extract fixture");
+    let source = fixture.path().join("payload.txt");
+    let payload = (0..64 * 1024 * 1024_u32)
+        .map(|index| (index.wrapping_mul(2_654_435_761) >> 13) as u8)
+        .collect::<Vec<_>>();
+    std::fs::write(&source, &payload).expect("payload");
+    let archive = fixture.path().join("payload-archive.7z");
+    let status = std::process::Command::new(r"C:\Program Files\7-Zip\7z.exe")
+        .arg("a")
+        .arg("-mx1")
+        .arg(&archive)
+        .arg(&source)
+        .stdout(std::process::Stdio::null())
+        .status()
+        .expect("run 7z.exe");
+    assert!(status.success());
+    std::fs::remove_file(&source).expect("remove packed payload");
+    let request = explorer_model::ContextMenuRequest {
+        immersive_native_context_menus: false,
+        color_scheme: explorer_model::ContextMenuColorScheme::Light,
+        target: explorer_model::ShellContextMenuTarget::Items {
+            parent: explorer_model::LocationDescriptor::file_system(fixture.path()),
+            items: vec![explorer_model::ItemDescriptor {
+                id: explorer_model::ShellItemId::from_provider_bytes(b"payload-archive".to_vec())
+                    .expect("owned identity"),
+                location: explorer_model::LocationDescriptor::file_system(&archive),
+            }],
+        },
+        owner_window: 0,
+        point: explorer_model::MenuPoint { x: 0, y: 0 },
+        keyboard_invoked: true,
+        invocation_profile: explorer_model::ContextMenuInvocationProfile::Explorer,
+        paste_available: false,
+        open_file_location: false,
+        close_lock_owners: false,
+        requested_verb: Some("SevenZipExtractHere".to_owned()),
+        deadline_ms: 10_000,
+    };
+    let cancellation = explorer_model::CancellationToken::new();
+    let outcome = client(Duration::from_secs(15)).show_context_menu(&request, &cancellation);
+    eprintln!("brokered 7-Zip outcome: {outcome:?}");
+    let deadline = std::time::Instant::now() + Duration::from_secs(60);
+    while std::fs::metadata(&source).map_or(true, |metadata| metadata.len() < payload.len() as u64)
+        && std::time::Instant::now() < deadline
+    {
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    std::thread::sleep(Duration::from_secs(2));
+    let listing = std::fs::read_dir(fixture.path())
+        .expect("fixture listing")
+        .filter_map(Result::ok)
+        .map(|entry| entry.file_name())
+        .collect::<Vec<_>>();
+    eprintln!("fixture after extract: {listing:?}");
+    assert!(source.is_file(), "brokered 7-Zip extract did not write payload.txt");
+    assert_eq!(
+        std::fs::read(&source).expect("extracted payload").len(),
+        payload.len()
+    );
+}
+
+#[test]
+#[ignore = "drives the real native popup and the installed 7-Zip shell extension"]
+fn brokered_popup_7zip_extract_here_writes_archive_members() {
+    use windows::Win32::{
+        Foundation::{LPARAM, WPARAM},
+        UI::WindowsAndMessaging::{FindWindowW, PostMessageW, WM_KEYDOWN},
+    };
+    use windows::core::w;
+
+    let _process_boundary = isolate_real_process_boundary();
+    let fixture = tempfile::tempdir().expect("7-Zip popup fixture");
+    let source = fixture.path().join("payload.txt");
+    std::fs::write(&source, b"popup 7-Zip extract fixture").expect("payload");
+    let archive = fixture.path().join("payload-archive.7z");
+    let status = std::process::Command::new(r"C:\Program Files\7-Zip\7z.exe")
+        .arg("a")
+        .arg(&archive)
+        .arg(&source)
+        .stdout(std::process::Stdio::null())
+        .status()
+        .expect("run 7z.exe");
+    assert!(status.success());
+    std::fs::remove_file(&source).expect("remove packed payload");
+    let immersive = std::env::var("SEVENZIP_POPUP_IMMERSIVE").is_ok_and(|value| value == "1");
+    let request = explorer_model::ContextMenuRequest {
+        immersive_native_context_menus: immersive,
+        color_scheme: explorer_model::ContextMenuColorScheme::Light,
+        target: explorer_model::ShellContextMenuTarget::Items {
+            parent: explorer_model::LocationDescriptor::file_system(fixture.path()),
+            items: vec![explorer_model::ItemDescriptor {
+                id: explorer_model::ShellItemId::from_provider_bytes(b"payload-archive".to_vec())
+                    .expect("owned identity"),
+                location: explorer_model::LocationDescriptor::file_system(&archive),
+            }],
+        },
+        owner_window: if std::env::var("SEVENZIP_POPUP_OWNER").is_ok_and(|value| value == "1") {
+            app_owner_window()
+        } else {
+            0
+        },
+        point: explorer_model::MenuPoint { x: 200, y: 200 },
+        keyboard_invoked: true,
+        invocation_profile: explorer_model::ContextMenuInvocationProfile::Explorer,
+        paste_available: false,
+        open_file_location: false,
+        close_lock_owners: false,
+        requested_verb: None,
+        deadline_ms: 10_000,
+    };
+    let keys = std::env::var("SEVENZIP_POPUP_KEYS").unwrap_or_else(|_| "37,27,28,28,28,0D".into());
+    let driver = std::thread::spawn(move || {
+        let class = if immersive {
+            w!("SuperExplorer.ImmersivePopup.v1")
+        } else {
+            w!("#32768")
+        };
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        let menu = loop {
+            if let Ok(menu) = unsafe { FindWindowW(class, None) } {
+                if !menu.is_invalid() {
+                    break Some(menu);
+                }
+            }
+            if std::time::Instant::now() > deadline {
+                break None;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        };
+        let Some(menu) = menu else {
+            eprintln!("no native popup window appeared");
+            return;
+        };
+        std::thread::sleep(Duration::from_millis(400));
+        for key in keys.split(',') {
+            let key = usize::from_str_radix(key.trim(), 16).expect("hex virtual key");
+            let target = unsafe { FindWindowW(class, None) }.unwrap_or(menu);
+            let _ = unsafe { PostMessageW(Some(target), WM_KEYDOWN, WPARAM(key), LPARAM(0)) };
+            std::thread::sleep(Duration::from_millis(300));
+        }
+    });
+    let cancellation = explorer_model::CancellationToken::new();
+    let outcome = client(Duration::from_secs(20)).show_context_menu(&request, &cancellation);
+    driver.join().expect("popup driver");
+    eprintln!("popup 7-Zip outcome: {outcome:?}");
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while !source.is_file() && std::time::Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    let listing = std::fs::read_dir(fixture.path())
+        .expect("fixture listing")
+        .filter_map(Result::ok)
+        .map(|entry| entry.file_name())
+        .collect::<Vec<_>>();
+    eprintln!("fixture after popup extract: {listing:?}");
+    assert!(source.is_file(), "popup 7-Zip extract did not write payload.txt");
+}
+
+/// A visible top-level window on a pumping thread, like the GPUI window that owns real menus.
+fn app_owner_window() -> u64 {
+    use windows::Win32::UI::WindowsAndMessaging::{
+        CreateWindowExW, DispatchMessageW, GetMessageW, MSG, ShowWindow, SW_SHOW,
+        TranslateMessage, WINDOW_EX_STYLE, WS_OVERLAPPEDWINDOW,
+    };
+    use windows::core::w;
+    let (sender, receiver) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let hwnd = unsafe {
+            CreateWindowExW(
+                WINDOW_EX_STYLE::default(),
+                w!("STATIC"),
+                w!("SuperExplorer owner fixture"),
+                WS_OVERLAPPEDWINDOW,
+                100,
+                100,
+                400,
+                300,
+                None,
+                None,
+                None,
+                None,
+            )
+        }
+        .expect("owner window");
+        let _ = unsafe { ShowWindow(hwnd, SW_SHOW) };
+        sender.send(hwnd.0 as usize as u64).expect("owner handle");
+        let mut message = MSG::default();
+        while unsafe { GetMessageW(&raw mut message, None, 0, 0) }.0 > 0 {
+            unsafe {
+                let _ = TranslateMessage(&message);
+                DispatchMessageW(&message);
+            }
+        }
+    });
+    receiver.recv().expect("owner handle")
+}
