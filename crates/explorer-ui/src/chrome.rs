@@ -16432,6 +16432,7 @@ fn folder_size_detail_cell(
     let exact_bytes = visuals.value_for(entry_id);
     let partial_bytes = visuals.partial_value_for(entry_id);
     let measurement_error = visuals.error_for(entry_id);
+    let terminal = visuals.has_terminal_value(entry_id);
     let maximum = visuals.maximum_value();
     let item_id = extension_render_item_id(entry_id);
     if visuals.partial_pending_for(entry_id)
@@ -16460,7 +16461,7 @@ fn folder_size_detail_cell(
     let render_generation = extension_render_generation(
         entry_id,
         format!(
-            "{exact_bytes:?}:{measurement_error:?}:{maximum}:{selected}:{:?}",
+            "{exact_bytes:?}:{measurement_error:?}:{terminal}:{maximum}:{selected}:{:?}",
             visuals.config.folder_size_display,
         ),
     );
@@ -16473,7 +16474,7 @@ fn folder_size_detail_cell(
                 .then_some(maximum)
                 .map_or(ROption::RNone, ROption::RSome),
         }),
-        loading: exact_bytes.is_none() && measurement_error.is_none(),
+        loading: !terminal && exact_bytes.is_none() && measurement_error.is_none(),
         error: measurement_error
             .map(|error| ROption::RSome(error.into()))
             .unwrap_or(ROption::RNone),

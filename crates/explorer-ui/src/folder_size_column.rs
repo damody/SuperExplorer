@@ -534,6 +534,12 @@ impl FolderSizeColumnVisuals {
         }
     }
 
+    /// True once the provider finished this item, including results that have
+    /// no displayable value such as hidden/system folders.
+    pub fn has_terminal_value(&self, item_id: &ShellItemId) -> bool {
+        self.values.get(item_id).is_some_and(|value| !value.partial)
+    }
+
     pub fn error_for(&self, item_id: &ShellItemId) -> Option<&str> {
         self.values
             .get(item_id)
@@ -977,6 +983,26 @@ mod tests {
         assert_eq!(builtin_size_bytes(true, None, None), None);
         assert_eq!(builtin_size_bytes(false, Some(42), Some(99)), Some(42));
         assert_eq!(builtin_size_bytes(true, Some(5_100), Some(99)), Some(5_100));
+    }
+
+    #[test]
+    fn valueless_terminal_result_is_not_still_loading() {
+        let context = explorer_model::RequestContext::new(TabId::new(), Generation::new(1));
+        let item_id = ShellItemId::from_provider_bytes([1]).unwrap();
+        let mut visuals = FolderSizeColumnVisuals::new(VisualColumnConfigV1::default());
+        visuals.begin_context(&context);
+        assert!(!visuals.has_terminal_value(&item_id));
+
+        visuals.insert_result(FolderSizeResultV1 {
+            context,
+            item_id: item_id.clone(),
+            exact_bytes: None,
+            directory_facts: None,
+            partial: false,
+            error: None,
+        });
+
+        assert!(visuals.has_terminal_value(&item_id));
     }
 
     #[test]

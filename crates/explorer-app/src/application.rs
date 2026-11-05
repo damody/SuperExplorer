@@ -1299,6 +1299,12 @@ impl HostExtensionColumnCacheValueV1 for u64 {
 }
 
 const MFT_RETRY_BACKOFF: Duration = Duration::from_millis(200);
+/// How long one folder waits for a starting or busy service before the exact
+/// recursive scan takes over.
+const MFT_RETRY_BUDGET: Duration = Duration::from_secs(3);
+/// After the budget runs out the service is skipped for this long, so later
+/// folders neither wait for it nor pay another connect timeout.
+const MFT_BYPASS_WINDOW: Duration = Duration::from_secs(30);
 
 #[derive(Default)]
 struct PendingFolderSizeWorkV1 {
@@ -1310,6 +1316,11 @@ struct PendingFolderSizeWorkV1 {
     /// this generation so C:\ / D:\ scans do not block D:\SuperExplorer.
     focus: Option<(explorer_model::TabId, explorer_model::Generation)>,
     retry_not_before: Option<Instant>,
+    /// First attempt of each folder currently being retried against the service.
+    mft_retry_started: HashMap<FolderSizeWorkIdentityV1, Instant>,
+    /// Set while the service is considered down; only an exact service result
+    /// clears it. Once the instant passes, one batch probes the service again.
+    mft_bypass_until: Option<Instant>,
     stopped: bool,
 }
 
@@ -1339,24 +1350,37 @@ fn enqueue_folder_size_requests(
     if let Some(request) = requests.last() {
         let focus = (request.context.tab_id, request.context.generation);
         if state.focus != Some(focus) {
+            // Siblings stay in flight: the UI carries them across a same-folder
+            // generation bump and never resubmits them, so preempting them here
+            // would leave their cells waiting for a result that cannot arrive.
             for (identity, request_id) in &state.in_flight {
-                if (identity.tab_id, identity.generation) != focus {
+                if (identity.tab_id, identity.generation) != focus
+                    && identity.path.parent() != request.path.parent()
+                {
                     state.cancelled.insert(*request_id);
                 }
             }
             state.focus = Some(focus);
         }
     }
-    let pending = state.requests.get_or_insert_with(Vec::new);
     for request in requests {
-        let identity = FolderSizeWorkIdentityV1::from(&request);
-        if !state.in_flight.contains_key(&identity)
-            && !pending
-                .iter()
-                .any(|queued| FolderSizeWorkIdentityV1::from(queued) == identity)
-        {
-            pending.push(request);
-        }
+        queue_folder_size_request(state, request);
+    }
+}
+
+/// Queues without touching focus, so a retry cannot preempt the visible folder.
+fn queue_folder_size_request(
+    state: &mut PendingFolderSizeWorkV1,
+    request: explorer_ui::folder_size_column::FolderSizeRequestV1,
+) {
+    let identity = FolderSizeWorkIdentityV1::from(&request);
+    let pending = state.requests.get_or_insert_with(Vec::new);
+    if !state.in_flight.contains_key(&identity)
+        && !pending
+            .iter()
+            .any(|queued| FolderSizeWorkIdentityV1::from(queued) == identity)
+    {
+        pending.push(request);
     }
 }
 
@@ -1364,6 +1388,7 @@ fn mft_error_is_retryable(error: &str) -> bool {
     let error = error.to_ascii_lowercase();
     error.contains("pipe unavailable")
         || error.contains("deadline exceeded")
+        || error.contains("timed out")
         || error.contains("partial aggregate")
         || error.contains("mft query cancelled")
         || error.contains("generation changed during query")
@@ -1427,10 +1452,11 @@ fn take_folder_size_batch(
     batch
 }
 
+/// Returns the first attempt's start time when this request was being retried.
 fn finish_folder_size_request(
     pending: &(Mutex<PendingFolderSizeWorkV1>, Condvar),
     request: &explorer_ui::folder_size_column::FolderSizeRequestV1,
-) {
+) -> Option<Instant> {
     let (lock, _) = pending;
     let mut state = lock
         .lock()
@@ -1439,6 +1465,7 @@ fn finish_folder_size_request(
     if state.in_flight.get(&identity) == Some(&request.context.request_id) {
         state.in_flight.remove(&identity);
     }
+    state.mft_retry_started.remove(&identity)
 }
 
 fn folder_size_request_cancelled(
@@ -1467,6 +1494,9 @@ fn cancel_folder_size_context(
     state
         .in_flight
         .retain(|_, request_id| *request_id != context.request_id);
+    state.mft_retry_started.retain(|identity, _| {
+        (identity.tab_id, identity.generation) != (context.tab_id, context.generation)
+    });
 }
 
 fn publish_mft_folder_result_v1(
@@ -1478,7 +1508,7 @@ fn publish_mft_folder_result_v1(
     started: Instant,
     measured: Result<crate::mft_query::FolderAggregateQueryV1, String>,
 ) -> bool {
-    finish_folder_size_request(pending, &request);
+    let first_attempt = finish_folder_size_request(pending, &request).unwrap_or(started);
     if folder_size_request_cancelled(pending, &request) {
         return true;
     }
@@ -1506,17 +1536,50 @@ fn publish_mft_folder_result_v1(
         && mft_error_is_retryable(error)
         && !folder_size_request_cancelled(pending, &request)
     {
-        backend_status.store(2, Ordering::Release);
         let (lock, ready) = pending;
         let mut state = lock
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        state.retry_not_before = Some(Instant::now() + MFT_RETRY_BACKOFF);
-        enqueue_folder_size_requests(&mut state, vec![request]);
-        ready.notify_all();
-        return true;
+        if state.mft_bypass_until.is_none() && first_attempt.elapsed() < MFT_RETRY_BUDGET {
+            backend_status.store(2, Ordering::Release);
+            state
+                .mft_retry_started
+                .insert(FolderSizeWorkIdentityV1::from(&request), first_attempt);
+            state.retry_not_before = Some(Instant::now() + MFT_RETRY_BACKOFF);
+            queue_folder_size_request(&mut state, request);
+            ready.notify_all();
+            return true;
+        }
+        let newly_bypassed = state.mft_bypass_until.is_none();
+        state.mft_bypass_until = Some(Instant::now() + MFT_BYPASS_WINDOW);
+        drop(state);
+        if newly_bypassed {
+            let diagnostic = format!(
+                "SUPEREXPLORER_FOLDER_SIZE_MFT_BYPASS path={} waited_ms={} bypass_secs={} error={error}",
+                request.path.display(),
+                first_attempt.elapsed().as_millis(),
+                MFT_BYPASS_WINDOW.as_secs(),
+            );
+            tracing::warn!(%diagnostic, "MFT Service stayed unavailable; folder sizes use the recursive scan");
+            explorer_common::record_process_error_message(
+                ErrorSeverity::Warning,
+                "folder_size",
+                "mft_service_bypass",
+                &diagnostic,
+                Some(file!()),
+            );
+        }
+    } else if measured.is_ok() {
+        let mut state = pending
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if state.mft_bypass_until.take().is_some() {
+            tracing::info!("MFT Service recovered; folder sizes use the service again");
+        }
     }
     let measured = measured.or_else(|mft_error| {
+        backend_status.store(1, Ordering::Release);
         let fallback = snapshot_service
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -1545,7 +1608,12 @@ fn publish_mft_folder_result_v1(
             });
         match fallback {
             Ok(value) => {
-                backend_status.store(1, Ordering::Release);
+                tracing::info!(
+                    path = %request.path.display(),
+                    elapsed_ms = started.elapsed().as_millis(),
+                    %mft_error,
+                    "folder size measured by recursive scan"
+                );
                 Ok(value)
             }
             Err(fallback_error) => Err(format!(
@@ -1553,6 +1621,9 @@ fn publish_mft_folder_result_v1(
             )),
         }
     });
+    if measured.is_err() && folder_size_request_cancelled(pending, &request) {
+        return true;
+    }
     let (exact_bytes, directory_facts, error) = match measured {
         Ok((exact_bytes, directory_facts)) => (Some(exact_bytes), directory_facts, None),
         Err(reason) => {
@@ -1742,49 +1813,87 @@ impl ApplicationVisualColumnRuntimeV1 {
                         )
                         .collect::<Vec<_>>();
                     protocol_requests.sort_unstable_by_key(|request| request.request_id);
+                    let bypass_mft = worker_pending
+                        .0
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .mft_bypass_until
+                        .is_some_and(|until| until > Instant::now());
                     worker_backend_active.store(true, Ordering::Release);
-                    worker_backend_status.store(2, Ordering::Release);
+                    worker_backend_status.store(if bypass_mft { 1 } else { 2 }, Ordering::Release);
+                    let batch_started = Instant::now();
+                    let batch_folders = active.len();
+                    tracing::info!(
+                        folders = batch_folders,
+                        first_path = ?protocol_requests.first().map(|request| &request.path),
+                        bypass_mft,
+                        "folder-size batch submitted"
+                    );
                     let batch_context = active
                         .values()
                         .next()
                         .map(|(request, _)| request.context.clone());
-                    let batch_result = crate::mft_query::query_folders_batch(
-                        &protocol_requests,
-                        cache_memory_mb,
-                        || {
-                            let state = worker_pending
-                                .0
-                                .lock()
-                                .unwrap_or_else(std::sync::PoisonError::into_inner);
-                            state.stopped
-                                || batch_context.as_ref().is_some_and(|context| {
-                                    state.cancelled.contains(&context.request_id)
+                    let batch_result = if bypass_mft {
+                        Err("MFT Service bypassed after repeated failures".to_owned())
+                    } else {
+                        crate::mft_query::query_folders_batch(
+                            &protocol_requests,
+                            cache_memory_mb,
+                            || {
+                                let state = worker_pending
+                                    .0
+                                    .lock()
+                                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                                state.stopped
+                                    || batch_context.as_ref().is_some_and(|context| {
+                                        state.cancelled.contains(&context.request_id)
+                                    })
+                            },
+                            |completion| {
+                                let Some((request, started)) =
+                                    active.remove(&completion.request_id)
+                                else {
+                                    return Err(format!(
+                                        "MFT folder batch completed unknown request {}",
+                                        completion.request_id
+                                    ));
+                                };
+                                publish_mft_folder_result_v1(
+                                    &worker_pending,
+                                    &worker_backend_status,
+                                    &worker_snapshot_service,
+                                    &worker_result_tx,
+                                    request,
+                                    started,
+                                    completion.result,
+                                )
+                                .then_some(())
+                                .ok_or_else(|| {
+                                    "folder-size result receiver disconnected".to_owned()
                                 })
-                        },
-                        |completion| {
-                            let Some((request, started)) = active.remove(&completion.request_id)
-                            else {
-                                return Err(format!(
-                                    "MFT folder batch completed unknown request {}",
-                                    completion.request_id
-                                ));
-                            };
-                            publish_mft_folder_result_v1(
-                                &worker_pending,
-                                &worker_backend_status,
-                                &worker_snapshot_service,
-                                &worker_result_tx,
-                                request,
-                                started,
-                                completion.result,
-                            )
-                            .then_some(())
-                            .ok_or_else(|| "folder-size result receiver disconnected".to_owned())
-                        },
-                    );
-                    worker_backend_active.store(false, Ordering::Release);
+                            },
+                        )
+                    };
+                    match &batch_result {
+                        Ok(()) => tracing::info!(
+                            folders = batch_folders,
+                            unanswered = active.len(),
+                            elapsed_ms = batch_started.elapsed().as_millis(),
+                            "folder-size batch finished"
+                        ),
+                        Err(error) if !bypass_mft => tracing::warn!(
+                            %error,
+                            folders = batch_folders,
+                            unanswered = active.len(),
+                            elapsed_ms = batch_started.elapsed().as_millis(),
+                            "MFT folder batch failed"
+                        ),
+                        Err(_) => {}
+                    }
                     if let Err(error) = batch_result {
-                        for (_, (request, started)) in active.drain() {
+                        let mut unanswered = active.drain().collect::<Vec<_>>();
+                        unanswered.sort_unstable_by_key(|(request_id, _)| *request_id);
+                        for (_, (request, started)) in unanswered {
                             if !publish_mft_folder_result_v1(
                                 &worker_pending,
                                 &worker_backend_status,
@@ -1802,6 +1911,7 @@ impl ApplicationVisualColumnRuntimeV1 {
                             finish_folder_size_request(&worker_pending, &request);
                         }
                     }
+                    worker_backend_active.store(false, Ordering::Release);
                 }
             })
             .context("failed to start P0 folder-size batch worker")?;
@@ -8979,6 +9089,172 @@ mod tests {
     }
 
     #[test]
+    fn exhausted_mft_retry_budget_measures_recursively_and_bypasses_the_service() {
+        let fixture = tempfile::tempdir().unwrap();
+        fs::write(fixture.path().join("root.txt"), b"abc").unwrap();
+
+        let context = RequestContext::new(TabId::new(), Generation::new(3));
+        let request = |id: u8| explorer_ui::folder_size_column::FolderSizeRequestV1 {
+            context: context.clone(),
+            item_id: ShellItemId::from_provider_bytes([id]).unwrap(),
+            path: fixture.path().to_path_buf(),
+            mft_cache_memory_mb: 512,
+            require_directory_facts: true,
+        };
+        let pending = (
+            Mutex::new(PendingFolderSizeWorkV1::default()),
+            std::sync::Condvar::new(),
+        );
+        let backend_status = std::sync::atomic::AtomicU8::new(2);
+        let snapshots = Arc::new(Mutex::new(
+            crate::folder_size_service::FolderSizeServiceV1::with_capacity(8),
+        ));
+        let (sender, receiver) = std::sync::mpsc::sync_channel(2);
+        let publish = |request, started, error: &str| {
+            super::publish_mft_folder_result_v1(
+                &pending,
+                &backend_status,
+                &snapshots,
+                &sender,
+                request,
+                started,
+                Err(error.to_owned()),
+            )
+        };
+
+        assert!(publish(
+            request(1),
+            Instant::now() - super::MFT_RETRY_BUDGET,
+            "MFT query pipe unavailable (2: service is not installed or not running)",
+        ));
+        let result = receiver.try_recv().expect("recursive result is terminal");
+        assert_eq!(result.exact_bytes, Some(3));
+        assert_eq!(result.error, None);
+        assert_eq!(backend_status.load(Ordering::Acquire), 1);
+        {
+            let state = pending
+                .0
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            assert!(state.mft_bypass_until.is_some());
+            assert!(state.requests.is_none(), "exhausted work is not requeued");
+        }
+
+        assert!(publish(
+            request(2),
+            Instant::now(),
+            "MFT query read timed out after 10000ms",
+        ));
+        assert_eq!(
+            receiver
+                .try_recv()
+                .expect("no retry while bypassed")
+                .exact_bytes,
+            Some(3)
+        );
+    }
+
+    #[test]
+    fn retried_mft_request_keeps_its_budget_and_never_steals_focus() {
+        let fixture = tempfile::tempdir().unwrap();
+        let tab = TabId::new();
+        let previous = RequestContext::new(tab, Generation::new(1));
+        let focused = (TabId::new(), Generation::new(9));
+        let request = explorer_ui::folder_size_column::FolderSizeRequestV1 {
+            context: previous,
+            item_id: ShellItemId::from_provider_bytes([3]).unwrap(),
+            path: fixture.path().to_path_buf(),
+            mft_cache_memory_mb: 512,
+            require_directory_facts: false,
+        };
+        let pending = (
+            Mutex::new(PendingFolderSizeWorkV1 {
+                focus: Some(focused),
+                ..PendingFolderSizeWorkV1::default()
+            }),
+            std::sync::Condvar::new(),
+        );
+        let backend_status = std::sync::atomic::AtomicU8::new(0);
+        let snapshots = Arc::new(Mutex::new(
+            crate::folder_size_service::FolderSizeServiceV1::with_capacity(8),
+        ));
+        let (sender, receiver) = std::sync::mpsc::sync_channel(1);
+        let first_attempt = Instant::now() - Duration::from_millis(100);
+
+        assert!(super::publish_mft_folder_result_v1(
+            &pending,
+            &backend_status,
+            &snapshots,
+            &sender,
+            request.clone(),
+            first_attempt,
+            Err("MFT query pipe unavailable (2)".to_owned()),
+        ));
+        assert!(receiver.try_recv().is_err());
+        let state = pending
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        assert_eq!(state.focus, Some(focused));
+        assert_eq!(
+            state
+                .mft_retry_started
+                .get(&super::FolderSizeWorkIdentityV1::from(&request)),
+            Some(&first_attempt)
+        );
+    }
+
+    #[test]
+    fn exact_service_result_clears_the_mft_bypass() {
+        let context = RequestContext::new(TabId::new(), Generation::new(4));
+        let request = explorer_ui::folder_size_column::FolderSizeRequestV1 {
+            context,
+            item_id: ShellItemId::from_provider_bytes([4]).unwrap(),
+            path: PathBuf::from(r"D:\fixture"),
+            mft_cache_memory_mb: 512,
+            require_directory_facts: false,
+        };
+        let pending = (
+            Mutex::new(PendingFolderSizeWorkV1 {
+                mft_bypass_until: Some(Instant::now()),
+                ..PendingFolderSizeWorkV1::default()
+            }),
+            std::sync::Condvar::new(),
+        );
+        let backend_status = std::sync::atomic::AtomicU8::new(2);
+        let snapshots = Arc::new(Mutex::new(
+            crate::folder_size_service::FolderSizeServiceV1::with_capacity(8),
+        ));
+        let (sender, receiver) = std::sync::mpsc::sync_channel(1);
+
+        assert!(super::publish_mft_folder_result_v1(
+            &pending,
+            &backend_status,
+            &snapshots,
+            &sender,
+            request,
+            Instant::now(),
+            Ok(crate::mft_query::FolderAggregateQueryV1 {
+                generation: 1,
+                logical_bytes: 5,
+                allocated_bytes: 8,
+                file_count: 1,
+                directory_count: 1,
+                partial: false,
+            }),
+        ));
+        assert_eq!(receiver.try_recv().unwrap().exact_bytes, Some(5));
+        assert!(
+            pending
+                .0
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .mft_bypass_until
+                .is_none()
+        );
+    }
+
+    #[test]
     fn folder_size_workers_claim_independent_visible_requests() {
         let context = RequestContext::new(TabId::new(), Generation::new(1));
         let request = |id: u64| explorer_ui::folder_size_column::FolderSizeRequestV1 {
@@ -9088,25 +9364,51 @@ mod tests {
         let tab = TabId::new();
         let drive = RequestContext::new(tab, Generation::new(1));
         let focused = RequestContext::new(tab, Generation::new(2));
-        let request = |context: RequestContext, id: u64| {
+        let request = |context: RequestContext, id: u64, path: &str| {
             explorer_ui::folder_size_column::FolderSizeRequestV1 {
                 context,
                 item_id: ShellItemId::from_provider_bytes(id.to_le_bytes()).unwrap(),
-                path: format!(r"C:\fixture\{id}").into(),
+                path: path.into(),
                 mft_cache_memory_mb: 512,
                 require_directory_facts: false,
             }
         };
         let mut pending = PendingFolderSizeWorkV1::default();
-        enqueue_folder_size_requests(&mut pending, vec![request(drive.clone(), 1)]);
+        enqueue_folder_size_requests(&mut pending, vec![request(drive.clone(), 1, r"C:\Windows")]);
         let in_flight = take_folder_size_batch(&mut pending, 1);
         assert_eq!(in_flight.len(), 1);
-        enqueue_folder_size_requests(&mut pending, vec![request(focused.clone(), 9)]);
+        enqueue_folder_size_requests(
+            &mut pending,
+            vec![request(focused.clone(), 9, r"C:\fixture\9")],
+        );
 
         assert!(pending.cancelled.contains(&drive.request_id));
         let batch = take_folder_size_batch(&mut pending, 8);
         assert_eq!(batch[0].context, focused);
         assert_eq!(batch[0].path, PathBuf::from(r"C:\fixture\9"));
+    }
+
+    #[test]
+    fn same_folder_generation_bump_keeps_in_flight_siblings() {
+        let tab = TabId::new();
+        let previous = RequestContext::new(tab, Generation::new(1));
+        let current = RequestContext::new(tab, Generation::new(2));
+        let request = |context: RequestContext, id: u64| {
+            explorer_ui::folder_size_column::FolderSizeRequestV1 {
+                context,
+                item_id: ShellItemId::from_provider_bytes(id.to_le_bytes()).unwrap(),
+                path: format!(r"D:\{id}").into(),
+                mft_cache_memory_mb: 512,
+                require_directory_facts: false,
+            }
+        };
+        let mut pending = PendingFolderSizeWorkV1::default();
+        enqueue_folder_size_requests(&mut pending, vec![request(previous.clone(), 1)]);
+        assert_eq!(take_folder_size_batch(&mut pending, 1).len(), 1);
+
+        enqueue_folder_size_requests(&mut pending, vec![request(current, 2)]);
+
+        assert!(!pending.cancelled.contains(&previous.request_id));
     }
 
     #[test]

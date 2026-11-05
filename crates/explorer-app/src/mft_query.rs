@@ -53,6 +53,9 @@ const INVALID_HANDLE_VALUE: isize = -1;
 /// must display either an exact result or `Unavailable` within ten seconds.
 const AGGREGATE_RESPONSE_TIMEOUT: Duration = Duration::from_secs(10);
 const CONTROL_RESPONSE_TIMEOUT: Duration = Duration::from_secs(2);
+/// Size Map hierarchies are far larger than one aggregate frame. Keep a bound
+/// without sending a slow but healthy service to the elevated helper.
+const HIERARCHY_RESPONSE_TIMEOUT: Duration = Duration::from_secs(60);
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct FolderAggregateQueryV1 {
@@ -609,7 +612,7 @@ pub fn query_hierarchy(
     write_all(pipe.0, &request)?;
     write_all(pipe.0, &path_bytes)?;
     let mut header = [0_u8; HIERARCHY_HEADER_BYTES];
-    read_exact(pipe.0, &mut header, || false, AGGREGATE_RESPONSE_TIMEOUT)?;
+    read_exact(pipe.0, &mut header, || false, HIERARCHY_RESPONSE_TIMEOUT)?;
     if read_u32(&header, 0) != Some(MAGIC) || read_u16(&header, 4) != Some(SCHEMA) {
         return Err("MFT hierarchy response schema mismatch".to_owned());
     }
@@ -619,7 +622,7 @@ pub fn query_hierarchy(
         return Err("MFT hierarchy response exceeds bounds".to_owned());
     }
     let mut payload = vec![0_u8; payload_bytes];
-    read_exact(pipe.0, &mut payload, || false, AGGREGATE_RESPONSE_TIMEOUT)?;
+    read_exact(pipe.0, &mut payload, || false, HIERARCHY_RESPONSE_TIMEOUT)?;
     if read_u16(&header, 6) != Some(0) {
         return Err(String::from_utf8(payload)
             .ok()
@@ -831,6 +834,16 @@ fn query_diagnostics_breakdown() -> Result<[u64; 7], String> {
     Ok([8, 16, 24, 32, 40, 48, 56].map(|offset| read_u64(&response, offset).unwrap_or_default()))
 }
 
+/// Names the usual cause so a field log identifies it without a Win32 lookup.
+const fn pipe_error_hint(error: u32) -> &'static str {
+    match error {
+        2 => "service is not installed or not running",
+        5 => "access denied by the pipe ACL",
+        231 => "all pipe instances are busy",
+        _ => "unexpected Win32 error",
+    }
+}
+
 fn connect(attempts: usize) -> Result<Handle, String> {
     connect_until(
         std::time::Instant::now()
@@ -875,10 +888,12 @@ fn connect_until_with(
         if pipe != INVALID_HANDLE_VALUE {
             break pipe;
         }
+        let error = unsafe { GetLastError() };
         if std::time::Instant::now() >= deadline {
-            return Err(format!("MFT query pipe unavailable ({})", unsafe {
-                GetLastError()
-            }));
+            return Err(format!(
+                "MFT query pipe unavailable ({error}: {})",
+                pipe_error_hint(error)
+            ));
         }
         std::thread::sleep(Duration::from_millis(50));
     };
@@ -1500,10 +1515,11 @@ fn bounded_error_detail(mut error: String) -> String {
 
 #[expect(
     unsafe_code,
-    reason = "reading framed MFT query requests requires Win32 ReadFile and last-error inspection"
+    reason = "reading framed MFT query requests requires Win32 PeekNamedPipe, ReadFile and last-error inspection"
 )]
-// SAFETY: Each ReadFile call receives a writable slice pointer and its exact remaining length;
-// the handle stays valid, and error state is consumed immediately.
+// SAFETY: PeekNamedPipe only writes the local byte count. Each ReadFile call receives a writable
+// slice pointer and its exact remaining length; the handle stays valid, and error state is
+// consumed immediately.
 fn read_exact(
     handle: isize,
     bytes: &mut [u8],
@@ -1513,6 +1529,29 @@ fn read_exact(
     let mut offset = 0;
     let deadline = std::time::Instant::now() + timeout;
     while offset < bytes.len() && !stopped() {
+        // Client handles are blocking: ReadFile on an idle pipe would outlive
+        // both the deadline and cancellation. Read only once bytes are pending.
+        let mut available = 0_u32;
+        let peeked = unsafe {
+            PeekNamedPipe(
+                handle,
+                ptr::null_mut(),
+                0,
+                ptr::null_mut(),
+                &raw mut available,
+                ptr::null_mut(),
+            )
+        };
+        if peeked != 0 && available == 0 {
+            if std::time::Instant::now() >= deadline {
+                return Err(format!(
+                    "MFT query read timed out after {}ms",
+                    timeout.as_millis()
+                ));
+            }
+            std::thread::sleep(Duration::from_millis(1));
+            continue;
+        }
         let mut read = 0_u32;
         let ok = unsafe {
             ReadFile(
@@ -1532,7 +1571,10 @@ fn read_exact(
                 return Err(format!("MFT query read failed ({error})"));
             }
             if std::time::Instant::now() >= deadline {
-                return Err("MFT query read timed out".to_owned());
+                return Err(format!(
+                    "MFT query read timed out after {}ms",
+                    timeout.as_millis()
+                ));
             }
             std::thread::sleep(Duration::from_millis(1));
         }
@@ -1957,6 +1999,89 @@ mod tests {
         .unwrap_err();
         assert!(error.contains("interrupted"));
         assert!(started.elapsed() < Duration::from_millis(100));
+    }
+
+    #[test]
+    #[expect(
+        unsafe_code,
+        reason = "the regression needs a real blocking client handle from Win32 named-pipe APIs"
+    )]
+    // SAFETY: Names are NUL-terminated, returned handles are owned by Handle, and WriteFile
+    // receives a readable buffer with its exact length.
+    fn idle_blocking_pipe_read_honours_deadline_and_cancellation() {
+        let name = wide(&format!(
+            r"\\.\pipe\SuperExplorerMftReadDeadline.Test.{}",
+            std::process::id()
+        ));
+        let server = Handle(unsafe {
+            CreateNamedPipeW(name.as_ptr(), 3, 0, 1, 4_096, 4_096, 0, ptr::null())
+        });
+        assert_ne!(server.0, INVALID_HANDLE_VALUE);
+        let client = Handle(unsafe {
+            CreateFileW(
+                name.as_ptr(),
+                0x8000_0000 | 0x4000_0000,
+                0,
+                ptr::null(),
+                3,
+                0,
+                0,
+            )
+        });
+        assert_ne!(client.0, INVALID_HANDLE_VALUE);
+
+        let mut response = [0_u8; 4];
+        let started = std::time::Instant::now();
+        let error = read_exact(
+            client.0,
+            &mut response,
+            || false,
+            Duration::from_millis(50),
+        )
+        .unwrap_err();
+        assert!(error.contains("timed out"), "{error}");
+        assert!(started.elapsed() < CONTROL_RESPONSE_TIMEOUT);
+
+        let started = std::time::Instant::now();
+        let error = read_exact(
+            client.0,
+            &mut response,
+            || started.elapsed() >= Duration::from_millis(50),
+            AGGREGATE_RESPONSE_TIMEOUT,
+        )
+        .unwrap_err();
+        assert!(error.contains("interrupted"), "{error}");
+        assert!(started.elapsed() < CONTROL_RESPONSE_TIMEOUT);
+
+        let mut written = 0_u32;
+        let ok = unsafe {
+            WriteFile(
+                server.0,
+                [1_u8, 2, 3, 4].as_ptr().cast(),
+                4,
+                &raw mut written,
+                ptr::null_mut(),
+            )
+        };
+        assert_ne!(ok, 0);
+        read_exact(
+            client.0,
+            &mut response,
+            || false,
+            CONTROL_RESPONSE_TIMEOUT,
+        )
+        .unwrap();
+        assert_eq!(response, [1, 2, 3, 4]);
+
+        drop(server);
+        let error = read_exact(
+            client.0,
+            &mut response,
+            || false,
+            CONTROL_RESPONSE_TIMEOUT,
+        )
+        .unwrap_err();
+        assert!(error.contains("read failed"), "{error}");
     }
 
     #[test]
