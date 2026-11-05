@@ -3732,6 +3732,86 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "requires the locally installed 7-Zip shell extension and 7z.exe"]
+    fn installed_7zip_extension_extracts_archive_here() {
+        let _guard = crate::clipboard::CLIPBOARD_TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        // SAFETY: serialized test owns and balances one OLE STA initialization.
+        unsafe { OleInitialize(None) }.expect("OLE initialize");
+        let fixture = explorer_test_support::OwnedTempFixture::new().expect("7-Zip fixture");
+        let source = fixture
+            .create_file("payload.txt", b"owned 7-Zip extract fixture")
+            .expect("source fixture");
+        let archive = fixture.root().join("payload-archive.7z");
+        let status = std::process::Command::new(r"C:\Program Files\7-Zip\7z.exe")
+            .arg("a")
+            .arg(&archive)
+            .arg(&source)
+            .stdout(std::process::Stdio::null())
+            .status()
+            .expect("run 7z.exe");
+        assert!(status.success());
+        std::fs::remove_file(&source).expect("remove packed source");
+        let target = ShellContextMenuTarget::Items {
+            parent: LocationDescriptor::file_system(fixture.root()),
+            items: vec![ItemDescriptor {
+                id: ShellItemId::from_provider_bytes([0x7b]).expect("item id"),
+                location: LocationDescriptor::file_system(archive.clone()),
+            }],
+        };
+        let mut owner_state = MenuOwnerState { menu3: None };
+        let owner = OwnerWindow::create(&raw mut owner_state).expect("menu owner");
+        let menu = resolve_menu(&target, owner.hwnd()).expect("real item context menu");
+        owner_state.menu3 = menu.cast::<IContextMenu3>().ok();
+        let popup = OwnedMenu::create().expect("popup");
+        query_menu(
+            &menu,
+            popup.get(),
+            true,
+            ContextMenuInvocationProfile::Explorer,
+        )
+        .expect("query");
+        let mut entries = Vec::new();
+        collect_menu_entries(popup.get(), 0, &mut entries);
+        for (label, command_id, depth) in &entries {
+            println!("depth={depth}; id={command_id}; label={label:?}");
+        }
+        let (label, command_id, _) = entries
+            .iter()
+            .find(|(label, id, depth)| {
+                *depth > 0
+                    && *id >= COMMAND_FIRST
+                    && *id <= COMMAND_LAST
+                    && (label.contains("解壓縮至此") || label.contains("Extract Here"))
+            })
+            .expect("7-Zip extract-here command");
+        for (label, id, depth) in &entries {
+            if *depth > 0 && *id >= COMMAND_FIRST && *id <= COMMAND_LAST {
+                println!(
+                    "verb label={label:?} verb={:?} host={:?}",
+                    canonical_verb_at_offset(&menu, *id - COMMAND_FIRST),
+                    host_command_at_offset(&menu, popup.get(), *id - COMMAND_FIRST, true)
+                );
+            }
+        }
+        println!("invoking {label:?}");
+        invoke(&menu, owner.hwnd(), *command_id - COMMAND_FIRST).expect("invoke 7-Zip command");
+        let extracted = fixture.root().join("payload.txt");
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !extracted.exists() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        assert!(extracted.is_file(), "7-Zip did not extract the archive");
+        drop(popup);
+        drop(owner);
+        owner_state.menu3 = None;
+        drop(menu);
+        // SAFETY: all menu and COM references were released above.
+        unsafe { OleUninitialize() };
+    }
+
+    #[test]
     #[ignore = "requires the locally installed WinRAR shell extension"]
     fn installed_winrar_extension_initializes_and_invokes_owned_archive_command() {
         let _guard = crate::clipboard::CLIPBOARD_TEST_LOCK
