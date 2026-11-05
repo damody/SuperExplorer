@@ -14,6 +14,6 @@ fn automation_manager_and_loading_summary_render_without_blocking(cx: &mut TestA
         state,
     });
     let any_window = window.into();
-    cx.update_window(any_window, |_, window, cx| window.draw(cx).clear())
+    cx.update_window(any_window, |_, window, cx| window.draw(cx).clear(cx))
         .expect("test window remains available");
 }

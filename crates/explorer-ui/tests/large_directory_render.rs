@@ -28,7 +28,7 @@ fn release_renders_and_scrolls_one_hundred_thousand_rows_in_both_view_families(
             ExplorerRoot::for_directory_fixture(UiTokens::default(), entries, mode)
         });
         let any_window = window.into();
-        cx.update_window(any_window, |_, window, cx| window.draw(cx).clear())
+        cx.update_window(any_window, |_, window, cx| window.draw(cx).clear(cx))
             .expect("initial large-directory draw succeeds");
         let mut visual = VisualTestContext::from_window(any_window, cx);
         assert!(visual.debug_bounds(FILE_VIEW_HOST_ID).is_some());
@@ -56,7 +56,7 @@ fn release_renders_and_scrolls_one_hundred_thousand_rows_in_both_view_families(
                     root.set_file_scroll_offset_for_test(offset);
                     cx.notify();
                 });
-                window.draw(cx).clear();
+                window.draw(cx).clear(cx);
             })
             .expect("scroll draw succeeds");
             frames.push(started.elapsed());
@@ -91,7 +91,7 @@ fn release_keeps_pointer_and_keyboard_input_under_budget_while_loading(cx: &mut 
         )
     });
     let any_window = window.into();
-    cx.update_window(any_window, |_, window, cx| window.draw(cx).clear())
+    cx.update_window(any_window, |_, window, cx| window.draw(cx).clear(cx))
         .expect("first batch draw succeeds");
     cx.update_window(any_window, |root_view, window, cx| {
         let root = root_view
@@ -113,7 +113,7 @@ fn release_keeps_pointer_and_keyboard_input_under_budget_while_loading(cx: &mut 
                 );
             }
         });
-        window.draw(cx).clear();
+        window.draw(cx).clear(cx);
     })
     .expect("input actions remain available");
     let snapshot = cx

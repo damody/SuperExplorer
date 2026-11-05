@@ -14,7 +14,7 @@ use gpui::{AppContext as _, Modifiers, TestAppContext, VisualTestContext, px, si
 fn initial_render_contains_every_m1_region(cx: &mut TestAppContext) {
     let window = cx.open_window(size(px(1_120.0), px(720.0)), |_, _| ExplorerRoot::default());
     let any_window = window.into();
-    cx.update_window(any_window, |_, window, cx| window.draw(cx).clear())
+    cx.update_window(any_window, |_, window, cx| window.draw(cx).clear(cx))
         .expect("test window remains available");
 
     let mut visual = VisualTestContext::from_window(any_window, cx);
@@ -68,7 +68,7 @@ fn initial_render_contains_every_m1_region(cx: &mut TestAppContext) {
 fn crowded_tabs_shrink_below_preferred_width_and_stay_in_the_strip(cx: &mut TestAppContext) {
     let window = cx.open_window(size(px(900.0), px(720.0)), |_, _| ExplorerRoot::default());
     let any_window = window.into();
-    cx.update_window(any_window, |_, window, cx| window.draw(cx).clear())
+    cx.update_window(any_window, |_, window, cx| window.draw(cx).clear(cx))
         .expect("test window remains available");
     let mut visual = VisualTestContext::from_window(any_window, cx);
     for _ in 0..5 {
@@ -76,7 +76,7 @@ fn crowded_tabs_shrink_below_preferred_width_and_stay_in_the_strip(cx: &mut Test
             .debug_bounds(NEW_TAB_BUTTON_ID)
             .expect("new tab button remains visible");
         visual.simulate_click(plus.center(), Modifiers::default());
-        cx.update_window(any_window, |_, window, cx| window.draw(cx).clear())
+        cx.update_window(any_window, |_, window, cx| window.draw(cx).clear(cx))
             .expect("test window remains available");
     }
 
@@ -111,7 +111,7 @@ fn crowded_tabs_shrink_below_preferred_width_and_stay_in_the_strip(cx: &mut Test
 fn overflowing_tabs_show_a_horizontal_scrollbar_and_keep_caption_buttons(cx: &mut TestAppContext) {
     let window = cx.open_window(size(px(900.0), px(720.0)), |_, _| ExplorerRoot::default());
     let any_window = window.into();
-    cx.update_window(any_window, |_, window, cx| window.draw(cx).clear())
+    cx.update_window(any_window, |_, window, cx| window.draw(cx).clear(cx))
         .expect("test window remains available");
     let mut visual = VisualTestContext::from_window(any_window, cx);
     for _ in 0..14 {
@@ -119,11 +119,11 @@ fn overflowing_tabs_show_a_horizontal_scrollbar_and_keep_caption_buttons(cx: &mu
             .debug_bounds(NEW_TAB_BUTTON_ID)
             .expect("new tab button remains reachable");
         visual.simulate_click(plus.center(), Modifiers::default());
-        cx.update_window(any_window, |_, window, cx| window.draw(cx).clear())
+        cx.update_window(any_window, |_, window, cx| window.draw(cx).clear(cx))
             .expect("test window remains available");
     }
     // The scroll handle learns its measured bounds during paint; draw again like a real frame.
-    cx.update_window(any_window, |_, window, cx| window.draw(cx).clear())
+    cx.update_window(any_window, |_, window, cx| window.draw(cx).clear(cx))
         .expect("test window remains available");
 
     let strip = visual.debug_bounds(TAB_STRIP_ID).expect("tab strip");

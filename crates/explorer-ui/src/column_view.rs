@@ -721,7 +721,7 @@ fn column_horizontal_scrollbar(
             .inset_0()
             .size_full(),
         )
-        .on_scroll_wheel({
+        .on_scroll({
             let callback = on_action.clone();
             move |event, window, cx| {
                 if event.modifiers.control {
@@ -987,7 +987,7 @@ fn column_pane(
         .overflow_hidden()
         .border_r(px(1.0))
         .border_color(colors.divider.to_gpui())
-        .on_scroll_wheel(move |event, window, cx| {
+        .on_scroll(move |event, window, cx| {
             if event.modifiers.control {
                 return;
             }
@@ -1867,7 +1867,7 @@ fn column_preview(
         .border_l(px(1.0))
         .border_color(colors.divider.to_gpui())
         .bg(colors.surface.to_gpui())
-        .on_scroll_wheel({
+        .on_scroll({
             let callback = on_action.clone();
             move |event, window, cx| {
                 if event.modifiers.control {
@@ -3293,7 +3293,7 @@ mod tests {
             }
         });
         let any_window = window.into();
-        cx.update_window(any_window, |_, window, cx| window.draw(cx).clear())
+        cx.update_window(any_window, |_, window, cx| window.draw(cx).clear(cx))
             .unwrap();
         let mut visual = gpui::VisualTestContext::from_window(any_window, cx);
         for (index, bar_selector, thumb_selector, divider_selector) in [
@@ -3419,7 +3419,7 @@ mod tests {
             }
         });
         let any_window = window.into();
-        cx.update_window(any_window, |_, window, cx| window.draw(cx).clear())
+        cx.update_window(any_window, |_, window, cx| window.draw(cx).clear(cx))
             .expect("test window remains available");
         let mut visual = gpui::VisualTestContext::from_window(any_window, cx);
         let read = |visual: &mut gpui::VisualTestContext, selector: &'static str| {
@@ -3740,7 +3740,7 @@ mod tests {
             }
         });
         let mut visual = gpui::VisualTestContext::from_window(window.into(), cx);
-        visual.update(|window, cx| window.draw(cx).clear());
+        visual.update(|window, cx| window.draw(cx).clear(cx));
         let names = ["Notes.txt", LONG_APK_NAME, UUID_IMAGE_NAME, CJK_NAME];
         let layouts = probe.take();
         assert_eq!(layouts.len(), names.len());
@@ -3756,7 +3756,7 @@ mod tests {
                 .expect("window")
         };
         visual.simulate_mouse_down(start, MouseButton::Left, gpui::Modifiers::default());
-        visual.update(|window, cx| window.draw(cx).clear());
+        visual.update(|window, cx| window.draw(cx).clear(cx));
         assert!(
             window
                 .read_with(&visual, |view, _| view.state.column_width_resize_active())
@@ -3768,7 +3768,7 @@ mod tests {
             Some(MouseButton::Left),
             gpui::Modifiers::default(),
         );
-        visual.update(|window, cx| window.draw(cx).clear());
+        visual.update(|window, cx| window.draw(cx).clear(cx));
         assert_eq!(width(&visual), 200);
         let narrow = probe.take();
         for (layout, name) in narrow.iter().zip(names) {
@@ -3780,7 +3780,7 @@ mod tests {
             Some(MouseButton::Left),
             gpui::Modifiers::default(),
         );
-        visual.update(|window, cx| window.draw(cx).clear());
+        visual.update(|window, cx| window.draw(cx).clear(cx));
         assert_eq!(
             width(&visual),
             420,
@@ -3806,7 +3806,7 @@ mod tests {
         }
         let outside = gpui::point(px(900.0), px(150.0));
         visual.simulate_mouse_up(outside, MouseButton::Left, gpui::Modifiers::default());
-        visual.update(|window, cx| window.draw(cx).clear());
+        visual.update(|window, cx| window.draw(cx).clear(cx));
         assert!(
             !window
                 .read_with(&visual, |view, _| view.state.column_width_resize_active())
@@ -3817,7 +3817,7 @@ mod tests {
             None,
             gpui::Modifiers::default(),
         );
-        visual.update(|window, cx| window.draw(cx).clear());
+        visual.update(|window, cx| window.draw(cx).clear(cx));
         assert_eq!(
             width(&visual),
             420,
@@ -3885,7 +3885,7 @@ mod tests {
             }
         });
         let mut visual = gpui::VisualTestContext::from_window(window.into(), cx);
-        visual.update(|window, cx| window.draw(cx).clear());
+        visual.update(|window, cx| window.draw(cx).clear(cx));
         let pane = visual.debug_bounds("column-preview").unwrap();
         let slot = visual
             .debug_bounds("column-preview-native-content")
@@ -3916,7 +3916,7 @@ mod tests {
                 cx.notify();
             })
             .unwrap();
-        visual.update(|window, cx| window.draw(cx).clear());
+        visual.update(|window, cx| window.draw(cx).clear(cx));
         let info = visual
             .debug_bounds("column-preview-native-content")
             .unwrap();

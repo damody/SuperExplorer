@@ -387,7 +387,7 @@ pub fn cache_inspector_overlay(
                 .flex_1()
                 .overflow_y_scroll()
                 .track_scroll(scroll)
-                .on_scroll_wheel(|_, window, _| window.refresh())
+                .on_scroll(|_, window, _| window.refresh())
                 .px(px(12.0)) // token-lint: allow
                 .child(
                     div()

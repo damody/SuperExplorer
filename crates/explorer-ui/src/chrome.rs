@@ -5242,7 +5242,7 @@ pub(crate) fn bookmark_editor(
                                 .size_full()
                                 .overflow_y_scroll()
                                 .track_scroll(&destination_scroll)
-                                .on_scroll_wheel(|_, _, cx| cx.refresh_windows())
+                                .on_scroll(|_, _, cx| cx.refresh_windows())
                                 .flex()
                                 .flex_col()
                                 .gap(px(4.0))
@@ -6234,7 +6234,7 @@ pub(crate) fn folder_options_window_content(
                         .track_scroll(&scroll)
                         .pr(px(tokens.layout.content_spacing.value() * 1.5))
                         .p(px(crate::layout::folder_options::PAGE_PADDING.value()))
-                        .on_scroll_wheel(|_, window, cx| {
+                        .on_scroll(|_, window, cx| {
                             window.refresh();
                             cx.refresh_windows();
                         })
@@ -6972,7 +6972,7 @@ fn folder_options_language_picker(
                             .right(px(track_width))
                             .overflow_y_scroll()
                             .track_scroll(&language_menu_scroll)
-                            .on_scroll_wheel(|_, window, cx| {
+                            .on_scroll(|_, window, cx| {
                                 cx.stop_propagation();
                                 window.refresh();
                                 cx.refresh_windows();
@@ -12418,7 +12418,7 @@ impl RenderOnce for NavigationPane {
             .when_some(scroll_handle, |element, handle| {
                 element.track_scroll(&handle)
             })
-            .on_scroll_wheel(|_, _, cx| cx.refresh_windows())
+            .on_scroll(|_, _, cx| cx.refresh_windows())
             .py(px(layout.navigation_pane_vertical_padding.value()))
             .px(px(layout.control_padding_horizontal.value()))
             .border_r(px(layout.focus_stroke.value()))
@@ -14034,7 +14034,7 @@ impl RenderOnce for FileViewHost {
             .when_some(scroll_handle, |element, handle| {
                 element.track_scroll(&handle)
             })
-            .on_scroll_wheel(move |event, window, cx| {
+            .on_scroll(move |event, window, cx| {
                 let scroll_started = Instant::now();
                 if event.modifiers.control {
                     let delta_y = match event.delta {
@@ -19527,7 +19527,7 @@ impl RenderOnce for WindowChrome {
                             .when_some(self.tab_scroll.clone(), |element, handle| {
                                 element.track_scroll(&handle)
                             })
-                            .on_scroll_wheel(|_, _, cx| cx.refresh_windows())
+                            .on_scroll(|_, _, cx| cx.refresh_windows())
                             .gap(px(layout.content_spacing.value()))
                             .px(px(layout.control_padding_horizontal.value()))
                             .child(region_probe(TAB_STRIP_ID, Some(WINDOW_CHROME_ID), "normal"))
@@ -19754,7 +19754,7 @@ fn explorer_tab(
         .when(wrap, |element| {
             element
                 .flex_none()
-                .flex_grow()
+                .flex_grow_1()
                 .flex_basis(px(tab_min_width))
         })
         .when(!wrap, |element| element.flex_1())
@@ -24376,7 +24376,7 @@ fn bookmark_manager_header_and_cells_share_column_origin(cx: &mut gpui::TestAppC
     };
     let window = cx.open_window(gpui::size(px(1200.0), px(720.0)), |_, _| probe);
     let any_window = window.into();
-    cx.update_window(any_window, |_, window, cx| window.draw(cx).clear())
+    cx.update_window(any_window, |_, window, cx| window.draw(cx).clear(cx))
         .expect("test window remains available");
     let mut visual = gpui::VisualTestContext::from_window(any_window, cx);
     let read = |visual: &mut gpui::VisualTestContext, selector: &'static str| {
@@ -24479,7 +24479,7 @@ fn bookmark_manager_history_rows_use_the_shared_column_contract(cx: &mut gpui::T
         ui,
     });
     let any_window = window.into();
-    cx.update_window(any_window, |_, window, cx| window.draw(cx).clear())
+    cx.update_window(any_window, |_, window, cx| window.draw(cx).clear(cx))
         .expect("test window remains available");
     let mut visual = gpui::VisualTestContext::from_window(any_window, cx);
     let read = |visual: &mut gpui::VisualTestContext, selector: &'static str| {
